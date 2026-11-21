@@ -1,0 +1,22 @@
+{
+  "name": "@jinshan/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node dist/index.js",
+    "test": "node --test dist/__tests__/*.test.js"
+  },
+  "dependencies": {
+    "@jinshan/game-core": "*",
+    "@jinshan/protocol": "*",
+    "ws": "^8.18.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.8.2"
+  }
+}
