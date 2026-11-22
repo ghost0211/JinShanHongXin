@@ -1,7 +1,8 @@
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { GameMode, RoundSettlement } from '@jinshan/protocol';
+import type { GameMode, RoundSettlement, UserProfile } from '@jinshan/protocol';
 
 export interface MatchRecord {
   id: number;
@@ -26,6 +27,56 @@ export interface RoundRecordSummary {
   createdAt: string;
 }
 
+export interface PlayerRoundStatUpdate {
+  userId: number;
+  mode: GameMode;
+  won: boolean;
+  scoreDelta?: number;
+}
+
+interface UserRow {
+  id: number;
+  username: string;
+  nickname: string;
+  password_salt: string;
+  password_hash: string;
+  hongxin_games: number;
+  hongxin_wins: number;
+  heixin_games: number;
+  heixin_wins: number;
+  heixin_total_score: number;
+  created_at: string;
+}
+
+function mapUserRow(row: UserRow): UserProfile {
+  return {
+    id: row.id,
+    username: row.username,
+    nickname: row.nickname,
+    hongxinGames: row.hongxin_games,
+    hongxinWins: row.hongxin_wins,
+    heixinGames: row.heixin_games,
+    heixinWins: row.heixin_wins,
+    heixinTotalScore: row.heixin_total_score,
+    createdAt: row.created_at,
+  };
+}
+
+function hashPassword(password: string, salt: string): string {
+  return scryptSync(password, salt, 32).toString('hex');
+}
+
+export class AuthError extends Error {
+  readonly status: number;
+  readonly code: string;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 export class HistoryStore {
   private readonly db: DatabaseSync;
 
@@ -39,6 +90,28 @@ export class HistoryStore {
 
   private initSchema(): void {
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        nickname TEXT NOT NULL,
+        password_salt TEXT NOT NULL,
+        password_hash TEXT NOT NULL,
+        hongxin_games INTEGER NOT NULL DEFAULT 0,
+        hongxin_wins INTEGER NOT NULL DEFAULT 0,
+        heixin_games INTEGER NOT NULL DEFAULT 0,
+        heixin_wins INTEGER NOT NULL DEFAULT 0,
+        heixin_total_score INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS user_sessions (
+        token TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+
       CREATE TABLE IF NOT EXISTS matches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         room_id TEXT NOT NULL,
@@ -62,6 +135,157 @@ export class HistoryStore {
         FOREIGN KEY (match_id) REFERENCES matches(id)
       );
     `);
+  }
+
+  registerUser(
+    rawUsername: string,
+    password: string,
+    rawNickname?: string,
+  ): { user: UserProfile; token: string } {
+    const username = rawUsername.trim();
+    const nickname = (rawNickname?.trim() || username).slice(0, 16);
+
+    if (username.length < 2 || username.length > 20) {
+      throw new AuthError(400, 'INVALID_USERNAME', '用户名长度需为 2~20 个字符');
+    }
+    if (!/^[\u4e00-\u9fa5a-zA-Z0-9_-]+$/.test(username)) {
+      throw new AuthError(400, 'INVALID_USERNAME', '用户名仅支持中英文、数字、下划线和短横线');
+    }
+    if (password.length < 4 || password.length > 64) {
+      throw new AuthError(400, 'INVALID_PASSWORD', '密码长度需为 4~64 位');
+    }
+
+    const existing = this.db
+      .prepare('SELECT id FROM users WHERE username = ?')
+      .get(username) as { id: number } | undefined;
+    if (existing) {
+      throw new AuthError(409, 'USERNAME_TAKEN', '该用户名已被注册');
+    }
+
+    const salt = randomBytes(16).toString('hex');
+    const hash = hashPassword(password, salt);
+
+    const res = this.db
+      .prepare(
+        `INSERT INTO users (username, nickname, password_salt, password_hash)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(username, nickname, salt, hash);
+    const userId = Number(res.lastInsertRowid);
+    const token = this.createSession(userId);
+    const user = this.getUserById(userId)!;
+    return { user, token };
+  }
+
+  loginUser(
+    rawUsername: string,
+    password: string,
+  ): { user: UserProfile; token: string } {
+    const username = rawUsername.trim();
+    const row = this.db
+      .prepare('SELECT * FROM users WHERE username = ?')
+      .get(username) as UserRow | undefined;
+
+    if (!row) {
+      throw new AuthError(401, 'INVALID_CREDENTIALS', '用户名或密码错误');
+    }
+
+    const candidateHex = hashPassword(password, row.password_salt);
+    const expectedBuf = Buffer.from(row.password_hash, 'hex');
+    const actualBuf = Buffer.from(candidateHex, 'hex');
+    if (
+      expectedBuf.length !== actualBuf.length ||
+      !timingSafeEqual(expectedBuf, actualBuf)
+    ) {
+      throw new AuthError(401, 'INVALID_CREDENTIALS', '用户名或密码错误');
+    }
+
+    const token = this.createSession(row.id);
+    return { user: mapUserRow(row), token };
+  }
+
+  private createSession(userId: number): string {
+    const token = randomBytes(32).toString('hex');
+    this.db
+      .prepare('INSERT INTO user_sessions (token, user_id) VALUES (?, ?)')
+      .run(token, userId);
+    return token;
+  }
+
+  getUserById(userId: number): UserProfile | null {
+    const row = this.db
+      .prepare('SELECT * FROM users WHERE id = ?')
+      .get(userId) as UserRow | undefined;
+    return row ? mapUserRow(row) : null;
+  }
+
+  getUserByToken(token: string | undefined | null): UserProfile | null {
+    if (!token) return null;
+    const row = this.db
+      .prepare(
+        `SELECT u.* FROM user_sessions s
+         JOIN users u ON u.id = s.user_id
+         WHERE s.token = ?`,
+      )
+      .get(token) as UserRow | undefined;
+    if (!row) return null;
+    this.db
+      .prepare(`UPDATE user_sessions SET last_seen_at = datetime('now') WHERE token = ?`)
+      .run(token);
+    return mapUserRow(row);
+  }
+
+  logoutToken(token: string): void {
+    this.db.prepare('DELETE FROM user_sessions WHERE token = ?').run(token);
+  }
+
+  updateNickname(userId: number, rawNickname: string): UserProfile {
+    const nickname = rawNickname.trim().slice(0, 16);
+    if (nickname.length < 1) {
+      throw new AuthError(400, 'INVALID_NICKNAME', '昵称不能为空');
+    }
+    this.db
+      .prepare('UPDATE users SET nickname = ? WHERE id = ?')
+      .run(nickname, userId);
+    const updated = this.getUserById(userId);
+    if (!updated) {
+      throw new AuthError(404, 'USER_NOT_FOUND', '用户不存在');
+    }
+    return updated;
+  }
+
+  recordPlayerRoundStats(entries: readonly PlayerRoundStatUpdate[]): void {
+    const stmtHongxin = this.db.prepare(`
+      UPDATE users
+      SET hongxin_games = hongxin_games + 1,
+          hongxin_wins = hongxin_wins + ?
+      WHERE id = ?
+    `);
+    const stmtHeixin = this.db.prepare(`
+      UPDATE users
+      SET heixin_games = heixin_games + 1,
+          heixin_wins = heixin_wins + ?,
+          heixin_total_score = heixin_total_score + ?
+      WHERE id = ?
+    `);
+    for (const item of entries) {
+      if (item.mode === 'hongxin') {
+        stmtHongxin.run(item.won ? 1 : 0, item.userId);
+      } else {
+        stmtHeixin.run(item.won ? 1 : 0, item.scoreDelta ?? 0, item.userId);
+      }
+    }
+  }
+
+  getLeaderboard(limit = 20): UserProfile[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM users
+         ORDER BY (hongxin_wins + heixin_wins) DESC, heixin_total_score DESC, id ASC
+         LIMIT ?`,
+      )
+      .all(limit) as unknown as UserRow[];
+    return rows.map(mapUserRow);
   }
 
   createMatch(roomId: string, mode: GameMode): number {

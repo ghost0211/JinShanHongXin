@@ -183,6 +183,8 @@ export class ManagedWsClient {
       this.ws.send(JSON.stringify(msg));
       return;
     }
+    // Never queue stale gameplay actions across disconnects
+    if (msg.type === 'GAME_ACTION') return;
     this.pendingQueue.push(msg);
   }
 

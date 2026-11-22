@@ -16,7 +16,7 @@ import {
   countBipai,
   createThreeDecks,
   formatCardLabel,
-  getOtherTeam,
+  getCardPoints,
   getSeatTeam,
   isRedFive,
   LEVEL_SEQUENCE,
@@ -44,10 +44,18 @@ function createEmptyCallState(): CallState {
     calledCount: 0,
     passedSeats: [],
     counterAttempts: 0,
+    counteredSeats: [],
+    beenCounteredSeats: [],
     failedCounterSeats: [],
     passedCounterSeats: [],
     eligibleCounterSeats: [],
+    pendingCounter: null,
+    seatCallDisplays: {},
   };
+}
+
+function createEmptyHands(): Record<Seat, Card[]> {
+  return { 0: [], 1: [], 2: [], 3: [] };
 }
 
 function dealRoundHands(seed?: number): {
@@ -89,16 +97,23 @@ function flipBottomForTrumpSuit(bottomCards: readonly Card[]): StandardSuit | nu
 }
 
 export function canSeatCounterBid(state: GameState, seat: Seat): boolean {
+  if (state.dealtCount < 38) return false;
   const { callState, isFirstRound, levelRank, hands } = state;
   if (callState.callerTeam === null || callState.calledSuit === null) return false;
   if (getSeatTeam(seat) === callState.callerTeam) return false;
-  if (callState.failedCounterSeats.includes(seat)) return false;
+  // 反过主或被反过主的玩家均不可再次反主
+  if (callState.counteredSeats.includes(seat)) return false;
+  if (callState.beenCounteredSeats.includes(seat)) return false;
   if (callState.passedCounterSeats.includes(seat)) return false;
 
   const hand = hands[seat];
   const countsBySuit = new Map<StandardSuit, number>();
   for (const card of hand) {
-    if (card.rank === levelRank && card.suit !== 'J' && card.suit !== callState.calledSuit) {
+    if (
+      card.rank === levelRank &&
+      card.suit !== 'J' &&
+      card.suit !== callState.calledSuit
+    ) {
       countsBySuit.set(card.suit, (countsBySuit.get(card.suit) ?? 0) + 1);
     }
   }
@@ -139,7 +154,7 @@ function enterBuryingPhase(state: GameState, events: GameEvent[]): GameState {
   events.push({
     type: 'BURY_START',
     seat: dealer,
-    message: `座位 ${dealer} 庄家收下 10 张底牌，进入埋底阶段`,
+    message: `座位 ${dealer + 1} 庄家收下 10 张底牌，进入埋底阶段`,
   });
 
   return {
@@ -151,6 +166,7 @@ function enterBuryingPhase(state: GameState, events: GameEvent[]): GameState {
     callState: {
       ...state.callState,
       eligibleCounterSeats: [],
+      pendingCounter: null,
     },
     events: [...state.events, ...events],
   };
@@ -168,6 +184,7 @@ function advanceCounterOrBury(state: GameState, events: GameEvent[]): GameState 
     callState: {
       ...state.callState,
       eligibleCounterSeats: eligible,
+      pendingCounter: null,
     },
     events: [...state.events, ...events],
   };
@@ -176,6 +193,12 @@ function advanceCounterOrBury(state: GameState, events: GameEvent[]): GameState 
 export interface MatchInitOptions {
   seed?: number;
   mode?: GameMode;
+  withDealing?: boolean;
+}
+
+export interface NextRoundOptions {
+  seed?: number;
+  withDealing?: boolean;
 }
 
 export function createInitialMatchState(
@@ -187,6 +210,8 @@ export function createInitialMatchState(
     typeof seedOrOptions === 'object' && seedOrOptions?.mode
       ? seedOrOptions.mode
       : 'hongxin';
+  const withDealing =
+    typeof seedOrOptions === 'object' && Boolean(seedOrOptions?.withDealing);
 
   const { hands, bottomCards } = dealRoundHands(seed);
   const playerScores: Record<Seat, number> = { 0: 0, 1: 0, 2: 0, 3: 0 };
@@ -215,7 +240,7 @@ export function createInitialMatchState(
       mode: 'heixin',
       roundNumber: 1,
       isFirstRound: true,
-      phase: 'BIDDING',
+      phase: withDealing ? 'DEALING' : 'BIDDING',
       levelIndex,
       levelRank,
       teams,
@@ -223,8 +248,10 @@ export function createInitialMatchState(
       dealer: null,
       bankerTeam: null,
       trumpSuit: null,
-      currentTurn: 0,
-      hands: sortAllHands(hands, null, levelRank),
+      currentTurn: withDealing ? null : 0,
+      hands: withDealing ? createEmptyHands() : sortAllHands(hands, null, levelRank),
+      undealtHands: withDealing ? hands : createEmptyHands(),
+      dealtCount: withDealing ? 0 : 38,
       bottomCards,
       bidState,
       callState: createEmptyCallState(),
@@ -232,6 +259,7 @@ export function createInitialMatchState(
       currentTrick: [],
       completedTricks: [],
       challengerPoints: 0,
+      bankerPoints: 0,
       settlement: null,
       matchWinner: null,
       events: [startEvent],
@@ -253,7 +281,7 @@ export function createInitialMatchState(
     mode: 'hongxin',
     roundNumber: 1,
     isFirstRound: true,
-    phase: 'CALLING',
+    phase: withDealing ? 'DEALING' : 'CALLING',
     levelIndex,
     levelRank,
     teams,
@@ -261,8 +289,10 @@ export function createInitialMatchState(
     dealer: null,
     bankerTeam: null,
     trumpSuit: null,
-    currentTurn: 0,
-    hands: sortAllHands(hands, null, levelRank),
+    currentTurn: withDealing ? null : 0,
+    hands: withDealing ? createEmptyHands() : sortAllHands(hands, null, levelRank),
+    undealtHands: withDealing ? hands : createEmptyHands(),
+    dealtCount: withDealing ? 0 : 38,
     bottomCards,
     bidState: null,
     callState: createEmptyCallState(),
@@ -270,16 +300,25 @@ export function createInitialMatchState(
     currentTrick: [],
     completedTricks: [],
     challengerPoints: 0,
+    bankerPoints: 0,
     settlement: null,
     matchWinner: null,
     events: [startEvent],
   };
 }
 
-export function startNextRound(state: GameState, seed?: number): GameState {
+export function startNextRound(
+  state: GameState,
+  seedOrOptions?: number | NextRoundOptions,
+): GameState {
   if (!state.settlement) {
     throw new Error('Cannot start next round without prior settlement');
   }
+  const seed =
+    typeof seedOrOptions === 'number' ? seedOrOptions : seedOrOptions?.seed;
+  const withDealing =
+    typeof seedOrOptions === 'object' && Boolean(seedOrOptions?.withDealing);
+
   const roundNumber = state.roundNumber + 1;
   const { hands, bottomCards } = dealRoundHands(seed);
 
@@ -299,13 +338,13 @@ export function startNextRound(state: GameState, seed?: number): GameState {
     const startEvent: GameEvent = {
       type: 'ROUND_START',
       seat: startSeat,
-      message: `金山打黑心第 ${roundNumber} 局开始，座位 ${startSeat} 首叫`,
+      message: `金山打黑心第 ${roundNumber} 局开始，座位 ${startSeat + 1} 首叫`,
     };
     return {
       mode: 'heixin',
       roundNumber,
       isFirstRound: false,
-      phase: 'BIDDING',
+      phase: withDealing ? 'DEALING' : 'BIDDING',
       levelIndex,
       levelRank,
       teams: {
@@ -316,8 +355,10 @@ export function startNextRound(state: GameState, seed?: number): GameState {
       dealer: null,
       bankerTeam: null,
       trumpSuit: null,
-      currentTurn: startSeat,
-      hands: sortAllHands(hands, null, levelRank),
+      currentTurn: withDealing ? null : startSeat,
+      hands: withDealing ? createEmptyHands() : sortAllHands(hands, null, levelRank),
+      undealtHands: withDealing ? hands : createEmptyHands(),
+      dealtCount: withDealing ? 0 : 38,
       bottomCards,
       bidState,
       callState: createEmptyCallState(),
@@ -325,6 +366,7 @@ export function startNextRound(state: GameState, seed?: number): GameState {
       currentTrick: [],
       completedTricks: [],
       challengerPoints: 0,
+      bankerPoints: 0,
       settlement: null,
       matchWinner: null,
       events: [startEvent],
@@ -340,14 +382,14 @@ export function startNextRound(state: GameState, seed?: number): GameState {
     type: 'ROUND_START',
     seat: dealer,
     team: bankerTeam,
-    message: `第 ${roundNumber} 局开始，座位 ${dealer}（${bankerTeam}队）坐庄打 ${levelRank}`,
+    message: `第 ${roundNumber} 局开始，座位 ${dealer + 1}（${bankerTeam}队）坐庄打 ${levelRank}`,
   };
 
   return {
     mode: 'hongxin',
     roundNumber,
     isFirstRound: false,
-    phase: 'CALLING',
+    phase: withDealing ? 'DEALING' : 'CALLING',
     levelIndex,
     levelRank,
     teams: {
@@ -358,8 +400,10 @@ export function startNextRound(state: GameState, seed?: number): GameState {
     dealer,
     bankerTeam,
     trumpSuit: null,
-    currentTurn: dealer,
-    hands: sortAllHands(hands, null, levelRank),
+    currentTurn: withDealing ? null : dealer,
+    hands: withDealing ? createEmptyHands() : sortAllHands(hands, null, levelRank),
+    undealtHands: withDealing ? hands : createEmptyHands(),
+    dealtCount: withDealing ? 0 : 38,
     bottomCards,
     bidState: null,
     callState: createEmptyCallState(),
@@ -367,9 +411,98 @@ export function startNextRound(state: GameState, seed?: number): GameState {
     currentTrick: [],
     completedTricks: [],
     challengerPoints: 0,
+    bankerPoints: 0,
     settlement: null,
     matchWinner: null,
     events: [startEvent],
+  };
+}
+
+function handleDealStep(state: GameState): ActionResult {
+  if (state.phase !== 'DEALING') {
+    return { ok: false, code: 'INVALID_PHASE', error: '当前不在发牌阶段' };
+  }
+
+  const nextHands: Record<Seat, Card[]> = {
+    0: [...state.hands[0]],
+    1: [...state.hands[1]],
+    2: [...state.hands[2]],
+    3: [...state.hands[3]],
+  };
+  const nextUndealt: Record<Seat, Card[]> = {
+    0: [...state.undealtHands[0]],
+    1: [...state.undealtHands[1]],
+    2: [...state.undealtHands[2]],
+    3: [...state.undealtHands[3]],
+  };
+
+  let dealtAny = false;
+  for (const s of ALL_SEATS) {
+    if (nextUndealt[s].length > 0) {
+      const card = nextUndealt[s].shift()!;
+      nextHands[s].push(card);
+      dealtAny = true;
+    }
+  }
+
+  const nextDealtCount = dealtAny ? state.dealtCount + 1 : state.dealtCount;
+  const sortedHands = sortAllHands(nextHands, state.trumpSuit, state.levelRank);
+  const allDone =
+    nextDealtCount >= 38 || ALL_SEATS.every((s) => nextUndealt[s].length === 0);
+
+  const progressed: GameState = {
+    ...state,
+    hands: sortedHands,
+    undealtHands: nextUndealt,
+    dealtCount: allDone ? 38 : nextDealtCount,
+  };
+
+  if (!allDone) {
+    return { ok: true, state: progressed, events: [] };
+  }
+
+  if (state.mode === 'heixin') {
+    const startSeat = state.bidState?.startSeat ?? 0;
+    const ev: GameEvent = {
+      type: 'DEAL_COMPLETE',
+      seat: startSeat,
+      message: `发牌完成，座位 ${startSeat + 1} 开始叫分抢庄`,
+    };
+    return {
+      ok: true,
+      state: {
+        ...progressed,
+        phase: 'BIDDING',
+        currentTurn: startSeat,
+        events: [...state.events, ev],
+      },
+      events: [ev],
+    };
+  }
+
+  // hongxin: if someone already called trump during dealing, proceed to counter window or burying
+  if (state.callState.callerSeat !== null) {
+    const ev: GameEvent = {
+      type: 'DEAL_COMPLETE',
+      message: '发牌完成，进入反主确认阶段',
+    };
+    const nextState = advanceCounterOrBury(progressed, [ev]);
+    return { ok: true, state: nextState, events: [ev] };
+  }
+
+  const ev: GameEvent = {
+    type: 'DEAL_COMPLETE',
+    message: '发牌完成，等待玩家亮牌叫主',
+  };
+  return {
+    ok: true,
+    state: {
+      ...progressed,
+      phase: 'CALLING',
+      currentTurn: state.dealer ?? 0,
+      events: [...state.events, ev],
+    },
+    events: [ev],
   };
 }
 
@@ -422,16 +555,15 @@ function handleBidScore(
   const ev: GameEvent = {
     type: 'BID_SCORE',
     seat,
-    message: `座位 ${seat} 叫分 ${score}`,
+    message: `座位 ${seat + 1} 叫分 ${score}`,
     payload: { score },
   };
 
-  // Bidding 300 or everyone else already passed ends bidding immediately
   if (score === maxBid || passedSeats.length >= 3) {
     const winEv: GameEvent = {
       type: 'BID_WON',
       seat,
-      message: `座位 ${seat} 以 ${score} 分坐庄（1打3），请选择主花色`,
+      message: `座位 ${seat + 1} 以 ${score} 分坐庄（1打3），请选择主花色`,
       payload: { score },
     };
     return {
@@ -477,16 +609,15 @@ function handlePassBid(state: GameState, seat: Seat): ActionResult {
   const passEv: GameEvent = {
     type: 'PASS_BID',
     seat,
-    message: `座位 ${seat} 不叫分`,
+    message: `座位 ${seat + 1} 不叫分`,
   };
 
-  // All 4 passed without any bid -> startSeat forced banker at 100
   if (passedSeats.length === 4 && state.bidState.highestBidder === null) {
     const dealer = state.bidState.startSeat;
     const winEv: GameEvent = {
       type: 'BID_WON',
       seat: dealer,
-      message: `四家全不叫，默认座位 ${dealer} 以 100 分坐庄，请选择主花色`,
+      message: `四家全不叫，默认座位 ${dealer + 1} 以 100 分坐庄，请选择主花色`,
       payload: { score: 100 },
     };
     return {
@@ -509,14 +640,13 @@ function handlePassBid(state: GameState, seat: Seat): ActionResult {
     };
   }
 
-  // 3 passed and 1 bidder remains -> bidder wins
   if (passedSeats.length === 3 && state.bidState.highestBidder !== null) {
     const dealer = state.bidState.highestBidder;
     const score = state.bidState.highestBid;
     const winEv: GameEvent = {
       type: 'BID_WON',
       seat: dealer,
-      message: `座位 ${dealer} 以 ${score} 分坐庄（1打3），请选择主花色`,
+      message: `座位 ${dealer + 1} 以 ${score} 分坐庄（1打3），请选择主花色`,
       payload: { score },
     };
     return {
@@ -568,13 +698,23 @@ function handleChooseTrump(
   const ev: GameEvent = {
     type: 'CHOOSE_TRUMP',
     seat,
-    message: `庄家（座位 ${seat}）定主花色为 ${suit}`,
+    message: `庄家（座位 ${seat + 1}）定主花色为 ${suit}`,
     payload: { suit },
   };
   const updated: GameState = {
     ...state,
     trumpSuit: suit,
     hands: sortAllHands(state.hands, suit, state.levelRank),
+    callState: {
+      ...state.callState,
+      callerSeat: seat,
+      callerTeam: getSeatTeam(seat),
+      calledSuit: suit,
+      seatCallDisplays: {
+        ...state.callState.seatCallDisplays,
+        [seat]: { kind: 'CALL', suit, cards: [] },
+      },
+    },
   };
   const nextState = enterBuryingPhase(updated, [ev]);
   return { ok: true, state: nextState, events: [ev] };
@@ -586,11 +726,11 @@ function handleCallTrump(
   suit: StandardSuit,
   cardIds: readonly number[],
 ): ActionResult {
-  if (state.phase !== 'CALLING') {
+  if (state.mode !== 'hongxin' || (state.phase !== 'CALLING' && state.phase !== 'DEALING')) {
     return { ok: false, code: 'INVALID_PHASE', error: '当前不在叫主阶段' };
   }
-  if (state.currentTurn !== seat) {
-    return { ok: false, code: 'NOT_YOUR_TURN', error: '未轮到该座位操作' };
+  if (state.callState.callerSeat !== null) {
+    return { ok: false, code: 'ALREADY_CALLED', error: '本局已有玩家叫主' };
   }
 
   const uniqueIds = new Set(cardIds);
@@ -615,10 +755,11 @@ function handleCallTrump(
   }
 
   const handMap = new Map(state.hands[seat].map((c) => [c.id, c]));
+  const shownCards: Card[] = [];
   for (const id of cardIds) {
     const card = handMap.get(id);
     if (!card) {
-      return { ok: false, code: 'CARD_NOT_IN_HAND', error: '叫主牌不在手牌中' };
+      return { ok: false, code: 'CARD_NOT_IN_HAND', error: '叫主牌不在已发手牌中' };
     }
     if (card.rank !== state.levelRank || card.suit !== suit) {
       return {
@@ -627,6 +768,7 @@ function handleCallTrump(
         error: `叫主必须使用花色为 ${suit} 的级牌 ${state.levelRank}`,
       };
     }
+    shownCards.push(card);
   }
 
   const callerTeam = getSeatTeam(seat);
@@ -638,8 +780,8 @@ function handleCallTrump(
     seat,
     team: callerTeam,
     message: state.isFirstRound
-      ? `座位 ${seat} 亮 ${cardIds.length} 张 ${suit}2 叫主抢庄`
-      : `座位 ${seat} 亮 ${suit}${state.levelRank} 定主`,
+      ? `座位 ${seat + 1} 亮 ${cardIds.length} 张 ${suit}2 叫主抢庄`
+      : `座位 ${seat + 1} 亮 ${suit}${state.levelRank} 定主`,
     payload: { suit, count: cardIds.length },
   };
 
@@ -655,72 +797,164 @@ function handleCallTrump(
       callerTeam,
       calledSuit: suit,
       calledCount: cardIds.length,
+      seatCallDisplays: {
+        ...state.callState.seatCallDisplays,
+        [seat]: { kind: 'CALL', suit, cards: shownCards },
+      },
     },
+    events: [...state.events, event],
   };
 
+  // During DEALING: keep dealing until all 38 cards are dealt; no counter-bid allowed yet!
+  if (state.phase === 'DEALING') {
+    return {
+      ok: true,
+      state: nextState,
+      events: [event],
+    };
+  }
+
+  // After dealing complete (CALLING phase): enter counter window or bury
   return {
     ok: true,
-    state: advanceCounterOrBury(nextState, [event]),
+    state: advanceCounterOrBury(
+      { ...nextState, events: state.events },
+      [event],
+    ),
     events: [event],
   };
+}
+
+function finalizeAllPassCalling(state: GameState, extraEvents: GameEvent[]): ActionResult {
+  const dealer: Seat = state.dealer ?? 0;
+  const bankerTeam = getSeatTeam(dealer);
+  const flippedSuit = flipBottomForTrumpSuit(state.bottomCards);
+  const flipEvent: GameEvent = {
+    type: 'FLIP_BOTTOM_TRUMP',
+    seat: dealer,
+    message: flippedSuit
+      ? `无人叫主，翻底牌定主花色为 ${flippedSuit}`
+      : '无人叫主且底牌全为王/红五，本局无主花色',
+    payload: { suit: flippedSuit },
+  };
+
+  const baseState: GameState = {
+    ...state,
+    dealer,
+    bankerTeam,
+    trumpSuit: flippedSuit,
+  };
+  const buryEvents = [...extraEvents, flipEvent];
+  const finalState = enterBuryingPhase(baseState, buryEvents);
+  return { ok: true, state: finalState, events: buryEvents };
 }
 
 function handlePassCall(state: GameState, seat: Seat): ActionResult {
   if (state.phase !== 'CALLING') {
     return { ok: false, code: 'INVALID_PHASE', error: '当前不在叫主阶段' };
   }
-  if (state.currentTurn !== seat) {
-    return { ok: false, code: 'NOT_YOUR_TURN', error: '未轮到该座位操作' };
+  if (state.callState.passedSeats.includes(seat)) {
+    return { ok: false, code: 'ALREADY_PASSED', error: '该座位已选择不叫主' };
   }
 
   const passedSeats = [...state.callState.passedSeats, seat];
   const passEvent: GameEvent = {
     type: 'PASS_CALL',
     seat,
-    message: `座位 ${seat} 选择不叫主`,
+    message: `座位 ${seat + 1} 选择不叫主`,
+  };
+
+  const updated: GameState = {
+    ...state,
+    callState: {
+      ...state.callState,
+      passedSeats,
+    },
   };
 
   if (passedSeats.length >= 4) {
-    const dealer: Seat = state.dealer ?? 0;
-    const bankerTeam = getSeatTeam(dealer);
-    const flippedSuit = flipBottomForTrumpSuit(state.bottomCards);
-    const flipEvent: GameEvent = {
-      type: 'FLIP_BOTTOM_TRUMP',
-      seat: dealer,
-      message: flippedSuit
-        ? `四家均未叫主，翻底牌定主花色为 ${flippedSuit}`
-        : '四家均未叫主且底牌全为王/红五，本局无主花色',
-      payload: { suit: flippedSuit },
-    };
-
-    const baseState: GameState = {
-      ...state,
-      dealer,
-      bankerTeam,
-      trumpSuit: flippedSuit,
-      callState: {
-        ...state.callState,
-        passedSeats,
-      },
-    };
-    const buryEvents = [passEvent, flipEvent];
-    const finalState = enterBuryingPhase(baseState, buryEvents);
-    return { ok: true, state: finalState, events: buryEvents };
+    return finalizeAllPassCalling(updated, [passEvent]);
   }
 
-  const nextSeat = ((seat + 1) % 4) as Seat;
+  const nextSeat = ALL_SEATS.find(
+    (offset) => !passedSeats.includes((((seat + 1 + offset) % 4) as Seat)),
+  );
+  const nextTurn =
+    nextSeat !== undefined ? (((seat + 1 + nextSeat) % 4) as Seat) : null;
+
   return {
     ok: true,
     state: {
-      ...state,
-      currentTurn: nextSeat,
-      callState: {
-        ...state.callState,
-        passedSeats,
-      },
+      ...updated,
+      currentTurn: nextTurn,
       events: [...state.events, passEvent],
     },
     events: [passEvent],
+  };
+}
+
+function handleFinishCallWindow(state: GameState): ActionResult {
+  if (state.phase !== 'CALLING') {
+    return { ok: false, code: 'INVALID_PHASE', error: '当前不在叫主等待窗口' };
+  }
+  if (state.callState.callerSeat !== null) {
+    return {
+      ok: true,
+      state: advanceCounterOrBury(state, []),
+      events: [],
+    };
+  }
+  return finalizeAllPassCalling(state, []);
+}
+
+function applyCounterSuccessTransition(
+  state: GameState,
+  counterSeat: Seat,
+  counterTeam: TeamId,
+  suit: StandardSuit,
+  shownCards: Card[],
+  displayKind: 'COUNTER_SUCCESS' | 'COUNTER_ACCEPTED',
+  ev: GameEvent,
+): ActionResult {
+  const prevCallerSeat = state.callState.callerSeat!;
+  const nextDealer = state.isFirstRound ? counterSeat : state.dealer!;
+  const nextBankerTeam = getSeatTeam(nextDealer);
+
+  const counteredSeats = state.callState.counteredSeats.includes(counterSeat)
+    ? state.callState.counteredSeats
+    : [...state.callState.counteredSeats, counterSeat];
+  const beenCounteredSeats = state.callState.beenCounteredSeats.includes(prevCallerSeat)
+    ? state.callState.beenCounteredSeats
+    : [...state.callState.beenCounteredSeats, prevCallerSeat];
+
+  const updated: GameState = {
+    ...state,
+    dealer: nextDealer,
+    bankerTeam: nextBankerTeam,
+    trumpSuit: suit,
+    hands: sortAllHands(state.hands, suit, state.levelRank),
+    callState: {
+      ...state.callState,
+      callerSeat: counterSeat,
+      callerTeam: counterTeam,
+      calledSuit: suit,
+      calledCount: shownCards.length,
+      counterAttempts: state.callState.counterAttempts + 1,
+      counteredSeats,
+      beenCounteredSeats,
+      passedCounterSeats: [],
+      pendingCounter: null,
+      seatCallDisplays: {
+        ...state.callState.seatCallDisplays,
+        [counterSeat]: { kind: displayKind, suit, cards: shownCards },
+      },
+    },
+  };
+
+  return {
+    ok: true,
+    state: advanceCounterOrBury(updated, [ev]),
+    events: [ev],
   };
 }
 
@@ -732,9 +966,6 @@ function handleCounterBid(
 ): ActionResult {
   if (state.phase !== 'COUNTER_BIDDING') {
     return { ok: false, code: 'INVALID_PHASE', error: '当前不在反主阶段' };
-  }
-  if (state.currentTurn !== seat) {
-    return { ok: false, code: 'NOT_YOUR_TURN', error: '未轮到该座位反主' };
   }
   if (!state.callState.eligibleCounterSeats.includes(seat)) {
     return { ok: false, code: 'NOT_ELIGIBLE', error: '该座位当前无反主资格' };
@@ -764,6 +995,7 @@ function handleCounterBid(
   }
 
   const handMap = new Map(state.hands[seat].map((c) => [c.id, c]));
+  const counterCards: Card[] = [];
   for (const id of cardIds) {
     const card = handMap.get(id);
     if (!card || card.rank !== state.levelRank || card.suit !== suit) {
@@ -773,84 +1005,168 @@ function handleCounterBid(
         error: `反主牌必须是花色为 ${suit} 的级牌 ${state.levelRank}`,
       };
     }
+    counterCards.push(card);
   }
 
   const counterTeam = getSeatTeam(seat);
   const callerSeat = state.callState.callerSeat!;
+  const calledSuit = state.callState.calledSuit!;
 
-  let counterSuccess = false;
-  let usedBipai = false;
-  let counterBipai = 0;
-  let callerBipai = 0;
-
-  if (state.isFirstRound && state.callState.calledCount === 2) {
-    counterSuccess = true;
-  } else {
-    usedBipai = true;
-    counterBipai = countBipai(state.hands[seat], state.levelRank);
-    callerBipai = countBipai(state.hands[callerSeat], state.levelRank);
-    counterSuccess = counterBipai > callerBipai;
+  // First round: judge 2-vs-3 by caller's ACTUAL held count of that suit's 2s (not just shown count!)
+  if (state.isFirstRound) {
+    const callerOwnedSuitCount = state.hands[callerSeat].filter(
+      (c) => c.rank === state.levelRank && c.suit === calledSuit,
+    ).length;
+    if (callerOwnedSuitCount < 3) {
+      const ev: GameEvent = {
+        type: 'COUNTER_SUCCESS',
+        seat,
+        team: counterTeam,
+        message: `座位 ${seat + 1} 以 3 张 ${suit}2 压过原叫主方（仅持 ${callerOwnedSuitCount} 张 ${calledSuit}2），反主抢庄成功`,
+        payload: { suit, usedBipai: false, callerOwnedSuitCount },
+      };
+      return applyCounterSuccessTransition(
+        state,
+        seat,
+        counterTeam,
+        suit,
+        counterCards,
+        'COUNTER_SUCCESS',
+        ev,
+      );
+    }
   }
 
-  const events: GameEvent[] = [];
-  if (counterSuccess) {
-    const nextDealer = state.isFirstRound ? seat : state.dealer!;
-    const nextBankerTeam = getSeatTeam(nextDealer);
-    const ev: GameEvent = {
-      type: 'COUNTER_SUCCESS',
-      seat,
-      team: counterTeam,
-      message: usedBipai
-        ? `座位 ${seat} 比牌 ${counterBipai} > ${callerBipai} 反主成功，主花色改为 ${suit}`
-        : `座位 ${seat} 以 3 张 ${suit}2 压过 2 张叫主，反主抢庄成功`,
-      payload: { suit, usedBipai, counterBipai, callerBipai },
-    };
-    events.push(ev);
+  // Enter COUNTER_RESPONSE: let the current trump holder choose ACCEPT_COUNTER (let it pass) or DEFEND_COUNTER (compare 21 bipai)
+  const ev: GameEvent = {
+    type: 'COUNTER_PROPOSED',
+    seat,
+    team: counterTeam,
+    message: `座位 ${seat + 1} 亮 ${suit}${state.levelRank} 发起反主，等待座位 ${callerSeat + 1} 选择接受让反或比牌`,
+    payload: { suit, callerSeat, counterSeat: seat },
+  };
 
-    const updated: GameState = {
+  return {
+    ok: true,
+    state: {
       ...state,
-      dealer: nextDealer,
-      bankerTeam: nextBankerTeam,
-      trumpSuit: suit,
-      hands: sortAllHands(state.hands, suit, state.levelRank),
+      phase: 'COUNTER_RESPONSE',
+      currentTurn: callerSeat,
       callState: {
         ...state.callState,
-        callerSeat: seat,
-        callerTeam: counterTeam,
-        calledSuit: suit,
-        calledCount: cardIds.length,
-        counterAttempts: state.callState.counterAttempts + 1,
-        failedCounterSeats: [],
-        passedCounterSeats: [],
+        pendingCounter: {
+          seat,
+          team: counterTeam,
+          suit,
+          cardIds: [...cardIds],
+        },
+        seatCallDisplays: {
+          ...state.callState.seatCallDisplays,
+          [seat]: { kind: 'COUNTER', suit, cards: counterCards },
+        },
       },
-    };
-    return {
-      ok: true,
-      state: advanceCounterOrBury(updated, events),
-      events,
-    };
+      events: [...state.events, ev],
+    },
+    events: [ev],
+  };
+}
+
+function handleAcceptCounter(state: GameState, seat: Seat): ActionResult {
+  if (state.phase !== 'COUNTER_RESPONSE' || !state.callState.pendingCounter) {
+    return { ok: false, code: 'INVALID_PHASE', error: '当前不在被反主确认阶段' };
+  }
+  if (state.callState.callerSeat !== seat) {
+    return { ok: false, code: 'NOT_YOUR_TURN', error: '只有被反主方可决定是否接受让反' };
   }
 
-  // Counter-bid failed: apply penalty (+1) to counterTeam; keep caller & trump unchanged
+  const pending = state.callState.pendingCounter;
+  const counterHandMap = new Map(state.hands[pending.seat].map((c) => [c.id, c]));
+  const shownCards = pending.cardIds
+    .map((id) => counterHandMap.get(id))
+    .filter((c): c is Card => c !== undefined);
+
+  const ev: GameEvent = {
+    type: 'COUNTER_ACCEPTED',
+    seat: pending.seat,
+    team: pending.team,
+    message: `座位 ${seat + 1} 同意被反，主花色改为 ${pending.suit}（无比牌惩罚）`,
+    payload: { suit: pending.suit, acceptedBy: seat, counterSeat: pending.seat },
+  };
+
+  return applyCounterSuccessTransition(
+    state,
+    pending.seat,
+    pending.team,
+    pending.suit,
+    shownCards,
+    'COUNTER_ACCEPTED',
+    ev,
+  );
+}
+
+function handleDefendCounter(state: GameState, seat: Seat): ActionResult {
+  if (state.phase !== 'COUNTER_RESPONSE' || !state.callState.pendingCounter) {
+    return { ok: false, code: 'INVALID_PHASE', error: '当前不在被反主确认阶段' };
+  }
+  if (state.callState.callerSeat !== seat) {
+    return { ok: false, code: 'NOT_YOUR_TURN', error: '只有被反主方可选择迎战比牌' };
+  }
+
+  const pending = state.callState.pendingCounter;
+  const counterHandMap = new Map(state.hands[pending.seat].map((c) => [c.id, c]));
+  const shownCards = pending.cardIds
+    .map((id) => counterHandMap.get(id))
+    .filter((c): c is Card => c !== undefined);
+  const counterBipai = countBipai(state.hands[pending.seat], state.levelRank);
+  const callerBipai = countBipai(state.hands[seat], state.levelRank);
+
+  if (counterBipai > callerBipai) {
+    const ev: GameEvent = {
+      type: 'COUNTER_SUCCESS',
+      seat: pending.seat,
+      team: pending.team,
+      message: `座位 ${pending.seat + 1} 比牌 ${counterBipai} > ${callerBipai} 反主成功，主花色改为 ${pending.suit}`,
+      payload: {
+        suit: pending.suit,
+        usedBipai: true,
+        counterBipai,
+        callerBipai,
+      },
+    };
+    return applyCounterSuccessTransition(
+      state,
+      pending.seat,
+      pending.team,
+      pending.suit,
+      shownCards,
+      'COUNTER_SUCCESS',
+      ev,
+    );
+  }
+
+  // Counter-bid failed: apply penalty (+1) to counterTeam; counterSeat marked as countered; keep caller & trump unchanged
   const updatedTeams: Record<TeamId, TeamScoreState> = {
     A: { ...state.teams.A },
     B: { ...state.teams.B },
   };
-  updatedTeams[counterTeam].penaltyCount += 1;
+  updatedTeams[pending.team].penaltyCount += 1;
 
   const ev: GameEvent = {
     type: 'COUNTER_FAILED',
-    seat,
-    team: counterTeam,
-    message: `座位 ${seat} 反主失败（比牌 ${counterBipai} <= ${callerBipai}），${counterTeam}队罚多打 1 次当前级牌（累计惩罚 ${updatedTeams[counterTeam].penaltyCount}）`,
+    seat: pending.seat,
+    team: pending.team,
+    message: `座位 ${pending.seat + 1} 反主失败（比牌 ${counterBipai} <= ${callerBipai}），${pending.team}队罚多打 1 次当前级牌（累计惩罚 ${updatedTeams[pending.team].penaltyCount}）`,
     payload: {
-      suit,
+      suit: pending.suit,
       counterBipai,
       callerBipai,
-      penaltyCount: updatedTeams[counterTeam].penaltyCount,
+      penaltyCount: updatedTeams[pending.team].penaltyCount,
     },
   };
-  events.push(ev);
+
+  const counteredSeats = state.callState.counteredSeats.includes(pending.seat)
+    ? state.callState.counteredSeats
+    : [...state.callState.counteredSeats, pending.seat];
 
   const updated: GameState = {
     ...state,
@@ -858,22 +1174,26 @@ function handleCounterBid(
     callState: {
       ...state.callState,
       counterAttempts: state.callState.counterAttempts + 1,
-      failedCounterSeats: [...state.callState.failedCounterSeats, seat],
+      counteredSeats,
+      failedCounterSeats: [...state.callState.failedCounterSeats, pending.seat],
+      pendingCounter: null,
+      seatCallDisplays: {
+        ...state.callState.seatCallDisplays,
+        [pending.seat]: { kind: 'COUNTER_FAILED', suit: pending.suit, cards: shownCards },
+      },
     },
   };
+
   return {
     ok: true,
-    state: advanceCounterOrBury(updated, events),
-    events,
+    state: advanceCounterOrBury(updated, [ev]),
+    events: [ev],
   };
 }
 
 function handlePassCounter(state: GameState, seat: Seat): ActionResult {
   if (state.phase !== 'COUNTER_BIDDING') {
     return { ok: false, code: 'INVALID_PHASE', error: '当前不在反主阶段' };
-  }
-  if (state.currentTurn !== seat) {
-    return { ok: false, code: 'NOT_YOUR_TURN', error: '未轮到该座位操作' };
   }
   if (!state.callState.eligibleCounterSeats.includes(seat)) {
     return { ok: false, code: 'NOT_ELIGIBLE', error: '该座位当前无反主资格' };
@@ -882,7 +1202,7 @@ function handlePassCounter(state: GameState, seat: Seat): ActionResult {
   const ev: GameEvent = {
     type: 'PASS_COUNTER',
     seat,
-    message: `座位 ${seat} 放弃反主`,
+    message: `座位 ${seat + 1} 放弃反主`,
   };
 
   const updated: GameState = {
@@ -896,6 +1216,21 @@ function handlePassCounter(state: GameState, seat: Seat): ActionResult {
   return {
     ok: true,
     state: advanceCounterOrBury(updated, [ev]),
+    events: [ev],
+  };
+}
+
+function handleFinishCounterWindow(state: GameState): ActionResult {
+  if (state.phase !== 'COUNTER_BIDDING') {
+    return { ok: false, code: 'INVALID_PHASE', error: '当前不在反主倒计时阶段' };
+  }
+  const ev: GameEvent = {
+    type: 'COUNTER_WINDOW_ENDED',
+    message: '反主倒计时结束，主花色锁定',
+  };
+  return {
+    ok: true,
+    state: enterBuryingPhase(state, [ev]),
     events: [ev],
   };
 }
@@ -946,7 +1281,7 @@ function handleBuryBottom(
   const ev: GameEvent = {
     type: 'BURY_COMPLETE',
     seat,
-    message: `庄家（座位 ${seat}）埋底完成，开始出牌`,
+    message: `庄家（座位 ${seat + 1}）埋底完成，开始出牌`,
   };
 
   return {
@@ -1001,13 +1336,13 @@ function handlePlayCards(
       events.push({
         type: 'SLING_FAILED',
         seat,
-        message: `座位 ${seat} 甩牌失败，强制打出最小被管上牌：${effectiveCards.map(formatCardLabel).join(' ')}`,
+        message: `座位 ${seat + 1} 甩牌失败，强制打出最小被管上牌：${effectiveCards.map(formatCardLabel).join(' ')}`,
       });
     } else {
       events.push({
         type: 'CARD_PLAYED',
         seat,
-        message: `座位 ${seat} 领出：${effectiveCards.map(formatCardLabel).join(' ')}`,
+        message: `座位 ${seat + 1} 领出：${effectiveCards.map(formatCardLabel).join(' ')}`,
       });
     }
   } else {
@@ -1028,7 +1363,7 @@ function handlePlayCards(
     events.push({
       type: 'CARD_PLAYED',
       seat,
-      message: `座位 ${seat} 跟牌：${effectiveCards.map(formatCardLabel).join(' ')}`,
+      message: `座位 ${seat + 1} 跟牌：${effectiveCards.map(formatCardLabel).join(' ')}`,
     });
   }
 
@@ -1071,6 +1406,8 @@ function handlePlayCards(
       : winnerTeam !== state.bankerTeam;
   const nextChallengerPoints =
     state.challengerPoints + (isChallengerWinner ? pointsInTrick : 0);
+  const nextBankerPoints =
+    state.bankerPoints + (isChallengerWinner ? 0 : pointsInTrick);
 
   const completedTrick = {
     trickNumber: state.completedTricks.length + 1,
@@ -1085,7 +1422,7 @@ function handlePlayCards(
     type: 'TRICK_COMPLETE',
     seat: winnerSeat,
     team: winnerTeam,
-    message: `第 ${completedTrick.trickNumber} 墩结束，座位 ${winnerSeat} 赢墩${pointsInTrick > 0 ? `（含 ${pointsInTrick} 分）` : ''}`,
+    message: `第 ${completedTrick.trickNumber} 墩结束，座位 ${winnerSeat + 1} 赢墩${pointsInTrick > 0 ? `（含 ${pointsInTrick} 分）` : ''}`,
     payload: { pointsInTrick, killedByTrump },
   });
 
@@ -1101,6 +1438,7 @@ function handlePlayCards(
         currentTurn: winnerSeat,
         completedTricks: [...state.completedTricks, completedTrick],
         challengerPoints: nextChallengerPoints,
+        bankerPoints: nextBankerPoints,
         events: [...state.events, ...events],
       },
       events,
@@ -1122,7 +1460,7 @@ function handlePlayCards(
     events.push({
       type: 'ROUND_SETTLED',
       seat: state.dealer!,
-      message: `打黑心结算：叫分 ${settlement.bidScore}，闲家总分 ${settlement.totalChallengerScore}（含抠底 ${settlement.bottomBonusPoints}），庄家净分 ${settlement.bankerNetScore}，${settlement.bankerWon ? '庄家胜' : '闲家胜'}`,
+      message: `打黑心结算：叫分 ${settlement.bidScore}，庄家得分 ${settlement.bankerNetScore}（闲家总分 ${settlement.totalChallengerScore}${settlement.bottomKilled ? `，含抠底 ${settlement.bottomBonusPoints}` : ''}），${settlement.bankerWon ? '庄家胜' : '闲家胜'}`,
       payload: { settlement },
     });
     return {
@@ -1137,6 +1475,7 @@ function handlePlayCards(
         currentTurn: null,
         completedTricks: [...state.completedTricks, completedTrick],
         challengerPoints: nextChallengerPoints,
+        bankerPoints: nextBankerPoints,
         settlement,
         matchWinner: null,
         events: [...state.events, ...events],
@@ -1175,6 +1514,7 @@ function handlePlayCards(
       currentTurn: null,
       completedTricks: [...state.completedTricks, completedTrick],
       challengerPoints: nextChallengerPoints,
+      bankerPoints: nextBankerPoints,
       settlement,
       matchWinner: settlement.matchWinner,
       events: [...state.events, ...events],
@@ -1185,6 +1525,12 @@ function handlePlayCards(
 
 export function applyAction(state: GameState, action: GameAction): ActionResult {
   switch (action.type) {
+    case 'DEAL_STEP':
+      return handleDealStep(state);
+    case 'FINISH_CALL_WINDOW':
+      return handleFinishCallWindow(state);
+    case 'FINISH_COUNTER_WINDOW':
+      return handleFinishCounterWindow(state);
     case 'BID_SCORE':
       return handleBidScore(state, action.seat, action.score);
     case 'PASS_BID':
@@ -1197,6 +1543,10 @@ export function applyAction(state: GameState, action: GameAction): ActionResult 
       return handlePassCall(state, action.seat);
     case 'COUNTER_BID':
       return handleCounterBid(state, action.seat, action.suit, action.cardIds);
+    case 'ACCEPT_COUNTER':
+      return handleAcceptCounter(state, action.seat);
+    case 'DEFEND_COUNTER':
+      return handleDefendCounter(state, action.seat);
     case 'PASS_COUNTER':
       return handlePassCounter(state, action.seat);
     case 'BURY_BOTTOM':
@@ -1243,6 +1593,35 @@ export function getPlayerView(
       }
     : undefined;
 
+  const capturedPointCards: Card[] = [];
+  const escapedPointCards: Card[] = [];
+  for (const trick of state.completedTricks) {
+    const ptsCards = trick.plays
+      .flatMap((p) => p.cards)
+      .filter((c) => getCardPoints(c) > 0);
+    if (ptsCards.length === 0) continue;
+    const isChallengerWinner =
+      state.mode === 'heixin'
+        ? trick.winnerSeat !== state.dealer
+        : getSeatTeam(trick.winnerSeat) !== state.bankerTeam;
+    // hongxin: challengers capture points (banker escapes); heixin: banker captures points (challengers escape)
+    const isCaptured =
+      state.mode === 'hongxin' ? isChallengerWinner : !isChallengerWinner;
+    if (isCaptured) {
+      capturedPointCards.push(...ptsCards);
+    } else {
+      escapedPointCards.push(...ptsCards);
+    }
+  }
+
+  const clonedDisplays: CallState['seatCallDisplays'] = {};
+  for (const s of ALL_SEATS) {
+    const d = state.callState.seatCallDisplays[s];
+    if (d) {
+      clonedDisplays[s] = { ...d, cards: [...d.cards] };
+    }
+  }
+
   return {
     mode: state.mode,
     viewerSeat: seat,
@@ -1267,6 +1646,7 @@ export function getPlayerView(
       2: state.hands[2].length,
       3: state.hands[3].length,
     },
+    dealtCount: state.dealtCount,
     bottomCount: state.phase === 'BURYING' ? 0 : state.bottomCards.length,
     revealedBottom: showBottom ? [...state.bottomCards] : null,
     bidState: state.bidState
@@ -1275,9 +1655,18 @@ export function getPlayerView(
     callState: {
       ...state.callState,
       passedSeats: [...state.callState.passedSeats],
+      counteredSeats: [...state.callState.counteredSeats],
+      beenCounteredSeats: [...state.callState.beenCounteredSeats],
       failedCounterSeats: [...state.callState.failedCounterSeats],
       passedCounterSeats: [...state.callState.passedCounterSeats],
       eligibleCounterSeats: [...state.callState.eligibleCounterSeats],
+      pendingCounter: state.callState.pendingCounter
+        ? {
+            ...state.callState.pendingCounter,
+            cardIds: [...state.callState.pendingCounter.cardIds],
+          }
+        : null,
+      seatCallDisplays: clonedDisplays,
     },
     currentTrickLeadSeat: state.currentTrickLeadSeat,
     currentTrick: state.currentTrick.map((t) => ({ ...t })),
@@ -1287,6 +1676,17 @@ export function getPlayerView(
         : null,
     trickNumber: state.completedTricks.length + 1,
     challengerPoints: state.challengerPoints,
+    bankerPoints: state.bankerPoints,
+    capturedPointCards: sortHandForDisplay(
+      capturedPointCards,
+      state.trumpSuit,
+      state.levelRank,
+    ),
+    escapedPointCards: sortHandForDisplay(
+      escapedPointCards,
+      state.trumpSuit,
+      state.levelRank,
+    ),
     settlement: state.settlement,
     matchWinner: state.matchWinner,
     events: state.events.slice(-20),

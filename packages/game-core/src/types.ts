@@ -40,6 +40,8 @@ export interface GameState {
   trumpSuit: StandardSuit | null;
   currentTurn: Seat | null;
   hands: Record<Seat, Card[]>;
+  undealtHands: Record<Seat, Card[]>;
+  dealtCount: number;
   bottomCards: Card[];
   bidState: BidState | null;
   callState: CallState;
@@ -47,6 +49,7 @@ export interface GameState {
   currentTrick: TrickPlay[];
   completedTricks: CompletedTrick[];
   challengerPoints: number;
+  bankerPoints: number;
   settlement: RoundSettlement | null;
   matchWinner: TeamId | null;
   events: GameEvent[];

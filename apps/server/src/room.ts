@@ -3,14 +3,17 @@ import { WebSocket } from 'ws';
 import {
   applyAction,
   chooseBotAction,
+  chooseBotDealingCallAction,
   createInitialMatchState,
   getPlayerView,
   getSeatTeam,
+  startNextRound,
   type GameState,
 } from '@jinshan/game-core';
 import type {
   GameAction,
   GameMode,
+  GamePhase,
   RoomSeatInfo,
   RoomSummary,
   Seat,
@@ -22,6 +25,7 @@ interface SeatSlot {
   seat: Seat;
   occupied: boolean;
   playerId: string | null;
+  userId: number | null;
   name: string;
   isBot: boolean;
   connected: boolean;
@@ -30,13 +34,30 @@ interface SeatSlot {
   ws: WebSocket | null;
 }
 
-export interface RoomOptions {
+export interface RoomTimingOptions {
+  withDealing?: boolean;
+  dealStepMs?: number;
+  callWindowMs?: number;
+  counterWindowMs?: number;
+  reCounterWindowMs?: number;
+  responseTimeoutMs?: number;
+  trickIntervalMs?: number;
+  disconnectGraceMs?: number;
+}
+
+export interface RoomOptions extends RoomTimingOptions {
   roomId: string;
   mode?: GameMode;
   debugMode?: boolean;
   botDelayMs?: number;
   store?: HistoryStore;
 }
+
+const INTERNAL_ONLY_ACTIONS = new Set([
+  'DEAL_STEP',
+  'FINISH_CALL_WINDOW',
+  'FINISH_COUNTER_WINDOW',
+]);
 
 export class GameRoom {
   readonly roomId: string;
@@ -47,11 +68,27 @@ export class GameRoom {
   hostSeat: Seat = 0;
 
   private readonly botDelayMs: number;
+  private readonly withDealing: boolean;
+  private readonly dealStepMs: number;
+  private readonly callWindowMs: number;
+  private readonly counterWindowMs: number;
+  private readonly reCounterWindowMs: number;
+  private readonly responseTimeoutMs: number;
+  private readonly trickIntervalMs: number;
+  private readonly disconnectGraceMs: number;
   private readonly store?: HistoryStore;
   private readonly seats: [SeatSlot, SeatSlot, SeatSlot, SeatSlot];
   private gameState: GameState | null = null;
   private matchId: number | null = null;
+
   private botTimer: ReturnType<typeof setTimeout> | null = null;
+  private dealTimer: ReturnType<typeof setTimeout> | null = null;
+  private phaseTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly disconnectTimers = new Map<Seat, ReturnType<typeof setTimeout>>();
+  private phaseDeadlineMs: number | null = null;
+  private phaseWindowTotalSec: number | null = null;
+  private phaseTimerKey: string | null = null;
+  private trickPauseUntilMs: number | null = null;
   private disposed = false;
 
   constructor(options: RoomOptions) {
@@ -60,12 +97,21 @@ export class GameRoom {
     this.debugMode = options.debugMode ?? false;
     this.debugOpenHands = false;
     this.botDelayMs = options.botDelayMs ?? 450;
+    this.withDealing = options.withDealing ?? true;
+    this.dealStepMs = options.dealStepMs ?? 135;
+    this.callWindowMs = options.callWindowMs ?? 10000;
+    this.counterWindowMs = options.counterWindowMs ?? 10000;
+    this.reCounterWindowMs = options.reCounterWindowMs ?? 5000;
+    this.responseTimeoutMs = options.responseTimeoutMs ?? 10000;
+    this.trickIntervalMs = options.trickIntervalMs ?? 500;
+    this.disconnectGraceMs = options.disconnectGraceMs ?? 15000;
     this.store = options.store;
 
     this.seats = [0, 1, 2, 3].map((s) => ({
       seat: s as Seat,
       occupied: false,
       playerId: null,
+      userId: null,
       name: `空位 ${s + 1}`,
       isBot: false,
       connected: false,
@@ -91,6 +137,7 @@ export class GameRoom {
       team: getSeatTeam(s.seat),
       occupied: s.occupied,
       playerId: s.playerId,
+      userId: s.userId,
       name: s.name,
       isBot: s.isBot,
       connected: s.connected,
@@ -109,6 +156,21 @@ export class GameRoom {
     };
   }
 
+  private buildViewForSeat(seat: Seat) {
+    const allowDebug = this.debugMode && this.debugOpenHands;
+    const view = getPlayerView(this.gameState!, seat, allowDebug);
+    const trickPauseMs =
+      this.trickPauseUntilMs !== null
+        ? Math.max(0, this.trickPauseUntilMs - Date.now())
+        : null;
+    return {
+      ...view,
+      phaseDeadlineMs: this.phaseDeadlineMs,
+      phaseWindowTotalSec: this.phaseWindowTotalSec,
+      trickPauseMs: trickPauseMs && trickPauseMs > 0 ? trickPauseMs : null,
+    };
+  }
+
   private broadcastRoomSummary(): void {
     const room = this.getSummary();
     for (const slot of this.seats) {
@@ -120,11 +182,12 @@ export class GameRoom {
 
   private broadcastGameState(): void {
     if (!this.gameState) return;
-    const allowDebug = this.debugMode && this.debugOpenHands;
     for (const slot of this.seats) {
       if (!slot.isBot && slot.connected) {
-        const view = getPlayerView(this.gameState, slot.seat, allowDebug);
-        this.send(slot.ws, { type: 'GAME_STATE', view });
+        this.send(slot.ws, {
+          type: 'GAME_STATE',
+          view: this.buildViewForSeat(slot.seat),
+        });
       }
     }
   }
@@ -148,6 +211,7 @@ export class GameRoom {
         slot.occupied = true;
         slot.isBot = true;
         slot.playerId = `bot-${slot.seat}`;
+        slot.userId = null;
         slot.name = `机器人 ${slot.seat + 1}`;
         slot.connected = true;
         slot.ready = true;
@@ -161,6 +225,7 @@ export class GameRoom {
     playerName: string,
     ws: WebSocket,
     preferredSeat?: Seat,
+    userId: number | null = null,
   ): { playerId: string; seat: Seat } {
     if (this.status !== 'WAITING') {
       throw new Error('游戏已经开始，无法加入新玩家');
@@ -174,7 +239,6 @@ export class GameRoom {
       targetSlot = this.seats.find((s) => !s.occupied);
     }
     if (!targetSlot) {
-      // Displace a bot seat if room has bots
       for (let i = 3; i >= 0; i--) {
         if (this.seats[i].isBot) {
           targetSlot = this.seats[i];
@@ -192,6 +256,7 @@ export class GameRoom {
 
     targetSlot.occupied = true;
     targetSlot.playerId = playerId;
+    targetSlot.userId = userId;
     targetSlot.name = trimmedName;
     targetSlot.isBot = false;
     targetSlot.connected = true;
@@ -215,19 +280,35 @@ export class GameRoom {
     return { playerId, seat: targetSlot.seat };
   }
 
+  private clearDisconnectTimer(seat: Seat): void {
+    const t = this.disconnectTimers.get(seat);
+    if (t) {
+      clearTimeout(t);
+      this.disconnectTimers.delete(seat);
+    }
+  }
+
   reconnect(playerId: string, ws: WebSocket): Seat {
     const slot = this.seats.find((s) => s.playerId === playerId && !s.isBot);
     if (!slot) {
       throw new Error('无效的玩家会话，无法重连');
     }
 
-    if (slot.ws && slot.ws !== ws && slot.ws.readyState === WebSocket.OPEN) {
-      slot.ws.close();
-    }
-
+    this.clearDisconnectTimer(slot.seat);
+    const oldWs = slot.ws;
+    // Swap slot.ws BEFORE closing oldWs so oldWs's async 'close' event sees slot.ws !== oldWs and is ignored
     slot.ws = ws;
     slot.connected = true;
     slot.autoBot = false;
+
+    if (oldWs && oldWs !== ws && oldWs.readyState === WebSocket.OPEN) {
+      oldWs.close();
+    }
+
+    if (this.gameState && this.gameState.currentTurn === slot.seat) {
+      this.clearBotTimer();
+      this.scheduleActivities();
+    }
 
     this.send(ws, {
       type: 'ROOM_JOINED',
@@ -239,33 +320,47 @@ export class GameRoom {
     this.broadcastRoomSummary();
 
     if (this.gameState) {
-      const allowDebug = this.debugMode && this.debugOpenHands;
       this.send(ws, {
         type: 'GAME_STATE',
-        view: getPlayerView(this.gameState, slot.seat, allowDebug),
+        view: this.buildViewForSeat(slot.seat),
       });
     }
 
     return slot.seat;
   }
 
-  handleDisconnect(playerId: string): void {
+  handleDisconnect(playerId: string, ws?: WebSocket): void {
     const slot = this.seats.find((s) => s.playerId === playerId && !s.isBot);
     if (!slot) return;
+    // Ignore stale socket close events after player has already reconnected with a newer socket
+    if (ws && slot.ws !== ws) return;
 
     slot.connected = false;
     slot.ws = null;
 
     if (this.status === 'IN_GAME') {
-      slot.autoBot = true;
+      this.clearDisconnectTimer(slot.seat);
+      if (this.disconnectGraceMs <= 0) {
+        slot.autoBot = true;
+        this.broadcastRoomSummary();
+        this.scheduleActivities();
+        return;
+      }
       this.broadcastRoomSummary();
-      this.scheduleBotTurn();
+      const timer = setTimeout(() => {
+        this.disconnectTimers.delete(slot.seat);
+        if (this.disposed || slot.connected || this.status !== 'IN_GAME') return;
+        slot.autoBot = true;
+        this.broadcastRoomSummary();
+        this.scheduleActivities();
+      }, this.disconnectGraceMs);
+      this.disconnectTimers.set(slot.seat, timer);
       return;
     }
 
-    // In WAITING phase, leave seat vacant if host leaves reassign host
     slot.occupied = false;
     slot.playerId = null;
+    slot.userId = null;
     slot.name = `空位 ${slot.seat + 1}`;
     slot.ready = false;
 
@@ -311,6 +406,7 @@ export class GameRoom {
       target.occupied = true;
       target.isBot = true;
       target.playerId = `bot-${target.seat}`;
+      target.userId = null;
       target.name = `机器人 ${target.seat + 1}`;
       target.connected = true;
       target.ready = true;
@@ -320,6 +416,7 @@ export class GameRoom {
       target.occupied = false;
       target.isBot = false;
       target.playerId = null;
+      target.userId = null;
       target.name = `空位 ${target.seat + 1}`;
       target.connected = false;
       target.ready = false;
@@ -346,6 +443,7 @@ export class GameRoom {
     const temp = { ...to };
     to.occupied = from.occupied;
     to.playerId = from.playerId;
+    to.userId = from.userId;
     to.name = from.name;
     to.isBot = from.isBot;
     to.connected = from.connected;
@@ -357,6 +455,7 @@ export class GameRoom {
       from.occupied = true;
       from.isBot = true;
       from.playerId = `bot-${from.seat}`;
+      from.userId = null;
       from.name = `机器人 ${from.seat + 1}`;
       from.connected = true;
       from.ready = true;
@@ -366,6 +465,7 @@ export class GameRoom {
       from.occupied = false;
       from.isBot = false;
       from.playerId = null;
+      from.userId = null;
       from.name = `空位 ${from.seat + 1}`;
       from.connected = false;
       from.ready = false;
@@ -377,7 +477,6 @@ export class GameRoom {
       this.hostSeat = targetSeat;
     }
 
-    // Re-notify moved human of their new seat assignment
     if (to.playerId && to.ws) {
       this.send(to.ws, {
         type: 'ROOM_JOINED',
@@ -403,8 +502,13 @@ export class GameRoom {
     if (slot.isBot || !slot.occupied) return;
     slot.autoBot = enabled;
     this.broadcastRoomSummary();
-    if (enabled && this.status === 'IN_GAME') {
-      this.scheduleBotTurn();
+    if (this.status === 'IN_GAME') {
+      if (enabled) {
+        this.scheduleActivities();
+      } else if (this.gameState?.currentTurn === actorSeat) {
+        this.clearBotTimer();
+        this.scheduleActivities();
+      }
     }
   }
 
@@ -445,13 +549,15 @@ export class GameRoom {
     }
 
     this.status = 'IN_GAME';
-    this.gameState = createInitialMatchState({ mode: this.mode });
+    const initial = createInitialMatchState({
+      mode: this.mode,
+      withDealing: this.withDealing,
+    });
     if (this.store) {
       this.matchId = this.store.createMatch(this.roomId, this.mode);
     }
     this.broadcastRoomSummary();
-    this.broadcastGameState();
-    this.scheduleBotTurn();
+    this.applySuccessState(initial);
   }
 
   handleGameAction(actorSeat: Seat, action: GameAction): void {
@@ -460,8 +566,44 @@ export class GameRoom {
       return;
     }
 
-    if (action.type !== 'NEXT_ROUND' && action.seat !== actorSeat) {
+    if (
+      action.type === 'DEAL_STEP' ||
+      action.type === 'FINISH_CALL_WINDOW' ||
+      action.type === 'FINISH_COUNTER_WINDOW'
+    ) {
+      this.sendError(this.seats[actorSeat].ws, 'FORBIDDEN_ACTION', '系统内部指令不允许手动提交');
+      return;
+    }
+
+    if (action.type === 'NEXT_ROUND') {
+      if (this.gameState.phase !== 'ROUND_OVER' || !this.gameState.settlement) {
+        this.sendError(this.seats[actorSeat].ws, 'INVALID_PHASE', '当前不在局间结算状态');
+        return;
+      }
+      const next = startNextRound(this.gameState, {
+        withDealing: this.withDealing,
+      });
+      this.applySuccessState(next);
+      return;
+    }
+
+    if (action.seat !== actorSeat) {
       this.sendError(this.seats[actorSeat].ws, 'SEAT_MISMATCH', '不能代其他座位提交操作');
+      return;
+    }
+
+    if (
+      action.type === 'PLAY_CARDS' &&
+      this.gameState.phase === 'PLAYING' &&
+      this.gameState.currentTrick.length === 0 &&
+      this.trickPauseUntilMs !== null &&
+      Date.now() < this.trickPauseUntilMs
+    ) {
+      this.sendError(
+        this.seats[actorSeat].ws,
+        'TRICK_INTERVAL',
+        '新的一轮准备中，请稍候 0.5 秒出牌',
+      );
       return;
     }
 
@@ -474,9 +616,71 @@ export class GameRoom {
     this.applySuccessState(res.state);
   }
 
+  private clearPhaseTimer(): void {
+    if (this.phaseTimer) {
+      clearTimeout(this.phaseTimer);
+      this.phaseTimer = null;
+    }
+    this.phaseDeadlineMs = null;
+    this.phaseWindowTotalSec = null;
+    this.phaseTimerKey = null;
+  }
+
+  private clearDealTimer(): void {
+    if (this.dealTimer) {
+      clearTimeout(this.dealTimer);
+      this.dealTimer = null;
+    }
+  }
+
+  private clearBotTimer(): void {
+    if (this.botTimer) {
+      clearTimeout(this.botTimer);
+      this.botTimer = null;
+    }
+  }
+
+  private ensurePhaseWindowTimer(
+    key: string,
+    durationMs: number,
+    onTimeout: () => void,
+  ): void {
+    if (this.phaseTimerKey === key && this.phaseTimer !== null) {
+      return;
+    }
+    this.clearPhaseTimer();
+    this.phaseTimerKey = key;
+    this.phaseDeadlineMs = Date.now() + durationMs;
+    this.phaseWindowTotalSec = Math.max(1, Math.round(durationMs / 1000));
+    this.phaseTimer = setTimeout(() => {
+      this.phaseTimer = null;
+      this.phaseDeadlineMs = null;
+      this.phaseWindowTotalSec = null;
+      this.phaseTimerKey = null;
+      onTimeout();
+    }, durationMs);
+  }
+
   private applySuccessState(nextState: GameState): void {
-    const prevPhase = this.gameState?.phase;
+    const prevPhase: GamePhase | undefined = this.gameState?.phase;
+    const prevCompletedTricks = this.gameState?.completedTricks.length ?? 0;
     this.gameState = nextState;
+
+    // Enforce mandatory inter-trick interval (default 500ms) before each trick starts
+    if (
+      nextState.phase === 'PLAYING' &&
+      nextState.currentTrick.length === 0 &&
+      this.trickIntervalMs > 0 &&
+      (prevPhase !== 'PLAYING' ||
+        nextState.completedTricks.length > prevCompletedTricks)
+    ) {
+      this.trickPauseUntilMs = Date.now() + this.trickIntervalMs;
+    } else if (
+      nextState.phase !== 'PLAYING' ||
+      nextState.currentTrick.length > 0
+    ) {
+      this.trickPauseUntilMs = null;
+    }
 
     if (
       (nextState.phase === 'ROUND_OVER' || nextState.phase === 'MATCH_OVER') &&
@@ -485,7 +689,35 @@ export class GameRoom {
       this.store &&
       this.matchId !== null
     ) {
-      this.store.recordRound(this.matchId, nextState.settlement);
+      const settlement = nextState.settlement;
+      this.store.recordRound(this.matchId, settlement);
+
+      const userStatUpdates = this.seats
+        .filter((s) => !s.isBot && s.userId !== null)
+        .map((s) => {
+          if (settlement.mode === 'heixin') {
+            const won =
+              s.seat === settlement.dealer
+                ? settlement.bankerWon
+                : !settlement.bankerWon;
+            return {
+              userId: s.userId!,
+              mode: settlement.mode,
+              won,
+              scoreDelta: settlement.scoreDeltas?.[s.seat] ?? 0,
+            };
+          }
+          const won = getSeatTeam(s.seat) === settlement.earningTeam;
+          return {
+            userId: s.userId!,
+            mode: settlement.mode,
+            won,
+          };
+        });
+      if (userStatUpdates.length > 0) {
+        this.store.recordPlayerRoundStats(userStatUpdates);
+      }
+
       if (nextState.phase === 'MATCH_OVER' && nextState.matchWinner) {
         this.status = 'FINISHED';
         this.store.finishMatch(this.matchId, `${nextState.matchWinner}队获胜`);
@@ -497,31 +729,218 @@ export class GameRoom {
       this.broadcastRoomSummary();
     }
 
+    // Update phase deadline BEFORE broadcasting so clients get the exact countdown immediately
+    this.syncPhaseTimerForState(nextState);
     this.broadcastGameState();
-    this.scheduleBotTurn();
+    this.scheduleActivities();
   }
 
-  private scheduleBotTurn(): void {
-    if (this.botTimer) {
-      clearTimeout(this.botTimer);
-      this.botTimer = null;
-    }
-    if (this.disposed || !this.gameState) return;
-    if (
-      this.gameState.phase === 'ROUND_OVER' ||
-      this.gameState.phase === 'MATCH_OVER'
-    ) {
+  private syncPhaseTimerForState(state: GameState): void {
+    if (this.disposed) return;
+
+    if (state.phase === 'CALLING') {
+      const key = `CALLING:${state.roundNumber}`;
+      this.ensurePhaseWindowTimer(key, this.callWindowMs, () => {
+        if (this.disposed || !this.gameState || this.gameState.phase !== 'CALLING') return;
+        const res = applyAction(this.gameState, { type: 'FINISH_CALL_WINDOW' });
+        if (res.ok) this.applySuccessState(res.state);
+      });
       return;
     }
 
-    const turn = this.gameState.currentTurn;
+    if (state.phase === 'COUNTER_BIDDING') {
+      const attempts = state.callState.counterAttempts;
+      const durationMs =
+        attempts === 0 ? this.counterWindowMs : this.reCounterWindowMs;
+      const key = `COUNTER:${state.roundNumber}:${attempts}`;
+      this.ensurePhaseWindowTimer(key, durationMs, () => {
+        if (this.disposed || !this.gameState || this.gameState.phase !== 'COUNTER_BIDDING') {
+          return;
+        }
+        const res = applyAction(this.gameState, { type: 'FINISH_COUNTER_WINDOW' });
+        if (res.ok) this.applySuccessState(res.state);
+      });
+      return;
+    }
+
+    if (state.phase === 'COUNTER_RESPONSE') {
+      const callerSeat = state.callState.callerSeat;
+      const attempts = state.callState.counterAttempts;
+      const key = `RESPONSE:${state.roundNumber}:${attempts}:${callerSeat}`;
+      this.ensurePhaseWindowTimer(key, this.responseTimeoutMs, () => {
+        if (
+          this.disposed ||
+          !this.gameState ||
+          this.gameState.phase !== 'COUNTER_RESPONSE' ||
+          this.gameState.callState.callerSeat === null
+        ) {
+          return;
+        }
+        const res = applyAction(this.gameState, {
+          type: 'DEFEND_COUNTER',
+          seat: this.gameState.callState.callerSeat,
+        });
+        if (res.ok) this.applySuccessState(res.state);
+      });
+      return;
+    }
+
+    this.clearPhaseTimer();
+  }
+
+  private isForcedFinalHandTurn(state: GameState, seat: Seat): boolean {
+    if (state.phase !== 'PLAYING' || state.currentTrick.length === 0) {
+      return false;
+    }
+    const leadPlay = state.currentTrick[0];
+    return (
+      state.hands[leadPlay.seat].length === 0 &&
+      state.hands[seat].length > 0 &&
+      state.hands[seat].length === leadPlay.cards.length
+    );
+  }
+
+  private scheduleActivities(): void {
+    this.clearBotTimer();
+    this.clearDealTimer();
+    if (this.disposed || !this.gameState) return;
+    const state = this.gameState;
+
+    if (state.phase === 'ROUND_OVER' || state.phase === 'MATCH_OVER') {
+      return;
+    }
+
+    // 1. Dealing animation ticker
+    if (state.phase === 'DEALING') {
+      this.dealTimer = setTimeout(() => {
+        this.dealTimer = null;
+        this.executeDealStep();
+      }, this.dealStepMs);
+      return;
+    }
+
+    // 2. Post-deal free CALLING window: let bots act after a short human head-start
+    if (state.phase === 'CALLING') {
+      const pendingBotSeats = ([0, 1, 2, 3] as Seat[]).filter(
+        (s) =>
+          (this.seats[s].isBot || this.seats[s].autoBot) &&
+          !state.callState.passedSeats.includes(s),
+      );
+      if (pendingBotSeats.length > 0) {
+        const hasPendingHuman = ([0, 1, 2, 3] as Seat[]).some(
+          (s) =>
+            !this.seats[s].isBot &&
+            !this.seats[s].autoBot &&
+            !state.callState.passedSeats.includes(s),
+        );
+        const delay = hasPendingHuman
+          ? Math.min(Math.max(this.botDelayMs * 3, 1800), Math.floor(this.callWindowMs * 0.45))
+          : this.botDelayMs;
+        this.botTimer = setTimeout(() => {
+          this.botTimer = null;
+          this.executeCallingBot(pendingBotSeats[0]);
+        }, delay);
+      }
+      return;
+    }
+
+    // 3. Free COUNTER_BIDDING window: any eligible bot acts (give human teammate a small head-start)
+    if (state.phase === 'COUNTER_BIDDING') {
+      const eligibleBots = state.callState.eligibleCounterSeats.filter(
+        (s) => this.seats[s].isBot || this.seats[s].autoBot,
+      );
+      if (eligibleBots.length > 0) {
+        const hasEligibleHuman = state.callState.eligibleCounterSeats.some(
+          (s) => !this.seats[s].isBot && !this.seats[s].autoBot,
+        );
+        const windowMs =
+          state.callState.counterAttempts === 0
+            ? this.counterWindowMs
+            : this.reCounterWindowMs;
+        const delay = hasEligibleHuman
+          ? Math.min(Math.max(this.botDelayMs * 3, 1600), Math.floor(windowMs * 0.45))
+          : Math.min(Math.max(this.botDelayMs * 2, 20), Math.floor(windowMs * 0.35));
+        this.botTimer = setTimeout(() => {
+          this.botTimer = null;
+          this.executeCounterBot(eligibleBots[0]);
+        }, delay);
+      }
+      return;
+    }
+
+    // 4. Turn-based phases: COUNTER_RESPONSE, BIDDING, CHOOSE_TRUMP, BURYING, PLAYING
+    const turn = state.currentTurn;
     if (turn === null) return;
     const slot = this.seats[turn];
-    if (slot.isBot || slot.autoBot) {
+    const forcedFinalHand = this.isForcedFinalHandTurn(state, turn);
+    if (slot.isBot || slot.autoBot || forcedFinalHand) {
+      const pauseRemaining =
+        state.phase === 'PLAYING' &&
+        state.currentTrick.length === 0 &&
+        this.trickPauseUntilMs !== null
+          ? Math.max(0, this.trickPauseUntilMs - Date.now())
+          : 0;
+      const baseDelay = forcedFinalHand
+        ? Math.min(this.botDelayMs, 280)
+        : this.botDelayMs;
+      const delay = pauseRemaining + baseDelay;
       this.botTimer = setTimeout(() => {
         this.botTimer = null;
         this.executeBotTurn();
-      }, this.botDelayMs);
+      }, delay);
+    }
+  }
+
+  private executeDealStep(): void {
+    if (this.disposed || !this.gameState || this.gameState.phase !== 'DEALING') return;
+    const res = applyAction(this.gameState, { type: 'DEAL_STEP' });
+    if (!res.ok) return;
+
+    let next = res.state;
+    // Allow bots to call trump mid-dealing once enough cards are visible
+    if (
+      next.phase === 'DEALING' &&
+      next.mode === 'hongxin' &&
+      next.callState.callerSeat === null
+    ) {
+      for (const s of [0, 1, 2, 3] as Seat[]) {
+        if (this.seats[s].isBot || this.seats[s].autoBot) {
+          const callAct = chooseBotDealingCallAction(next, s);
+          if (callAct) {
+            const callRes = applyAction(next, callAct);
+            if (callRes.ok) {
+              next = callRes.state;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    this.applySuccessState(next);
+  }
+
+  private executeCallingBot(seat: Seat): void {
+    if (this.disposed || !this.gameState || this.gameState.phase !== 'CALLING') return;
+    if (!this.seats[seat].isBot && !this.seats[seat].autoBot) return;
+    if (this.gameState.callState.passedSeats.includes(seat)) return;
+    const action = chooseBotAction(this.gameState, seat);
+    const res = applyAction(this.gameState, action);
+    if (res.ok) {
+      this.applySuccessState(res.state);
+    }
+  }
+
+  private executeCounterBot(seat: Seat): void {
+    if (this.disposed || !this.gameState || this.gameState.phase !== 'COUNTER_BIDDING') {
+      return;
+    }
+    if (!this.seats[seat].isBot && !this.seats[seat].autoBot) return;
+    if (!this.gameState.callState.eligibleCounterSeats.includes(seat)) return;
+    const action = chooseBotAction(this.gameState, seat);
+    const res = applyAction(this.gameState, action);
+    if (res.ok) {
+      this.applySuccessState(res.state);
     }
   }
 
@@ -530,9 +949,17 @@ export class GameRoom {
     const turn = this.gameState.currentTurn;
     if (turn === null) return;
     const slot = this.seats[turn];
-    if (!slot.isBot && !slot.autoBot) return;
+    const forcedFinalHand = this.isForcedFinalHandTurn(this.gameState, turn);
+    if (!slot.isBot && !slot.autoBot && !forcedFinalHand) return;
 
-    const action = chooseBotAction(this.gameState, turn);
+    const action: GameAction =
+      forcedFinalHand && !slot.isBot && !slot.autoBot
+        ? {
+            type: 'PLAY_CARDS',
+            seat: turn,
+            cardIds: this.gameState.hands[turn].map((c) => c.id),
+          }
+        : chooseBotAction(this.gameState, turn);
     const res = applyAction(this.gameState, action);
     if (res.ok) {
       this.applySuccessState(res.state);
@@ -541,10 +968,13 @@ export class GameRoom {
 
   dispose(): void {
     this.disposed = true;
-    if (this.botTimer) {
-      clearTimeout(this.botTimer);
-      this.botTimer = null;
+    this.clearBotTimer();
+    this.clearDealTimer();
+    this.clearPhaseTimer();
+    for (const timer of this.disconnectTimers.values()) {
+      clearTimeout(timer);
     }
+    this.disconnectTimers.clear();
     for (const slot of this.seats) {
       if (slot.ws && slot.ws.readyState === WebSocket.OPEN) {
         slot.ws.close();

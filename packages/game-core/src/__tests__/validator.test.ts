@@ -19,113 +19,63 @@ function mk(suit: Card['suit'], rank: Card['rank'], count = 1): Card[] {
 }
 
 describe('follow-suit rules, sling validation, and trump kills', () => {
-  it('enforces mandatory suit and pair for PAIR, but NO forced pair-padding for TRIPLE or TRIPLE_TRACTOR', () => {
+  it('enforces ONLY same-category count (NO forced pair, triple, tractor, or triple-tractor follow)', () => {
     const trumpSuit = 'D' as const;
     const level = '2' as const;
 
-    // Lead TRIPLE ♠AAA
-    const leadTriple = parsePlay(mk('S', 'A', 3), trumpSuit, level)!;
-
-    // Follower has NO ♠ triples, but DOES have pairs ♠KK and ♠QQ plus singles ♠9, ♠7
+    // 1. Lead PAIR ♠QQ -> follower holding pair ♠KK & triple ♠JJJ may play ANY 2 spades!
+    const leadPair = parsePlay(mk('S', 'Q', 2), trumpSuit, level)!;
     const kPair = mk('S', 'K', 2);
-    const qPair = mk('S', 'Q', 2);
+    const jTriple = mk('S', 'J', 3);
     const s9 = mk('S', '9', 1);
     const s7 = mk('S', '7', 1);
-    const handNoTriple = [...kPair, ...qPair, ...s9, ...s7];
+    const h4 = mk('H', '4', 2);
+    const hand = [...kPair, ...jTriple, ...s9, ...s7, ...h4];
 
-    // Playing 3 unrelated singles [K, 9, 7] MUST be valid (NO forced pair-padding!)
-    const followNoPair = validateFollowPlay(
-      handNoTriple,
-      [kPair[0].id, s9[0].id, s7[0].id],
-      leadTriple,
-      trumpSuit,
-      level,
+    assert.equal(
+      validateFollowPlay(hand, [s9[0].id, s7[0].id], leadPair, trumpSuit, level).valid,
+      true,
     );
-    assert.equal(followNoPair.valid, true);
-
-    // Now follower DOES have a triple ♠JJJ -> MUST play the triple!
-    const jTriple = mk('S', 'J', 3);
-    const handWithTriple = [...jTriple, ...kPair, ...s9];
-    const breakTriple = validateFollowPlay(
-      handWithTriple,
-      [jTriple[0].id, jTriple[1].id, s9[0].id],
-      leadTriple,
-      trumpSuit,
-      level,
+    // Must still follow spades when holding spades (cannot play hearts!)
+    assert.equal(
+      validateFollowPlay(hand, [h4[0].id, h4[1].id], leadPair, trumpSuit, level).valid,
+      false,
     );
-    assert.equal(breakTriple.valid, false);
-    const playTriple = validateFollowPlay(
-      handWithTriple,
-      jTriple.map((c) => c.id),
-      leadTriple,
-      trumpSuit,
-      level,
+
+    // 2. Lead TRIPLE ♠AAA -> follower holding triple ♠JJJ may still keep it and play any 3 spades
+    const leadTriple = parsePlay(mk('S', 'A', 3), trumpSuit, level)!;
+    assert.equal(
+      validateFollowPlay(hand, [kPair[0].id, s9[0].id, s7[0].id], leadTriple, trumpSuit, level).valid,
+      true,
     );
-    assert.equal(playTriple.valid, true);
 
-    // Lead TRIPLE_TRACTOR ♠KKKAAA (6 cards). Follower has 1 triple ♠999 + pairs ♠JJ, ♠QQ, singles ♠7, ♠4.
-    const leadTT = parsePlay(
-      [...mk('S', 'K', 3), ...mk('S', 'A', 3)],
-      trumpSuit,
-      level,
-    )!;
-    const t9 = mk('S', '9', 3);
-    const pJ = mk('S', 'J', 2);
-    const pQ = mk('S', 'Q', 2);
-    const s4 = mk('S', '4', 1);
-    const handOneTriple = [...t9, ...pJ, ...pQ, ...s7, ...s4];
-
-    // Follower plays ♠999 + [J, 7, 4] (NO pair padding for the second triple slot!) -> VALID
-    const validTTFollow = validateFollowPlay(
-      handOneTriple,
-      [...t9.map((c) => c.id), pJ[0].id, s7[0].id, s4[0].id],
-      leadTT,
-      trumpSuit,
-      level,
-    );
-    assert.equal(validTTFollow.valid, true);
-
-    // Failing to play the 1 triple they DO have -> INVALID
-    const invalidTTFollow = validateFollowPlay(
-      handOneTriple,
-      [...pJ.map((c) => c.id), ...pQ.map((c) => c.id), s7[0].id, s4[0].id],
-      leadTT,
-      trumpSuit,
-      level,
-    );
-    assert.equal(invalidTTFollow.valid, false);
-  });
-
-  it('enforces mandatory tractor & pairs when following TRACTOR', () => {
-    const leadTractor = parsePlay(
-      [...mk('C', 'J', 2), ...mk('C', 'Q', 2)],
-      'D',
-      '2',
-    )!;
+    // 3. Lead TRACTOR ♣JJQQ -> follower holding tractor ♣7788 may still play any 4 clubs freely
+    const leadTractor = parsePlay([...mk('C', 'J', 2), ...mk('C', 'Q', 2)], 'D', '2')!;
     const c7 = mk('C', '7', 2);
     const c8 = mk('C', '8', 2);
     const c4 = mk('C', '4', 1);
     const c5 = mk('C', '5', 1);
-    const hand = [...c7, ...c8, ...c4, ...c5];
-
-    // Must play the 7788 tractor, cannot break it into [7, 8, 4, 5] or [7, 7, 4, 5]
+    const clubHand = [...c7, ...c8, ...c4, ...c5];
     assert.equal(
       validateFollowPlay(
-        hand,
-        [c7[0].id, c7[1].id, c4[0].id, c5[0].id],
+        clubHand,
+        [c7[0].id, c8[0].id, c4[0].id, c5[0].id],
         leadTractor,
         'D',
         '2',
       ).valid,
-      false,
+      true,
     );
+
+    // 4. Lead TRIPLE_TRACTOR ♠KKKAAA -> follower holding ♠999 + ♠JJ + singles may play any 6 spades
+    const leadTT = parsePlay([...mk('S', 'K', 3), ...mk('S', 'A', 3)], trumpSuit, level)!;
     assert.equal(
       validateFollowPlay(
         hand,
-        [...c7.map((c) => c.id), ...c8.map((c) => c.id)],
-        leadTractor,
-        'D',
-        '2',
+        [kPair[0].id, kPair[1].id, jTriple[0].id, jTriple[1].id, s9[0].id, s7[0].id],
+        leadTT,
+        trumpSuit,
+        level,
       ).valid,
       true,
     );
@@ -165,6 +115,88 @@ describe('follow-suit rules, sling validation, and trump kills', () => {
     assert.equal(okRes.valid, true);
     assert.equal(okRes.slingFailed, false);
     assert.equal(okRes.effectiveCards?.length, 5);
+  });
+
+  it('decomposes SLING optimally with F510K (e.g., ♦A + ♦510K succeeds when opponents lack ♦ triples)', () => {
+    const trumpSuit = 'S' as const;
+    const level = '2' as const;
+
+    // 1. Classic user case: ♦A + ♦5 + ♦10 + ♦K -> MUST decompose as [F510K, SINGLE(♦A)], NOT 4 singles!
+    const dA = mk('D', 'A', 1);
+    const d5 = mk('D', '5', 1);
+    const d10 = mk('D', '10', 1);
+    const dK = mk('D', 'K', 1);
+    const slingCards = [...dA, ...d5, ...d10, ...dK];
+
+    const parsed = parsePlay(slingCards, trumpSuit, level);
+    assert.ok(parsed);
+    assert.equal(parsed.patternType, 'SLING');
+    assert.equal(parsed.category, 'D');
+    assert.equal(parsed.components.some((c) => c.type === 'F510K' && c.length === 1), true);
+    assert.equal(parsed.components.some((c) => c.type === 'SINGLE' && c.cards[0].rank === 'A'), true);
+
+    // Opponent holds ♦6, ♦7, ♦K (beats single ♦5, but has NO ♦ triple and cannot beat ♦A) -> MUST SUCCEED!
+    const oppWithSix = [...mk('D', '6', 1), ...mk('D', '7', 1), ...mk('D', 'K', 1)];
+    const okSling = validateLeadPlay(
+      slingCards,
+      slingCards.map((c) => c.id),
+      [oppWithSix, mk('H', '4', 2), mk('C', '4', 2)],
+      trumpSuit,
+      level,
+    );
+    assert.equal(okSling.valid, true);
+    assert.equal(okSling.slingFailed, false);
+    assert.equal(okSling.effectiveCards?.length, 4);
+
+    // 2. Sling ♦Q + ♦510K when opponent has ♦K (beats ♦Q) but NO triple -> fails with ♦Q, NOT ♦5!
+    const dQ = mk('D', 'Q', 1);
+    const qSling = [...dQ, ...d5, ...d10, ...dK];
+    const failQ = validateLeadPlay(
+      qSling,
+      qSling.map((c) => c.id),
+      [oppWithSix, mk('H', '4', 2), mk('C', '4', 2)],
+      trumpSuit,
+      level,
+    );
+    assert.equal(failQ.valid, true);
+    assert.equal(failQ.slingFailed, true);
+    assert.equal(failQ.effectiveCards?.length, 1);
+    assert.equal(failQ.effectiveCards?.[0].rank, 'Q');
+
+    // 3. Off-suit borrowed sling: ♥A + ♥5 + ♥10 + ♥K when trump is ♠ (borrows ♥5)
+    const hSling = [...mk('H', 'A', 1), ...mk('H', '5', 1), ...mk('H', '10', 1), ...mk('H', 'K', 1)];
+    const hRes = validateLeadPlay(
+      hSling,
+      hSling.map((c) => c.id),
+      [mk('H', '8', 2), mk('C', '4', 2), mk('D', '4', 2)],
+      'S',
+      '2',
+    );
+    assert.equal(hRes.valid, true);
+    assert.equal(hRes.slingFailed, false);
+    assert.equal(hRes.parsed?.category, 'H');
+
+    // 4. Void follower can trump-kill ♦A + ♦510K with trump TRIPLE + trump SINGLE
+    const killCards = [...mk('S', '9', 3), ...mk('S', '4', 1)];
+    const killCheck = validateFollowPlay(
+      killCards,
+      killCards.map((c) => c.id),
+      okSling.parsed!,
+      trumpSuit,
+      level,
+    );
+    assert.equal(killCheck.valid, true);
+    assert.equal(killCheck.matchedTrumpKill, true);
+    const trickWin = resolveTrickWinner(
+      [
+        { seat: 0, cards: slingCards, parsed: okSling.parsed! },
+        { seat: 1, cards: killCards, parsed: killCheck.parsed! },
+      ],
+      trumpSuit,
+      level,
+    );
+    assert.equal(trickWin.winnerSeat, 1);
+    assert.equal(trickWin.killedByTrump, true);
   });
 
   it('resolves trump kill (毙牌) and over-kill (盖毙) correctly, including equal-rank first-played wins', () => {

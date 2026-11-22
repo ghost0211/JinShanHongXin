@@ -17,11 +17,11 @@ import {
   canMatchSlingStructure,
   compareMatchedComponents,
   enumerateChainCandidates,
+  enumeratePlayDecompositions,
   getSingleCategory,
   groupCardsByKey,
   parse510K,
   parsePlay,
-  type KeyGroup,
 } from './patterns.js';
 import type {
   FollowValidationResult,
@@ -29,238 +29,13 @@ import type {
   TrickPlay,
 } from './types.js';
 
-interface FollowProfile {
-  tripleScore: number[];
-  pairScore: number[];
-  bestTripleKeys: string[];
-  bestPairChainKeys: string[][];
-  bestExtraPairKeys: string[];
-}
-
-function compareNumberArrays(a: readonly number[], b: readonly number[]): number {
-  const len = Math.max(a.length, b.length);
-  for (let i = 0; i < len; i++) {
-    const va = a[i] ?? 0;
-    const vb = b[i] ?? 0;
-    if (va !== vb) return va - vb;
+function getBeatenFailureSortOrder(comp: AtomicPattern): number {
+  // F510K is a 3/6/9-card combo, strictly larger than singles/pairs when picking
+  // "smallest beaten component" on sling failure
+  if (comp.type === 'F510K') {
+    return 1000 + comp.length;
   }
-  return 0;
-}
-
-function compareProfiles(a: FollowProfile, b: FollowProfile): number {
-  const tDiff = compareNumberArrays(a.tripleScore, b.tripleScore);
-  if (tDiff !== 0) return tDiff;
-  return compareNumberArrays(a.pairScore, b.pairScore);
-}
-
-function evaluateChainDemandSatisfaction(
-  groups: readonly KeyGroup[],
-  multiplicity: 2 | 3,
-  demands: readonly number[],
-  totalSlots: number,
-  totalAvailableUnits: number,
-): { lengths: number[]; chainKeys: string[][]; unitScore: number[] } {
-  const unitCount = Math.min(totalSlots, totalAvailableUnits);
-  if (demands.length === 0) {
-    return { lengths: [], chainKeys: [], unitScore: [unitCount] };
-  }
-
-  if (demands.length === 1) {
-    const d = demands[0];
-    const chains = enumerateChainCandidates(groups, multiplicity, {
-      maxLength: d,
-    });
-    if (chains.length === 0) {
-      return { lengths: [0], chainKeys: [], unitScore: [0, unitCount] };
-    }
-    // Prefer longest chain; among ties prefer lowest topOrder for constructive fallback
-    const bestLen = chains[0].length;
-    const lowestOfBest = [...chains]
-      .filter((c) => c.length === bestLen)
-      .sort((a, b) => a.topOrder - b.topOrder)[0];
-    return {
-      lengths: [bestLen],
-      chainKeys: [lowestOfBest.keys],
-      unitScore: [bestLen, unitCount],
-    };
-  }
-
-  let bestLengths: number[] | null = null;
-  let bestChainKeys: string[][] = [];
-
-  const search = (
-    idx: number,
-    pool: readonly KeyGroup[],
-    lens: number[],
-    picked: string[][],
-  ) => {
-    if (idx === demands.length) {
-      if (!bestLengths || compareNumberArrays(lens, bestLengths) > 0) {
-        bestLengths = [...lens];
-        bestChainKeys = picked.map((k) => [...k]);
-      }
-      return;
-    }
-
-    const d = demands[idx];
-    const chains = enumerateChainCandidates(pool, multiplicity, {
-      maxLength: d,
-    });
-
-    if (chains.length === 0) {
-      lens.push(0);
-      search(idx + 1, pool, lens, picked);
-      lens.pop();
-      return;
-    }
-
-    // Try up to top few chains per length tier to keep branching bounded
-    const maxFoundLen = chains[0].length;
-    const seenSig = new Set<string>();
-    for (const ch of chains) {
-      if (ch.length < maxFoundLen && bestLengths && (bestLengths[idx] ?? 0) > ch.length) {
-        break;
-      }
-      const sig = `${ch.length}:${ch.keys.join(',')}`;
-      if (seenSig.has(sig)) continue;
-      seenSig.add(sig);
-
-      const used = new Set(ch.keys);
-      const nextPool = pool.filter((g) => !used.has(g.key));
-      lens.push(ch.length);
-      picked.push(ch.keys);
-      search(idx + 1, nextPool, lens, picked);
-      picked.pop();
-      lens.pop();
-    }
-  };
-
-  search(0, groups, [], []);
-  const finalLengths = bestLengths ?? demands.map(() => 0);
-  return {
-    lengths: finalLengths,
-    chainKeys: bestChainKeys,
-    unitScore: [...finalLengths, unitCount],
-  };
-}
-
-function computeBestFollowProfile(
-  cardsInCat: readonly Card[],
-  leadComponents: readonly AtomicPattern[],
-  trumpSuit: StandardSuit | null,
-  levelRank: LevelRank,
-): FollowProfile {
-  const ttDemands = leadComponents
-    .filter((c) => c.type === 'TRIPLE_TRACTOR')
-    .map((c) => c.length)
-    .sort((a, b) => b - a);
-  const tDemandCount = leadComponents.filter((c) => c.type === 'TRIPLE').length;
-  const totalTripleSlots =
-    ttDemands.reduce((s, l) => s + l, 0) + tDemandCount;
-
-  const trDemands = leadComponents
-    .filter((c) => c.type === 'TRACTOR')
-    .map((c) => c.length)
-    .sort((a, b) => b - a);
-  const pDemandCount = leadComponents.filter((c) => c.type === 'PAIR').length;
-  const totalPairSlots = trDemands.reduce((s, l) => s + l, 0) + pDemandCount;
-
-  if (totalTripleSlots === 0 && totalPairSlots === 0) {
-    return {
-      tripleScore: [],
-      pairScore: [],
-      bestTripleKeys: [],
-      bestPairChainKeys: [],
-      bestExtraPairKeys: [],
-    };
-  }
-
-  const groups = groupCardsByKey(cardsInCat, trumpSuit, levelRank);
-  // Sort ascending by order for lowest constructive selection
-  const ascGroups = [...groups].sort((a, b) => a.order - b.order);
-  const tripleGroups = ascGroups.filter((g) => g.cards.length === 3);
-
-  const evaluateWithTripleSubset = (chosenTriples: KeyGroup[]): FollowProfile => {
-    const tripleSet = new Set(chosenTriples.map((g) => g.key));
-    const tripleEval =
-      totalTripleSlots > 0
-        ? evaluateChainDemandSatisfaction(
-            chosenTriples,
-            3,
-            ttDemands,
-            totalTripleSlots,
-            chosenTriples.length,
-          )
-        : { lengths: [], chainKeys: [], unitScore: [] };
-
-    const remainingForPairs = ascGroups.filter(
-      (g) => !tripleSet.has(g.key) && g.cards.length >= 2,
-    );
-
-    const pairEval =
-      totalPairSlots > 0
-        ? evaluateChainDemandSatisfaction(
-            remainingForPairs,
-            2,
-            trDemands,
-            totalPairSlots,
-            remainingForPairs.length,
-          )
-        : { lengths: [], chainKeys: [], unitScore: [] };
-
-    const usedInChains = new Set(pairEval.chainKeys.flat());
-    const extraPairKeys = remainingForPairs
-      .filter((g) => !usedInChains.has(g.key))
-      .slice(0, Math.max(0, Math.min(totalPairSlots, remainingForPairs.length) - usedInChains.size))
-      .map((g) => g.key);
-
-    return {
-      tripleScore: tripleEval.unitScore,
-      pairScore: pairEval.unitScore,
-      bestTripleKeys: chosenTriples.map((g) => g.key),
-      bestPairChainKeys: pairEval.chainKeys,
-      bestExtraPairKeys: extraPairKeys,
-    };
-  };
-
-  if (totalTripleSlots === 0 || tripleGroups.length === 0) {
-    return evaluateWithTripleSubset([]);
-  }
-
-  const pickCount = Math.min(totalTripleSlots, tripleGroups.length);
-
-  // Fast path when all triples are needed and no pair competition exists or all triples consumed
-  if (tripleGroups.length <= totalTripleSlots) {
-    return evaluateWithTripleSubset(tripleGroups);
-  }
-
-  // Subset search when choosing pickCount triples out of tripleGroups
-  // If no triple-tractor AND no pairs exist, any pickCount triples give identical score
-  if (ttDemands.length === 0 && totalPairSlots === 0) {
-    return evaluateWithTripleSubset(tripleGroups.slice(0, pickCount));
-  }
-
-  let bestProfile: FollowProfile | null = null;
-  const chosen: KeyGroup[] = [];
-
-  const chooseSubsets = (startIdx: number) => {
-    if (chosen.length === pickCount) {
-      const profile = evaluateWithTripleSubset(chosen);
-      if (!bestProfile || compareProfiles(profile, bestProfile) > 0) {
-        bestProfile = profile;
-      }
-      return;
-    }
-    const needed = pickCount - chosen.length;
-    for (let i = startIdx; i <= tripleGroups.length - needed; i++) {
-      chosen.push(tripleGroups[i]);
-      chooseSubsets(i + 1);
-      chosen.pop();
-    }
-  };
-
-  chooseSubsets(0);
-  return bestProfile ?? evaluateWithTripleSubset([]);
+  return comp.topOrder;
 }
 
 export function validateLeadPlay(
@@ -289,49 +64,85 @@ export function validateLeadPlay(
     selectedCards.push(card);
   }
 
-  const parsed = parsePlay(selectedCards, trumpSuit, levelRank);
-  if (!parsed) {
+  const decompositions = enumeratePlayDecompositions(
+    selectedCards,
+    trumpSuit,
+    levelRank,
+  );
+  if (decompositions.length === 0) {
     return {
       valid: false,
       reason: '首家出牌必须属于同一种花色（或全部为主牌）',
     };
   }
 
-  if (parsed.patternType !== 'SLING') {
+  const primary = decompositions[0];
+  if (primary.patternType !== 'SLING') {
     return {
       valid: true,
       slingFailed: false,
-      effectiveCards: parsed.cards,
-      parsed,
+      effectiveCards: primary.cards,
+      parsed: primary,
     };
   }
 
-  // Validate SLING against all other players' hands
-  const beatenComponents: AtomicPattern[] = [];
-  for (const comp of parsed.components) {
-    const isBeaten = otherHands.some((oh) =>
-      canHandBeatComponent(oh, parsed.category, comp, trumpSuit, levelRank),
-    );
-    if (isBeaten) {
-      beatenComponents.push(comp);
+  // Evaluate all valid decompositions in optimal-first order:
+  // If ANY legal decomposition has zero beaten components, the sling SUCCEEDS using that optimal combination!
+  let bestFailed: {
+    decomp: ParsedPlay;
+    beaten: AtomicPattern[];
+    smallestBeaten: AtomicPattern;
+  } | null = null;
+
+  for (const decomp of decompositions) {
+    if (decomp.patternType !== 'SLING') {
+      return {
+        valid: true,
+        slingFailed: false,
+        effectiveCards: decomp.cards,
+        parsed: decomp,
+      };
+    }
+
+    const beaten: AtomicPattern[] = [];
+    for (const comp of decomp.components) {
+      const isBeaten = otherHands.some((oh) =>
+        canHandBeatComponent(oh, decomp.category, comp, trumpSuit, levelRank),
+      );
+      if (isBeaten) {
+        beaten.push(comp);
+      }
+    }
+
+    if (beaten.length === 0) {
+      return {
+        valid: true,
+        slingFailed: false,
+        effectiveCards: selectedCards,
+        parsed: decomp,
+      };
+    }
+
+    const sortedBeaten = [...beaten].sort((a, b) => {
+      const ordDiff = getBeatenFailureSortOrder(a) - getBeatenFailureSortOrder(b);
+      if (ordDiff !== 0) return ordDiff;
+      return a.cards.length - b.cards.length;
+    });
+
+    if (
+      !bestFailed ||
+      beaten.length < bestFailed.beaten.length
+    ) {
+      bestFailed = {
+        decomp,
+        beaten: sortedBeaten,
+        smallestBeaten: sortedBeaten[0],
+      };
     }
   }
 
-  if (beatenComponents.length === 0) {
-    return {
-      valid: true,
-      slingFailed: false,
-      effectiveCards: selectedCards,
-      parsed,
-    };
-  }
-
-  beatenComponents.sort((a, b) => {
-    if (a.topOrder !== b.topOrder) return a.topOrder - b.topOrder;
-    return a.cards.length - b.cards.length;
-  });
-
-  const smallestBeaten = beatenComponents[0];
+  const chosen = bestFailed!;
+  const smallestBeaten = chosen.smallestBeaten;
   return {
     valid: true,
     slingFailed: true,
@@ -339,7 +150,7 @@ export function validateLeadPlay(
     failedComponent: smallestBeaten,
     parsed: {
       patternType: smallestBeaten.type,
-      category: parsed.category,
+      category: chosen.decomp.category,
       cards: smallestBeaten.cards,
       components: [smallestBeaten],
     },
@@ -377,15 +188,63 @@ function isTopMTrumps(
   return true;
 }
 
+function containsTopMTrumps(
+  selected: readonly Card[],
+  pool: readonly Card[],
+  m: number,
+  trumpSuit: StandardSuit | null,
+  levelRank: LevelRank,
+): boolean {
+  if (m === 0) return true;
+  if (selected.length < m || pool.length < m) return false;
+
+  const sortedPool = [...pool].sort(
+    (a, b) =>
+      getCardOrder(b, trumpSuit, levelRank) -
+      getCardOrder(a, trumpSuit, levelRank),
+  );
+  const cutoff = getCardOrder(sortedPool[m - 1], trumpSuit, levelRank);
+  const selectedIdSet = new Set(selected.map((c) => c.id));
+
+  let strictlyAboveTotal = 0;
+  let atOrAboveSelected = 0;
+  for (const c of pool) {
+    const ord = getCardOrder(c, trumpSuit, levelRank);
+    if (ord > cutoff) {
+      strictlyAboveTotal += 1;
+      if (!selectedIdSet.has(c.id)) return false;
+    }
+  }
+  for (const c of selected) {
+    if (getCardOrder(c, trumpSuit, levelRank) >= cutoff) {
+      atOrAboveSelected += 1;
+    }
+  }
+  return strictlyAboveTotal <= atOrAboveSelected && atOrAboveSelected >= m;
+}
+
 function validateTrump510KFollow(
   inCatHand: readonly Card[],
   selectedCards: readonly Card[],
   trumpSuit: StandardSuit | null,
   levelRank: LevelRank,
+  maxUnits?: number,
 ): boolean {
-  const search = (remSelected: Card[], remHand: Card[]): boolean => {
-    if (remSelected.length === 0) return true;
-    if (isTopMTrumps(remSelected, remHand, remSelected.length, trumpSuit, levelRank)) {
+  const targetUnits = maxUnits ?? Math.floor(selectedCards.length / 3);
+  const exactSizeMode = maxUnits === undefined;
+
+  const search = (
+    remSelected: Card[],
+    remHand: Card[],
+    unitsLeft: number,
+  ): boolean => {
+    if (unitsLeft <= 0) return true;
+    const neededTop = unitsLeft * 3;
+    if (exactSizeMode) {
+      if (isTopMTrumps(remSelected, remHand, remSelected.length, trumpSuit, levelRank)) {
+        return true;
+      }
+    } else if (containsTopMTrumps(remSelected, remHand, neededTop, trumpSuit, levelRank)) {
       return true;
     }
 
@@ -398,6 +257,7 @@ function validateTrump510KFollow(
           search(
             remSelected.filter((c) => !dropIds.has(c.id)),
             remHand.filter((c) => !dropIds.has(c.id)),
+            unitsLeft - 1,
           )
         ) {
           return true;
@@ -416,6 +276,7 @@ function validateTrump510KFollow(
           search(
             remSelected.filter((c) => !dropIds.has(c.id)),
             remHand.filter((c) => !dropIds.has(c.id)),
+            unitsLeft - 1,
           )
         ) {
           return true;
@@ -426,7 +287,7 @@ function validateTrump510KFollow(
     return false;
   };
 
-  return search([...selectedCards], [...inCatHand]);
+  return search([...selectedCards], [...inCatHand], targetUnits);
 }
 
 function validate510KFollowPlay(
@@ -567,6 +428,13 @@ function validate510KFollowPlay(
   };
 }
 
+/**
+ * 金山打红心 / 打黑心跟牌规则：
+ * 1. 总张数必须等于首家出牌张数。
+ * 2. 若手中有首家所出分类（主牌或对应副牌花色），必须优先跟出该分类的牌。
+ * 3. 若首家领出主牌 510K（或含主牌 510K 的甩牌），未压制/未抵消的单位须出当前剩余最大主牌。
+ * 4. 除此之外，没有任何强制必须跟出对子、三张、拖拉机或连三的要求。
+ */
 export function validateFollowPlay(
   hand: readonly Card[],
   selectedIds: readonly number[],
@@ -607,6 +475,10 @@ export function validateFollowPlay(
     );
   }
 
+  const lead510KUnits = leadPlay.components
+    .filter((c) => c.type === 'F510K')
+    .reduce((sum, c) => sum + c.length, 0);
+
   const inCatHand = hand.filter(
     (c) => getCardCategory(c, trumpSuit, levelRank) === leadPlay.category,
   );
@@ -614,18 +486,52 @@ export function validateFollowPlay(
     (c) => getCardCategory(c, trumpSuit, levelRank) === leadPlay.category,
   );
 
-  const requiredInCat = Math.min(inCatHand.length, leadCount);
-  if (inCatSelected.length !== requiredInCat) {
-    return {
-      valid: false,
-      reason:
-        leadPlay.category === 'TRUMP'
-          ? '手中有主牌时必须优先跟出主牌'
-          : '手中有首家花色时必须优先跟出同门花色',
-    };
+  // If side-suit SLING includes F510K, allow follower to borrow same-suit 5/10/K for F510K units
+  if (lead510KUnits > 0 && leadPlay.category !== 'TRUMP') {
+    const targetSuit = leadPlay.category;
+    const fives = selectedCards.filter((c) => c.suit === targetSuit && c.rank === '5');
+    const tens = selectedCards.filter((c) => c.suit === targetSuit && c.rank === '10');
+    const ks = selectedCards.filter((c) => c.suit === targetSuit && c.rank === 'K');
+    const maxUnits = Math.min(lead510KUnits, fives.length, tens.length, ks.length);
+
+    let suitOk = false;
+    for (let m = maxUnits; m >= 0; m--) {
+      const unitIds = new Set<number>();
+      for (let i = 0; i < m; i++) {
+        unitIds.add(fives[i].id);
+        unitIds.add(tens[i].id);
+        unitIds.add(ks[i].id);
+      }
+      const remSelected = selectedCards.filter((c) => !unitIds.has(c.id));
+      const remInCatHand = inCatHand.filter((c) => !unitIds.has(c.id));
+      const remInCatSelected = remSelected.filter(
+        (c) => getCardCategory(c, trumpSuit, levelRank) === targetSuit,
+      );
+      if (remInCatSelected.length === Math.min(remInCatHand.length, remSelected.length)) {
+        suitOk = true;
+        break;
+      }
+    }
+    if (!suitOk) {
+      return {
+        valid: false,
+        reason: '手中有首家花色时必须优先跟出同门花色',
+      };
+    }
+  } else {
+    const requiredInCat = Math.min(inCatHand.length, leadCount);
+    if (inCatSelected.length !== requiredInCat) {
+      return {
+        valid: false,
+        reason:
+          leadPlay.category === 'TRUMP'
+            ? '手中有主牌时必须优先跟出主牌'
+            : '手中有首家花色时必须优先跟出同门花色',
+      };
+    }
   }
 
-  // Case 1: Void in led category
+  // Case 1: Void in led category (may trump-kill with matching trump structure, or discard freely)
   if (inCatHand.length === 0) {
     if (leadPlay.category !== 'TRUMP') {
       const cat = getSingleCategory(selectedCards, trumpSuit, levelRank);
@@ -665,48 +571,31 @@ export function validateFollowPlay(
     };
   }
 
-  // Case 2: Has <= leadCount cards in led category (must dump all of them)
-  if (inCatHand.length <= leadCount) {
-    const parsed: ParsedPlay =
-      (inCatHand.length === leadCount
-        ? parsePlay(selectedCards, trumpSuit, levelRank)
-        : null) ?? {
-        patternType: leadCount === 1 ? 'SINGLE' : 'SLING',
-        category: leadPlay.category,
-        cards: selectedCards,
-        components: [],
+  // If TRUMP SLING includes F510K and follower has more trumps than leadCount, enforce trump 510K top-trump rule
+  if (
+    leadPlay.category === 'TRUMP' &&
+    lead510KUnits > 0 &&
+    inCatHand.length > leadCount
+  ) {
+    if (
+      !validateTrump510KFollow(
+        inCatHand,
+        selectedCards,
+        trumpSuit,
+        levelRank,
+        lead510KUnits,
+      )
+    ) {
+      return {
+        valid: false,
+        reason: '跟含主牌 510K 的甩牌，未用主三张或主 510K 抵消的部分必须包含当前剩余最大的主牌',
       };
-    return {
-      valid: true,
-      matchedTrumpKill: false,
-      parsed,
-    };
+    }
   }
 
-  // Case 3: Has > leadCount cards in led category (must meet structural obligations)
-  const handProfile = computeBestFollowProfile(
-    inCatHand,
-    leadPlay.components,
-    trumpSuit,
-    levelRank,
-  );
-  const selectedProfile = computeBestFollowProfile(
-    inCatSelected,
-    leadPlay.components,
-    trumpSuit,
-    levelRank,
-  );
-
-  if (compareProfiles(selectedProfile, handProfile) < 0) {
-    return {
-      valid: false,
-      reason: '未按规则跟出对应的三张、拖拉机或对子',
-    };
-  }
-
-  const parsed =
+  const parsed: ParsedPlay =
     parsePlay(selectedCards, trumpSuit, levelRank) ?? {
-      patternType: 'SLING',
+      patternType: leadCount === 1 ? 'SINGLE' : 'SLING',
       category: leadPlay.category,
       cards: selectedCards,
       components: [],
@@ -810,34 +699,30 @@ export function resolveTrickWinner(
 
   for (let i = 1; i < trickPlays.length; i++) {
     const play = trickPlays[i];
-    const cat = getSingleCategory(play.cards, trumpSuit, levelRank);
+    const match = canMatchSlingStructure(
+      play.cards,
+      leadParsed.components,
+      trumpSuit,
+      levelRank,
+    );
+    if (!match.matched) continue;
+
+    // Determine effective category of this matched play
+    let cat = getSingleCategory(play.cards, trumpSuit, levelRank);
+    if (!cat && play.cards[0] && play.cards[0].suit !== 'J') {
+      cat = play.cards[0].suit === trumpSuit ? 'TRUMP' : play.cards[0].suit;
+    }
     if (!cat) continue;
 
     if (cat === leadParsed.category) {
       if (bestIsTrump && leadParsed.category !== 'TRUMP') {
         continue;
       }
-      const match = canMatchSlingStructure(
-        play.cards,
-        leadParsed.components,
-        trumpSuit,
-        levelRank,
-      );
-      if (
-        match.matched &&
-        compareMatchedComponents(match.matchedComponents, bestComponents) > 0
-      ) {
+      if (compareMatchedComponents(match.matchedComponents, bestComponents) > 0) {
         bestPlay = play;
         bestComponents = match.matchedComponents;
       }
     } else if (cat === 'TRUMP' && leadParsed.category !== 'TRUMP') {
-      const match = canMatchSlingStructure(
-        play.cards,
-        leadParsed.components,
-        trumpSuit,
-        levelRank,
-      );
-      if (!match.matched) continue;
       if (!bestIsTrump) {
         bestIsTrump = true;
         killedByTrump = true;
@@ -915,6 +800,10 @@ export function findLegalFollowCards(
     (c) => getCardCategory(c, trumpSuit, levelRank) !== leadPlay.category,
   );
 
+  const lead510KUnits = leadPlay.components
+    .filter((c) => c.type === 'F510K')
+    .reduce((sum, c) => sum + c.length, 0);
+
   if (leadPlay.patternType === 'F510K') {
     const k = leadPlay.components[0].length;
     if (leadPlay.category === 'TRUMP') {
@@ -936,7 +825,6 @@ export function findLegalFollowCards(
           for (const ch of chains) {
             pushIfValid(ch.cards);
           }
-          // Try using disconnected triples + top remaining trumps
           const triples = groups.filter((g) => g.cards.length === 3);
           if (triples.length > 0) {
             const takeTriples = triples.slice(0, k).flatMap((g) => g.cards);
@@ -979,7 +867,6 @@ export function findLegalFollowCards(
         return candidates;
       }
     } else {
-      // Non-trump 510K of suit S: check same-suit 510K (including borrowed ♥5/10/K), same-suit beaters, and trump kills
       const targetSuit = leadPlay.category;
       const s5 = hand.filter((c) => c.suit === targetSuit && c.rank === '5');
       const s10 = hand.filter((c) => c.suit === targetSuit && c.rank === '10');
@@ -1035,12 +922,9 @@ export function findLegalFollowCards(
   }
 
   if (inCatHand.length === 0) {
-    // Discard low non-point cards
     pushIfValid(sortCardsForDiscard(hand, trumpSuit, levelRank, false).slice(0, N));
-    // Discard point cards (useful when feeding teammate)
     pushIfValid(sortCardsForDiscard(hand, trumpSuit, levelRank, true).slice(0, N));
 
-    // Try trump kills if leading a non-trump category
     if (leadPlay.category !== 'TRUMP') {
       const trumps = hand.filter(
         (c) => getCardCategory(c, trumpSuit, levelRank) === 'TRUMP',
@@ -1102,71 +986,42 @@ export function findLegalFollowCards(
     return candidates;
   }
 
-  // inCatHand.length > N: build structural obligation candidates + atomic winning candidates
-  const profile = computeBestFollowProfile(
-    inCatHand,
-    leadPlay.components,
-    trumpSuit,
-    levelRank,
-  );
+  // If TRUMP SLING includes F510K, include top-trump + low-fill candidate so bots always have legal options
+  if (leadPlay.category === 'TRUMP' && lead510KUnits > 0) {
+    const sortedDesc = [...inCatHand].sort(
+      (a, b) =>
+        getCardOrder(b, trumpSuit, levelRank) -
+        getCardOrder(a, trumpSuit, levelRank),
+    );
+    const mustTop = sortedDesc.slice(0, lead510KUnits * 3);
+    const restPool = sortedDesc.slice(lead510KUnits * 3);
+    const fillLow = sortCardsForDiscard(restPool, trumpSuit, levelRank, false).slice(
+      0,
+      N - mustTop.length,
+    );
+    pushIfValid([...mustTop, ...fillLow]);
+    pushIfValid(sortedDesc.slice(0, N));
+  }
+
+  // inCatHand.length > N: no forced structural obligation, so generate both safe discards & matching patterns
   const groups = groupCardsByKey(inCatHand, trumpSuit, levelRank);
-  const groupMap = new Map(groups.map((g) => [g.key, g]));
 
-  const mandatoryCards: Card[] = [];
-  const usedIds = new Set<number>();
+  const groupSizeByKey = new Map(groups.map((g) => [g.key, g.cards.length]));
+  const preserveStructureLow = [...inCatHand].sort((a, b) => {
+    const szA = groupSizeByKey.get(`${a.suit}:${a.rank}`) ?? 1;
+    const szB = groupSizeByKey.get(`${b.suit}:${b.rank}`) ?? 1;
+    if (szA !== szB) return szA - szB;
+    const ptsDiff = getCardPoints(a) - getCardPoints(b);
+    if (ptsDiff !== 0) return ptsDiff;
+    return (
+      getCardOrder(a, trumpSuit, levelRank) - getCardOrder(b, trumpSuit, levelRank)
+    );
+  });
 
-  for (const key of profile.bestTripleKeys) {
-    const g = groupMap.get(key);
-    if (g) {
-      for (const c of g.cards.slice(0, 3)) {
-        if (!usedIds.has(c.id)) {
-          usedIds.add(c.id);
-          mandatoryCards.push(c);
-        }
-      }
-    }
-  }
-  for (const chain of profile.bestPairChainKeys) {
-    for (const key of chain) {
-      const g = groupMap.get(key);
-      if (g) {
-        for (const c of g.cards.slice(0, 2)) {
-          if (!usedIds.has(c.id) && mandatoryCards.length < N) {
-            usedIds.add(c.id);
-            mandatoryCards.push(c);
-          }
-        }
-      }
-    }
-  }
-  for (const key of profile.bestExtraPairKeys) {
-    const g = groupMap.get(key);
-    if (g) {
-      for (const c of g.cards.slice(0, 2)) {
-        if (!usedIds.has(c.id) && mandatoryCards.length < N) {
-          usedIds.add(c.id);
-          mandatoryCards.push(c);
-        }
-      }
-    }
-  }
+  pushIfValid(preserveStructureLow.slice(0, N));
+  pushIfValid(sortCardsForDiscard(inCatHand, trumpSuit, levelRank, false).slice(0, N));
+  pushIfValid(sortCardsForDiscard(inCatHand, trumpSuit, levelRank, true).slice(0, N));
 
-  const remainingInCat = inCatHand.filter((c) => !usedIds.has(c.id));
-  const fillLow = sortCardsForDiscard(remainingInCat, trumpSuit, levelRank, false).slice(
-    0,
-    Math.max(0, N - mandatoryCards.length),
-  );
-  const fillHighPts = sortCardsForDiscard(
-    remainingInCat,
-    trumpSuit,
-    levelRank,
-    true,
-  ).slice(0, Math.max(0, N - mandatoryCards.length));
-
-  pushIfValid([...mandatoryCards, ...fillLow]);
-  pushIfValid([...mandatoryCards, ...fillHighPts]);
-
-  // Also add winning/alternative atomic patterns when lead is atomic
   if (leadPlay.patternType === 'SINGLE') {
     const sorted = [...inCatHand].sort(
       (a, b) =>

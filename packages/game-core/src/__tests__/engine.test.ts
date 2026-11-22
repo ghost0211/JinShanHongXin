@@ -23,15 +23,11 @@ function makeFillerHand(startId: number, count: number): Card[] {
   return res;
 }
 
-describe('engine FSM: Round 1 stealing, Round 2+ counter-bidding, penalty retention, and PlayerView isolation', () => {
-  it('Round 1: 3-card counter-bid steals dealer freely against 2-card call, and compares 21-card bipai against 3-card call (tie = fail + penalty)', () => {
+describe('engine FSM: dealing, Round 1 real-count stealing, accept-vs-defend counter, no re-counter by countered/been-countered', () => {
+  it('Round 1: 3-card counter steals freely ONLY if caller truly holds <3; hiding 3rd card still triggers COUNTER_RESPONSE & bipai', () => {
     const base = createInitialMatchState(42);
-    // Construct deterministic hands:
-    // Seat 0: 2x S2, 1x BJ (bipai = 3)
-    // Seat 1: 3x H2, 1x H5 (bipai = 4) -> > 3, succeeds!
-    // Seat 2: 2x C2, 3x BJ (teammate of Seat 0)
-    // Seat 3: 3x D2 (bipai = 3) -> tie against 3, fails if Seat 0 had 3x S2!
-    const state2Call: GameState = {
+    // Seat 0 truly holds only 2x S2 -> Seat 1's 3x H2 steals directly without bipai penalty
+    const state2Real: GameState = {
       ...base,
       hands: {
         0: [...[c(1000, 'S', '2'), c(1001, 'S', '2'), c(1002, 'J', 'BJ')], ...makeFillerHand(2000, 35)],
@@ -41,8 +37,7 @@ describe('engine FSM: Round 1 stealing, Round 2+ counter-bidding, penalty retent
       },
     };
 
-    // Seat 0 calls with 2x S2
-    const r1 = applyAction(state2Call, {
+    const r1 = applyAction(state2Real, {
       type: 'CALL_TRUMP',
       seat: 0,
       suit: 'S',
@@ -53,7 +48,6 @@ describe('engine FSM: Round 1 stealing, Round 2+ counter-bidding, penalty retent
     assert.equal(r1.state.dealer, 0);
     assert.equal(r1.state.phase, 'COUNTER_BIDDING');
 
-    // Seat 1 counters with 3x H2 against 2-card call -> steals dealer immediately without bipai penalty
     const r2 = applyAction(r1.state, {
       type: 'COUNTER_BID',
       seat: 1,
@@ -66,7 +60,6 @@ describe('engine FSM: Round 1 stealing, Round 2+ counter-bidding, penalty retent
     assert.equal(r2.state.bankerTeam, 'B');
     assert.equal(r2.state.trumpSuit, 'H');
     assert.equal(r2.state.teams.B.penaltyCount, 0);
-    // Team A has no 3-card 2s, so auto-enters BURYING for new dealer Seat 1
     assert.equal(r2.state.phase, 'BURYING');
     assert.equal(r2.state.hands[1].length, 48);
 
@@ -79,40 +72,50 @@ describe('engine FSM: Round 1 stealing, Round 2+ counter-bidding, penalty retent
     assert.equal(buried.state.hands[1].length, 38);
     assert.equal(buried.state.bottomCards.length, 10);
 
-    // Now test 3-card call with bipai TIE -> counter-bid fails and adds +1 penalty
-    const state3Call: GameState = {
+    // NOW test rule #1: Seat 0 ACTUALLY holds 3x S2, but only shows 2x S2 -> Seat 1 counters with 3x H2 (tie bipai 3 == 3)
+    // Must enter COUNTER_RESPONSE -> Seat 0 defends -> Seat 1 FAILS and gets +1 penalty!
+    const state3Hidden: GameState = {
       ...base,
       hands: {
-        0: [...[c(1100, 'S', '2'), c(1101, 'S', '2'), c(1102, 'S', '2')], ...makeFillerHand(2400, 35)], // bipai = 3
+        0: [...[c(1100, 'S', '2'), c(1101, 'S', '2'), c(1102, 'S', '2')], ...makeFillerHand(2400, 35)], // real 3x S2, bipai = 3
         1: [...[c(1110, 'H', '2'), c(1111, 'H', '2'), c(1112, 'H', '2')], ...makeFillerHand(2500, 35)], // bipai = 3 (tie!)
         2: makeFillerHand(2600, 38),
         3: makeFillerHand(2700, 38),
       },
     };
 
-    const c3 = applyAction(state3Call, {
+    const c2Shown = applyAction(state3Hidden, {
       type: 'CALL_TRUMP',
       seat: 0,
       suit: 'S',
-      cardIds: [1100, 1101, 1102],
+      cardIds: [1100, 1101], // intentionally show only 2 of 3!
     });
-    assert.equal(c3.ok, true);
-    if (!c3.ok) return;
-    const tieCounter = applyAction(c3.state, {
+    assert.equal(c2Shown.ok, true);
+    if (!c2Shown.ok) return;
+    const proposed = applyAction(c2Shown.state, {
       type: 'COUNTER_BID',
       seat: 1,
       suit: 'H',
       cardIds: [1110, 1111, 1112],
     });
-    assert.equal(tieCounter.ok, true);
-    if (!tieCounter.ok) return;
-    assert.equal(tieCounter.state.dealer, 0);
-    assert.equal(tieCounter.state.trumpSuit, 'S');
-    assert.equal(tieCounter.state.teams.B.penaltyCount, 1);
-    assert.equal(tieCounter.state.phase, 'BURYING');
+    assert.equal(proposed.ok, true);
+    if (!proposed.ok) return;
+    assert.equal(proposed.state.phase, 'COUNTER_RESPONSE');
+    assert.equal(proposed.state.currentTurn, 0);
+
+    const defended = applyAction(proposed.state, {
+      type: 'DEFEND_COUNTER',
+      seat: 0,
+    });
+    assert.equal(defended.ok, true);
+    if (!defended.ok) return;
+    assert.equal(defended.state.dealer, 0);
+    assert.equal(defended.state.trumpSuit, 'S');
+    assert.equal(defended.state.teams.B.penaltyCount, 1);
+    assert.equal(defended.state.phase, 'BURYING');
   });
 
-  it('Round 2+: 1-card call keeps fixed dealer; teammate can retry after first failure while preserving first penalty, and double failure adds 2 penalties', () => {
+  it('Round 2+: accept-vs-defend counter, penalty retention, and countered/been-countered seats cannot re-counter', () => {
     const base = createInitialMatchState(7);
     const settledBase: GameState = {
       ...base,
@@ -150,22 +153,16 @@ describe('engine FSM: Round 1 stealing, Round 2+ counter-bidding, penalty retent
     assert.equal(r2Init.dealer, 2);
     assert.equal(r2Init.levelRank, '6');
 
-    // Construct Round 2 hands:
-    // Seat 2 (dealer): 1x S6 + 2x BJ (bipai = 3)
-    // Seat 3 (Team B): 1x H6 (bipai = 1 <= 3 -> fails!)
-    // Seat 1 (Team B): 1x D6 + 3x H5 (bipai = 4 > 3 -> succeeds!)
-    // Seat 0 (Team A): 1x C6 (bipai = 1)
     const r2Custom: GameState = {
       ...r2Init,
       hands: {
-        2: [...[c(3000, 'S', '6'), c(3001, 'J', 'BJ'), c(3002, 'J', 'BJ')], ...makeFillerHand(4000, 35)],
-        3: [...[c(3010, 'H', '6')], ...makeFillerHand(4100, 37)],
-        0: [...[c(3020, 'C', '6')], ...makeFillerHand(4200, 37)],
-        1: [...[c(3030, 'D', '6'), c(3031, 'H', '5'), c(3032, 'H', '5'), c(3033, 'H', '5')], ...makeFillerHand(4300, 34)],
+        2: [...[c(3000, 'S', '6'), c(3001, 'J', 'BJ'), c(3002, 'J', 'BJ')], ...makeFillerHand(4000, 35)], // bipai 3
+        3: [...[c(3010, 'H', '6')], ...makeFillerHand(4100, 37)], // bipai 1
+        0: [...[c(3020, 'C', '6')], ...makeFillerHand(4200, 37)], // bipai 1
+        1: [...[c(3030, 'D', '6'), c(3031, 'H', '5'), c(3032, 'H', '5'), c(3033, 'H', '5')], ...makeFillerHand(4300, 34)], // bipai 4
       },
     };
 
-    // Seat 2 calls S with 1x S6 -> dealer remains 2
     const called = applyAction(r2Custom, {
       type: 'CALL_TRUMP',
       seat: 2,
@@ -174,43 +171,109 @@ describe('engine FSM: Round 1 stealing, Round 2+ counter-bidding, penalty retent
     });
     assert.equal(called.ok, true);
     if (!called.ok) return;
-    assert.equal(called.state.dealer, 2);
     assert.equal(called.state.phase, 'COUNTER_BIDDING');
     assert.deepEqual(called.state.callState.eligibleCounterSeats, [3, 1]);
 
-    // Seat 3 fails counter-bid -> B gets penalty = 1, Seat 1 (teammate) is next eligible!
-    const fail1 = applyAction(called.state, {
+    // Seat 3 counters -> Seat 2 defends -> Seat 3 fails (+1 penalty); Seat 1 (teammate) remains eligible!
+    const prop1 = applyAction(called.state, {
       type: 'COUNTER_BID',
       seat: 3,
       suit: 'H',
       cardIds: [3010],
     });
+    assert.equal(prop1.ok, true);
+    if (!prop1.ok) return;
+    assert.equal(prop1.state.phase, 'COUNTER_RESPONSE');
+
+    const fail1 = applyAction(prop1.state, { type: 'DEFEND_COUNTER', seat: 2 });
     assert.equal(fail1.ok, true);
     if (!fail1.ok) return;
     assert.equal(fail1.state.teams.B.penaltyCount, 1);
-    assert.equal(fail1.state.currentTurn, 1);
     assert.equal(fail1.state.trumpSuit, 'S');
+    assert.deepEqual(fail1.state.callState.eligibleCounterSeats, [1]);
 
-    // Seat 1 retries and SUCCEEDS -> trump becomes D, dealer STILL 2, and B's first penalty (1) is PRESERVED!
-    const succ2 = applyAction(fail1.state, {
+    // Seat 1 retries and Seat 2 chooses ACCEPT_COUNTER (no bipai needed, B's first penalty preserved!)
+    const prop2 = applyAction(fail1.state, {
       type: 'COUNTER_BID',
       seat: 1,
       suit: 'D',
       cardIds: [3030],
     });
-    assert.equal(succ2.ok, true);
-    if (!succ2.ok) return;
-    assert.equal(succ2.state.trumpSuit, 'D');
-    assert.equal(succ2.state.dealer, 2); // dealer NEVER changes in Round 2+!
-    assert.equal(succ2.state.teams.B.penaltyCount, 1); // preserved!
-    assert.equal(succ2.state.phase, 'COUNTER_BIDDING');
-    assert.deepEqual(succ2.state.callState.eligibleCounterSeats, [2, 0]);
+    assert.equal(prop2.ok, true);
+    if (!prop2.ok) return;
+    const acc2 = applyAction(prop2.state, { type: 'ACCEPT_COUNTER', seat: 2 });
+    assert.equal(acc2.ok, true);
+    if (!acc2.ok) return;
+    assert.equal(acc2.state.trumpSuit, 'D');
+    assert.equal(acc2.state.dealer, 2); // dealer fixed in Round 2+
+    assert.equal(acc2.state.teams.B.penaltyCount, 1); // first penalty preserved!
+    // Seat 2 has been countered -> CANNOT re-counter; ONLY Seat 0 (teammate) is eligible!
+    assert.equal(acc2.state.phase, 'COUNTER_BIDDING');
+    assert.deepEqual(acc2.state.callState.eligibleCounterSeats, [0]);
+  });
+
+  it('DEALING phase: can call on card #1, dealing continues to 38 cards, no counter during dealing', () => {
+    const d0 = createInitialMatchState({ seed: 55, mode: 'hongxin', withDealing: true });
+    assert.equal(d0.phase, 'DEALING');
+    assert.equal(d0.dealtCount, 0);
+
+    // Put a level-2 pair right at the top of Seat 2's undealt queue to test early dealing call
+    const custom: GameState = {
+      ...d0,
+      undealtHands: {
+        ...d0.undealtHands,
+        2: [c(9001, 'H', '2'), c(9002, 'H', '2'), ...d0.undealtHands[2].slice(2)],
+      },
+    };
+
+    // Deal 2 cards -> Seat 2 can immediately call trump!
+    let s = custom;
+    for (let i = 0; i < 2; i++) {
+      const step = applyAction(s, { type: 'DEAL_STEP' });
+      assert.equal(step.ok, true);
+      if (!step.ok) return;
+      s = step.state;
+    }
+    assert.equal(s.dealtCount, 2);
+    assert.equal(s.phase, 'DEALING');
+
+    const earlyCall = applyAction(s, {
+      type: 'CALL_TRUMP',
+      seat: 2,
+      suit: 'H',
+      cardIds: [9001, 9002],
+    });
+    assert.equal(earlyCall.ok, true);
+    if (!earlyCall.ok) return;
+    // Dealing animation must NOT be skipped after calling!
+    assert.equal(earlyCall.state.phase, 'DEALING');
+    assert.equal(earlyCall.state.trumpSuit, 'H');
+    assert.equal(earlyCall.state.dealer, 2);
+
+    // Counter-bid is forbidden while still dealing
+    const badCounter = applyAction(earlyCall.state, {
+      type: 'COUNTER_BID',
+      seat: 1,
+      suit: 'S',
+      cardIds: [],
+    });
+    assert.equal(badCounter.ok, false);
+
+    // Finish remaining 36 deal steps -> automatically transitions out of DEALING
+    s = earlyCall.state;
+    for (let i = 2; i < 38; i++) {
+      const step = applyAction(s, { type: 'DEAL_STEP' });
+      assert.equal(step.ok, true);
+      if (!step.ok) return;
+      s = step.state;
+    }
+    assert.equal(s.dealtCount, 38);
+    assert.ok(s.phase === 'COUNTER_BIDDING' || s.phase === 'BURYING');
   });
 
   it('all-pass calling flips bottom to pick trumpSuit and hides hidden hands/bottom in getPlayerView', () => {
     let s = createInitialMatchState(123);
-    for (let i = 0; i < 4; i++) {
-      const seat = s.currentTurn as Seat;
+    for (const seat of [0, 1, 2, 3] as Seat[]) {
       const res = applyAction(s, { type: 'PASS_CALL', seat });
       assert.equal(res.ok, true);
       if (!res.ok) return;
@@ -220,13 +283,11 @@ describe('engine FSM: Round 1 stealing, Round 2+ counter-bidding, penalty retent
     assert.equal(s.dealer, 0);
     assert.equal(s.hands[0].length, 48);
 
-    // Non-dealer view hides other hands and bottom
     const p1View = getPlayerView(s, 1, false);
     assert.equal(p1View.myHand.length, 38);
     assert.equal(p1View.revealedBottom, null);
     assert.equal(p1View.debugView, undefined);
 
-    // Debug view exposes all hands and bipai counts
     const debugView = getPlayerView(s, 1, true);
     assert.ok(debugView.debugView);
     assert.equal(debugView.debugView.allHands[0].length, 48);

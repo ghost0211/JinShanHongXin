@@ -48,16 +48,23 @@ export const App: React.FC = () => {
           connStatus={client.connStatus}
           serverUrl={client.serverUrl}
           playerName={client.playerName}
+          currentUser={client.currentUser}
           savedSession={client.savedSession}
           roomsList={client.roomsList}
           historyList={client.historyList}
+          leaderboard={client.leaderboard}
           onSetPlayerName={client.setPlayerName}
           onUpdateServerUrl={client.updateServerUrl}
+          onLogin={client.loginUser}
+          onRegister={client.registerUser}
+          onUpdateNickname={client.updateUserNickname}
+          onLogout={client.logoutUser}
           onCreateRoom={client.createRoom}
           onJoinRoom={client.joinRoom}
           onReconnectSaved={client.reconnectSaved}
           onFetchRooms={client.fetchRooms}
           onFetchHistory={client.fetchHistory}
+          onFetchLeaderboard={client.fetchLeaderboard}
         />
       )}
 

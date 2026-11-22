@@ -124,10 +124,8 @@ describe('audit A2: 首局打 2 叫主 / 反主', () => {
     err(act(s, { type: 'CALL_TRUMP', seat: 0, suit: 'S', cardIds: [s2[0].id] }), 'INVALID_CALL_COUNT');
     err(act(s, { type: 'CALL_TRUMP', seat: 0, suit: 'S', cardIds: [s2[0].id, h2.id] }), 'INVALID_CALL_CARD');
     err(act(s, { type: 'CALL_TRUMP', seat: 0, suit: 'S', cardIds: [s2[0].id, s2[0].id] }), 'DUPLICATE_CARDS');
-    err(act(s, { type: 'CALL_TRUMP', seat: 1, suit: 'S', cardIds: [s2[0].id, s2[1].id] }), 'NOT_YOUR_TURN');
     // cards of another player
-    const s1 = { ...s, currentTurn: 1 as Seat };
-    err(act(s1, { type: 'CALL_TRUMP', seat: 1, suit: 'S', cardIds: [s2[0].id, s2[1].id] }), 'CARD_NOT_IN_HAND');
+    err(act(s, { type: 'CALL_TRUMP', seat: 1, suit: 'S', cardIds: [s2[0].id, s2[1].id] }), 'CARD_NOT_IN_HAND');
     const r = ok(act(s, { type: 'CALL_TRUMP', seat: 0, suit: 'S', cardIds: ids(s2) }));
     assert.equal(r.dealer, 0);
     assert.equal(r.trumpSuit, 'S');
@@ -169,7 +167,7 @@ describe('audit A2: 首局打 2 叫主 / 反主', () => {
     assert.equal(r2.hands[1].length, 48);
   });
 
-  it('3-card call → counter needs STRICTLY more 比牌: tie fails (+1 penalty to counter team), more succeeds and steals dealer', () => {
+  it('3-card call → counter enters COUNTER_RESPONSE; defend compares STRICTLY more 比牌: tie fails (+1 penalty), more succeeds and steals dealer', () => {
     const mk = (extraForSeat1: number): GameState =>
       firstRound({
         0: [...many(3, 'S', '2'), c('J', 'BJ'), ...filler(34, '2')], // bipai 4
@@ -180,7 +178,9 @@ describe('audit A2: 首局打 2 叫主 / 反主', () => {
     // tie: seat1 bipai = 3 + 1 = 4
     const tie = mk(1);
     const t1 = ok(act(tie, { type: 'CALL_TRUMP', seat: 0, suit: 'S', cardIds: ids(tie.hands[0].slice(0, 3)) }));
-    const t2 = ok(act(t1, { type: 'COUNTER_BID', seat: 1, suit: 'H', cardIds: ids(tie.hands[1].slice(0, 3)) }));
+    const tProp = ok(act(t1, { type: 'COUNTER_BID', seat: 1, suit: 'H', cardIds: ids(tie.hands[1].slice(0, 3)) }));
+    assert.equal(tProp.phase, 'COUNTER_RESPONSE');
+    const t2 = ok(act(tProp, { type: 'DEFEND_COUNTER', seat: 0 }));
     assert.equal(t2.dealer, 0);
     assert.equal(t2.trumpSuit, 'S');
     assert.equal(t2.teams.B.penaltyCount, 1);
@@ -190,13 +190,14 @@ describe('audit A2: 首局打 2 叫主 / 反主', () => {
     // more: seat1 bipai = 3 + 2 = 5 > 4
     const more = mk(2);
     const m1 = ok(act(more, { type: 'CALL_TRUMP', seat: 0, suit: 'S', cardIds: ids(more.hands[0].slice(0, 3)) }));
-    const m2 = ok(act(m1, { type: 'COUNTER_BID', seat: 1, suit: 'H', cardIds: ids(more.hands[1].slice(0, 3)) }));
+    const mProp = ok(act(m1, { type: 'COUNTER_BID', seat: 1, suit: 'H', cardIds: ids(more.hands[1].slice(0, 3)) }));
+    const m2 = ok(act(mProp, { type: 'DEFEND_COUNTER', seat: 0 }));
     assert.equal(m2.dealer, 1);
     assert.equal(m2.trumpSuit, 'H');
     assert.equal(m2.teams.B.penaltyCount, 0);
   });
 
-  it('after a successful steal the robbed team (caller\'s teammate) may re-counter with 3 cards + strictly more 比牌', () => {
+  it('after a successful steal, caller\'s teammate (NOT the robbed caller) may re-counter; once both countered/been-countered, ends to BURYING', () => {
     const s = firstRound({
       0: [...many(2, 'S', '2'), ...filler(36, '2')],
       1: [...many(3, 'D', '2'), ...filler(35, '2')], // bipai 3
@@ -207,16 +208,12 @@ describe('audit A2: 首局打 2 叫主 / 反主', () => {
     const r2 = ok(act(r1, { type: 'COUNTER_BID', seat: 1, suit: 'D', cardIds: ids(s.hands[1].slice(0, 3)) }));
     assert.equal(r2.phase, 'COUNTER_BIDDING');
     assert.deepEqual(r2.callState.eligibleCounterSeats, [2]);
-    const r3 = ok(act(r2, { type: 'COUNTER_BID', seat: 2, suit: 'C', cardIds: ids(s.hands[2].slice(0, 3)) }));
+    const r3Prop = ok(act(r2, { type: 'COUNTER_BID', seat: 2, suit: 'C', cardIds: ids(s.hands[2].slice(0, 3)) }));
+    const r3 = ok(act(r3Prop, { type: 'DEFEND_COUNTER', seat: 1 }));
     assert.equal(r3.dealer, 2);
     assert.equal(r3.trumpSuit, 'C');
-    // seat 1's ♦2×3 differs from new trump ♣ → may try again (bipai 3 vs 4 → fails, +1 penalty)
-    assert.equal(r3.phase, 'COUNTER_BIDDING');
-    assert.deepEqual(r3.callState.eligibleCounterSeats, [1]);
-    const r4 = ok(act(r3, { type: 'COUNTER_BID', seat: 1, suit: 'D', cardIds: ids(s.hands[1].slice(0, 3)) }));
-    assert.equal(r4.teams.B.penaltyCount, 1);
-    assert.equal(r4.dealer, 2);
-    assert.equal(r4.phase, 'BURYING');
+    // Seat 1 already countered AND been countered; Seat 3 has no 3x 2s -> immediately BURYING!
+    assert.equal(r3.phase, 'BURYING');
   });
 
   it('all four pass → flip bottom (skip jokers/♥5), dealer defaults to seat 0, no counter window, dealer gets 48', () => {
@@ -296,13 +293,14 @@ describe('audit A3: 后续局叫主 / 反主', () => {
     assert.equal(r.dealer, 0);
     assert.deepEqual(r.callState.eligibleCounterSeats, [0]);
     err(act(r, { type: 'COUNTER_BID', seat: 0, suit: 'D', cardIds: [s.hands[0][0].id] }), 'SAME_SUIT');
-    const r2 = ok(act(r, { type: 'COUNTER_BID', seat: 0, suit: 'S', cardIds: [s.hands[0][0].id] }));
+    const rProp = ok(act(r, { type: 'COUNTER_BID', seat: 0, suit: 'S', cardIds: [s.hands[0][0].id] }));
+    const r2 = ok(act(rProp, { type: 'DEFEND_COUNTER', seat: 1 }));
     assert.equal(r2.dealer, 0);
     assert.equal(r2.trumpSuit, 'S');
     assert.equal(r2.callState.callerSeat, 0);
   });
 
-  it('cannot counter teammate; teammate retries after failure: first penalty kept even if retry succeeds', () => {
+  it('cannot counter teammate; teammate retries after failure: first penalty kept even if retry succeeds; been-countered seat cannot re-counter', () => {
     const s = laterRound(0, '7', {
       0: [c('S', '7'), ...many(3, 'J', 'BJ'), ...filler(34, '7')], // bipai 4
       1: [c('H', '7'), ...filler(37, '7')], // bipai 1 → fails
@@ -311,26 +309,28 @@ describe('audit A3: 后续局叫主 / 反主', () => {
     });
     const r1 = ok(act(s, { type: 'CALL_TRUMP', seat: 0, suit: 'S', cardIds: [s.hands[0][0].id] }));
     assert.deepEqual(r1.callState.eligibleCounterSeats, [1, 3]);
-    const r2 = ok(act(r1, { type: 'COUNTER_BID', seat: 1, suit: 'H', cardIds: [s.hands[1][0].id] }));
+    const r2Prop = ok(act(r1, { type: 'COUNTER_BID', seat: 1, suit: 'H', cardIds: [s.hands[1][0].id] }));
+    const r2 = ok(act(r2Prop, { type: 'DEFEND_COUNTER', seat: 0 }));
     assert.equal(r2.teams.B.penaltyCount, 1);
     assert.equal(r2.trumpSuit, 'S');
     assert.deepEqual(r2.callState.eligibleCounterSeats, [3]);
     // seat1 cannot retry
-    err(act({ ...r2, currentTurn: 1 }, { type: 'COUNTER_BID', seat: 1, suit: 'H', cardIds: [s.hands[1][0].id] }), 'NOT_ELIGIBLE');
-    const r3 = ok(act(r2, { type: 'COUNTER_BID', seat: 3, suit: 'D', cardIds: [s.hands[3][0].id] }));
+    err(act(r2, { type: 'COUNTER_BID', seat: 1, suit: 'H', cardIds: [s.hands[1][0].id] }), 'NOT_ELIGIBLE');
+    const r3Prop = ok(act(r2, { type: 'COUNTER_BID', seat: 3, suit: 'D', cardIds: [s.hands[3][0].id] }));
+    const r3 = ok(act(r3Prop, { type: 'DEFEND_COUNTER', seat: 0 }));
     assert.equal(r3.trumpSuit, 'D');
     assert.equal(r3.dealer, 0);
     assert.equal(r3.teams.B.penaltyCount, 1, 'first failure penalty must NOT be erased by teammate success');
-    // team A now may re-counter: seat 0 bipai 4 vs seat3 5 → not more; seat2 bipai 1
-    assert.deepEqual(r3.callState.eligibleCounterSeats, [0, 2]);
-    const r4 = ok(act(r3, { type: 'COUNTER_BID', seat: 0, suit: 'S', cardIds: [s.hands[0][0].id] }));
+    // Seat 0 was countered -> CANNOT re-counter; ONLY teammate Seat 2 is eligible!
+    assert.deepEqual(r3.callState.eligibleCounterSeats, [2]);
+    const r4Prop = ok(act(r3, { type: 'COUNTER_BID', seat: 2, suit: 'C', cardIds: [s.hands[2][0].id] }));
+    const r4 = ok(act(r4Prop, { type: 'DEFEND_COUNTER', seat: 3 }));
     assert.equal(r4.teams.A.penaltyCount, 1);
     assert.equal(r4.trumpSuit, 'D');
-    const r5 = ok(act(r4, { type: 'PASS_COUNTER', seat: 2 }));
-    assert.equal(r5.phase, 'BURYING');
-    assert.equal(r5.currentTurn, 0, 'dealer (not caller) buries');
+    assert.equal(r4.phase, 'BURYING');
+    assert.equal(r4.currentTurn, 0, 'dealer (not caller) buries');
     // penalties carry into next round state
-    const next = startNextRound({ ...r5, settlement: { nextDealer: 2 } as GameState['settlement'] });
+    const next = startNextRound({ ...r4, settlement: { nextDealer: 2 } as GameState['settlement'] });
     assert.equal(next.teams.A.penaltyCount, 1);
     assert.equal(next.teams.B.penaltyCount, 1);
   });
@@ -345,7 +345,9 @@ describe('audit A3: 后续局叫主 / 反主', () => {
     let r = ok(act(s, { type: 'CALL_TRUMP', seat: 2, suit: 'S', cardIds: [s.hands[2][0].id] }));
     assert.deepEqual(r.callState.eligibleCounterSeats, [3, 1]);
     r = ok(act(r, { type: 'COUNTER_BID', seat: 3, suit: 'D', cardIds: [s.hands[3][0].id] }));
+    r = ok(act(r, { type: 'DEFEND_COUNTER', seat: 2 }));
     r = ok(act(r, { type: 'COUNTER_BID', seat: 1, suit: 'H', cardIds: [s.hands[1][0].id] }));
+    r = ok(act(r, { type: 'DEFEND_COUNTER', seat: 2 }));
     assert.equal(r.teams.B.penaltyCount, 2);
     assert.equal(r.phase, 'BURYING');
     assert.equal(r.dealer, 2);
@@ -390,22 +392,26 @@ describe('audit A8: bot-driven bidding invariants over many seeds', () => {
         let s = start;
         const fixedDealer = s.dealer;
         let guard = 0;
-        while (s.phase === 'CALLING' || s.phase === 'COUNTER_BIDDING') {
+        while (
+          s.phase === 'CALLING' ||
+          s.phase === 'COUNTER_BIDDING' ||
+          s.phase === 'COUNTER_RESPONSE'
+        ) {
           assert.ok(guard++ < 64, `seed ${seed}: bidding did not terminate`);
           const seat = s.currentTurn as Seat;
           const a = chooseBotAction(s, seat);
           const prev = s;
           s = ok(act(s, a));
           if (!start.isFirstRound) assert.equal(s.dealer, fixedDealer, 'later rounds: dealer fixed');
-          if (a.type === 'COUNTER_BID') {
+          if (a.type === 'DEFEND_COUNTER') {
+            const pending = prev.callState.pendingCounter!;
             const failed = s.callState.callerSeat === prev.callState.callerSeat;
-            const team = seat % 2 === 0 ? 'A' : 'B';
-            assert.notEqual(prev.callState.callerTeam, team, 'never counter own team');
-            assert.equal(s.teams[team].penaltyCount - prev.teams[team].penaltyCount, failed ? 1 : 0);
-            if (!failed && !(prev.isFirstRound && prev.callState.calledCount === 2)) {
-              assert.ok(countBipai(prev.hands[seat], prev.levelRank) > countBipai(prev.hands[prev.callState.callerSeat!], prev.levelRank));
+            assert.notEqual(prev.callState.callerTeam, pending.team, 'never counter own team');
+            assert.equal(s.teams[pending.team].penaltyCount - prev.teams[pending.team].penaltyCount, failed ? 1 : 0);
+            if (!failed) {
+              assert.ok(countBipai(prev.hands[pending.seat], prev.levelRank) > countBipai(prev.hands[prev.callState.callerSeat!], prev.levelRank));
             }
-            if (!failed && start.isFirstRound) assert.equal(s.dealer, seat, 'round 1 steal');
+            if (!failed && start.isFirstRound) assert.equal(s.dealer, pending.seat, 'round 1 steal');
           }
         }
         assert.equal(s.phase, 'BURYING');

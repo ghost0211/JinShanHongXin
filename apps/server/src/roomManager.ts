@@ -1,15 +1,28 @@
 import type { GameMode, RoomSummary } from '@jinshan/protocol';
 import type { HistoryStore } from './db.js';
-import { GameRoom } from './room.js';
+import { GameRoom, type RoomTimingOptions } from './room.js';
 
 export class RoomManager {
   private readonly rooms = new Map<string, GameRoom>();
   private readonly store?: HistoryStore;
   private readonly botDelayMs: number;
+  private readonly timingOptions: RoomTimingOptions;
 
-  constructor(options?: { store?: HistoryStore; botDelayMs?: number }) {
+  constructor(
+    options?: { store?: HistoryStore; botDelayMs?: number } & RoomTimingOptions,
+  ) {
     this.store = options?.store;
     this.botDelayMs = options?.botDelayMs ?? 450;
+    this.timingOptions = {
+      withDealing: options?.withDealing,
+      dealStepMs: options?.dealStepMs,
+      callWindowMs: options?.callWindowMs,
+      counterWindowMs: options?.counterWindowMs,
+      reCounterWindowMs: options?.reCounterWindowMs,
+      responseTimeoutMs: options?.responseTimeoutMs,
+      trickIntervalMs: options?.trickIntervalMs,
+      disconnectGraceMs: options?.disconnectGraceMs,
+    };
   }
 
   private generateRoomId(): string {
@@ -32,6 +45,7 @@ export class RoomManager {
       debugMode: options?.debugMode ?? false,
       botDelayMs: this.botDelayMs,
       store: this.store,
+      ...this.timingOptions,
     });
     this.rooms.set(roomId, room);
     return room;

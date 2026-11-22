@@ -274,63 +274,49 @@ export function parseSingleAtomicPattern(
   return null;
 }
 
-export function parsePlay(
-  cards: readonly Card[],
-  trumpSuit: StandardSuit | null,
-  levelRank: LevelRank,
-): ParsedPlay | null {
-  const f510k = parse510K(cards, trumpSuit);
-  if (f510k) {
-    return {
-      patternType: 'F510K',
-      category: f510k.category,
-      cards: [...f510k.atomic.cards],
-      components: [f510k.atomic],
-    };
-  }
-
-  const category = getSingleCategory(cards, trumpSuit, levelRank);
-  if (!category) return null;
-
-  const atomic = parseSingleAtomicPattern(cards, trumpSuit, levelRank);
-  if (atomic) {
-    return {
-      patternType: atomic.type,
-      category,
-      cards: [...atomic.cards],
-      components: [atomic],
-    };
-  }
-
-  // Decompose into SLING components greedily:
-  // TRIPLE_TRACTOR -> TRIPLE -> TRACTOR -> PAIR -> SINGLE
-  let pool = groupCardsByKey(cards, trumpSuit, levelRank);
-  const components: AtomicPattern[] = [];
-
-  const consumeChain = (candidate: AtomicChainCandidate, multiplicity: 2 | 3) => {
-    const usedKeySet = new Set(candidate.keys);
-    const updated: KeyGroup[] = [];
-    for (const g of pool) {
-      if (usedKeySet.has(g.key)) {
-        const leftover = g.cards.slice(multiplicity);
-        if (leftover.length > 0) {
-          updated.push({ ...g, cards: leftover });
-        }
-      } else {
-        updated.push(g);
+function consumeChainFromPool(
+  pool: readonly KeyGroup[],
+  candidate: AtomicChainCandidate,
+  multiplicity: 2 | 3,
+): KeyGroup[] {
+  const usedKeySet = new Set(candidate.keys);
+  const updated: KeyGroup[] = [];
+  for (const g of pool) {
+    if (usedKeySet.has(g.key)) {
+      const leftover = g.cards.slice(multiplicity);
+      if (leftover.length > 0) {
+        updated.push({ ...g, cards: leftover });
       }
+    } else {
+      updated.push(g);
     }
-    pool = updated;
-    components.push(toAtomicPattern(candidate));
-  };
+  }
+  return updated;
+}
+
+function greedyDecomposeNon510K(
+  initialPool: readonly KeyGroup[],
+  tractorBeforeTriple: boolean,
+): AtomicPattern[] {
+  let pool = initialPool.map((g) => ({ ...g, cards: [...g.cards] }));
+  const components: AtomicPattern[] = [];
 
   while (true) {
     const tripleTractors = enumerateChainCandidates(pool, 3);
     if (tripleTractors.length === 0) break;
-    consumeChain(tripleTractors[0], 3);
+    pool = consumeChainFromPool(pool, tripleTractors[0], 3);
+    components.push(toAtomicPattern(tripleTractors[0]));
   }
 
-  // Extract remaining TRIPLES (groups of 3)
+  if (tractorBeforeTriple) {
+    while (true) {
+      const tractors = enumerateChainCandidates(pool, 2);
+      if (tractors.length === 0) break;
+      pool = consumeChainFromPool(pool, tractors[0], 2);
+      components.push(toAtomicPattern(tractors[0]));
+    }
+  }
+
   const afterTriples: KeyGroup[] = [];
   for (const g of pool) {
     if (g.cards.length === 3) {
@@ -348,13 +334,15 @@ export function parsePlay(
   }
   pool = afterTriples;
 
-  while (true) {
-    const tractors = enumerateChainCandidates(pool, 2);
-    if (tractors.length === 0) break;
-    consumeChain(tractors[0], 2);
+  if (!tractorBeforeTriple) {
+    while (true) {
+      const tractors = enumerateChainCandidates(pool, 2);
+      if (tractors.length === 0) break;
+      pool = consumeChainFromPool(pool, tractors[0], 2);
+      components.push(toAtomicPattern(tractors[0]));
+    }
   }
 
-  // Extract remaining PAIRS and SINGLES
   const afterPairs: KeyGroup[] = [];
   for (const g of pool) {
     if (g.cards.length >= 2) {
@@ -387,19 +375,196 @@ export function parsePlay(
     }
   }
 
-  components.sort((a, b) => {
-    const pDiff = PATTERN_PRIORITY[b.type] - PATTERN_PRIORITY[a.type];
-    if (pDiff !== 0) return pDiff;
-    if (b.length !== a.length) return b.length - a.length;
-    return b.topOrder - a.topOrder;
+  return sortComponentsCanonical(components);
+}
+
+function scoreDecompositionQuality(components: readonly AtomicPattern[]): number {
+  let singleCount = 0;
+  let strongScore = 0;
+  for (const comp of components) {
+    if (comp.type === 'SINGLE') {
+      singleCount += 1;
+    } else if (comp.type === 'PAIR') {
+      strongScore += 18;
+    } else if (comp.type === 'TRACTOR') {
+      strongScore += 32 * comp.length;
+    } else if (comp.type === 'F510K') {
+      strongScore += 55 * comp.length;
+    } else if (comp.type === 'TRIPLE') {
+      strongScore += 60;
+    } else if (comp.type === 'TRIPLE_TRACTOR') {
+      strongScore += 95 * comp.length;
+    }
+  }
+  // Strongly minimize leftover singles, then minimize total component count, then prefer stronger patterns
+  return -singleCount * 1000 - components.length * 120 + strongScore;
+}
+
+function decompositionSignature(components: readonly AtomicPattern[]): string {
+  return components
+    .map((c) => `${c.type}:${c.length}:${c.cardKeys.join('+')}`)
+    .join('|');
+}
+
+/**
+ * Enumerate optimal candidate decompositions for a lead play (including F510K
+ * components and off-suit borrowed ♥5 / level 10 / level K inside F510K).
+ * Returned candidates are sorted from strongest/most compact to weakest.
+ */
+export function enumeratePlayDecompositions(
+  cards: readonly Card[],
+  trumpSuit: StandardSuit | null,
+  levelRank: LevelRank,
+): ParsedPlay[] {
+  if (cards.length === 0) return [];
+
+  const exact510k = parse510K(cards, trumpSuit);
+  if (exact510k) {
+    return [
+      {
+        patternType: 'F510K',
+        category: exact510k.category,
+        cards: [...exact510k.atomic.cards],
+        components: [exact510k.atomic],
+      },
+    ];
+  }
+
+  // Determine valid category & 510K suit (supporting borrowed ♥5 / level 10 / level K in off-suit 510K)
+  let category = getSingleCategory(cards, trumpSuit, levelRank);
+  let f510kSuit: StandardSuit | null = null;
+  let requireAtLeastOne510K = false;
+
+  if (category) {
+    f510kSuit = category === 'TRUMP' ? trumpSuit : category;
+  } else {
+    // Check if all cards share one physical non-trump suit S (e.g. ♥A + ♥5 + ♥10 + ♥K when ♥ is not trump)
+    const firstSuit = cards[0].suit;
+    if (
+      firstSuit !== 'J' &&
+      firstSuit !== trumpSuit &&
+      cards.every((c) => c.suit === firstSuit)
+    ) {
+      category = firstSuit;
+      f510kSuit = firstSuit;
+      requireAtLeastOne510K = true;
+    } else {
+      return [];
+    }
+  }
+
+  const results: ParsedPlay[] = [];
+  const seen = new Set<string>();
+
+  const pushCandidate = (components: AtomicPattern[]) => {
+    const sorted = sortComponentsCanonical(components);
+    const sig = decompositionSignature(sorted);
+    if (seen.has(sig)) return;
+    seen.add(sig);
+    results.push({
+      patternType: sorted.length === 1 ? sorted[0].type : 'SLING',
+      category: category!,
+      cards: [...cards],
+      components: sorted,
+    });
+  };
+
+  // Single non-510K atomic pattern check (only when no borrowing needed)
+  if (!requireAtLeastOne510K) {
+    const atomic = parseSingleAtomicPattern(cards, trumpSuit, levelRank);
+    if (atomic) {
+      pushCandidate([atomic]);
+    }
+  }
+
+  const s5 = f510kSuit
+    ? cards.filter((c) => c.suit === f510kSuit && c.rank === '5')
+    : [];
+  const s10 = f510kSuit
+    ? cards.filter((c) => c.suit === f510kSuit && c.rank === '10')
+    : [];
+  const sK = f510kSuit
+    ? cards.filter((c) => c.suit === f510kSuit && c.rank === 'K')
+    : [];
+  const max510k = Math.min(s5.length, s10.length, sK.length);
+
+  for (let m = max510k; m >= 0; m--) {
+    if (requireAtLeastOne510K && m === 0) continue;
+
+    const usedIds = new Set<number>();
+    const fCards: Card[] = [];
+    for (let i = 0; i < m; i++) {
+      usedIds.add(s5[i].id);
+      usedIds.add(s10[i].id);
+      usedIds.add(sK[i].id);
+      fCards.push(s5[i], s10[i], sK[i]);
+    }
+    const remCards = cards.filter((c) => !usedIds.has(c.id));
+
+    // Verify all remaining non-510K cards genuinely belong to `category`
+    if (
+      remCards.length > 0 &&
+      getSingleCategory(remCards, trumpSuit, levelRank) !== category
+    ) {
+      continue;
+    }
+
+    const baseComponents: AtomicPattern[] =
+      m > 0 && f510kSuit
+        ? [
+            {
+              type: 'F510K',
+              cards: fCards,
+              cardKeys: [`${f510kSuit}:5`, `${f510kSuit}:10`, `${f510kSuit}:K`],
+              length: m,
+              topOrder: -100,
+              usedLowAce: false,
+            },
+          ]
+        : [];
+
+    if (remCards.length === 0) {
+      pushCandidate(baseComponents);
+      continue;
+    }
+
+    const remPool = groupCardsByKey(remCards, trumpSuit, levelRank);
+
+    // Strategy 1: triples before tractors
+    pushCandidate([...baseComponents, ...greedyDecomposeNon510K(remPool, false)]);
+    // Strategy 2: tractors before triples (e.g. QQQKK -> QQKK + Q vs QQQ + KK)
+    pushCandidate([...baseComponents, ...greedyDecomposeNon510K(remPool, true)]);
+
+    // Strategy 3: alternate top tractor choice (e.g. low-A tractor vs high-A tractor)
+    const tractors = enumerateChainCandidates(remPool, 2);
+    for (let t = 1; t < Math.min(tractors.length, 4); t++) {
+      const after = consumeChainFromPool(remPool, tractors[t], 2);
+      pushCandidate([
+        ...baseComponents,
+        toAtomicPattern(tractors[t]),
+        ...greedyDecomposeNon510K(after, false),
+      ]);
+    }
+  }
+
+  results.sort((a, b) => {
+    const scoreDiff =
+      scoreDecompositionQuality(b.components) -
+      scoreDecompositionQuality(a.components);
+    if (scoreDiff !== 0) return scoreDiff;
+    return a.components.length - b.components.length;
   });
 
-  return {
-    patternType: 'SLING',
-    category,
-    cards: [...cards],
-    components,
-  };
+  return results;
+}
+
+export function parsePlay(
+  cards: readonly Card[],
+  trumpSuit: StandardSuit | null,
+  levelRank: LevelRank,
+): ParsedPlay | null {
+  const decompositions = enumeratePlayDecompositions(cards, trumpSuit, levelRank);
+  return decompositions[0] ?? null;
 }
 
 export function canHandBeatComponent(
@@ -457,16 +622,25 @@ export function sortComponentsCanonical(
   });
 }
 
+function getComponentStrengthTuple(comp: AtomicPattern): [number, number] {
+  // For comparing two components matched against the same canonical target slot
+  // (e.g. TRIPLE / TRIPLE_TRACTOR beating an F510K slot)
+  if (comp.type === 'F510K') {
+    return [0, -100];
+  }
+  return [1, comp.topOrder];
+}
+
 export function compareMatchedComponents(
   a: readonly AtomicPattern[],
   b: readonly AtomicPattern[],
 ): number {
-  const sa = sortComponentsCanonical(a);
-  const sb = sortComponentsCanonical(b);
-  const len = Math.min(sa.length, sb.length);
+  const len = Math.min(a.length, b.length);
   for (let i = 0; i < len; i++) {
-    const diff = sa[i].topOrder - sb[i].topOrder;
-    if (diff !== 0) return diff;
+    const [tierA, ordA] = getComponentStrengthTuple(a[i]);
+    const [tierB, ordB] = getComponentStrengthTuple(b[i]);
+    if (tierA !== tierB) return tierA - tierB;
+    if (ordA !== ordB) return ordA - ordB;
   }
   return 0;
 }
@@ -477,9 +651,6 @@ export function canMatchSlingStructure(
   trumpSuit: StandardSuit | null,
   levelRank: LevelRank,
 ): { matched: boolean; matchedComponents: AtomicPattern[] } {
-  const category = getSingleCategory(cards, trumpSuit, levelRank);
-  if (!category) return { matched: false, matchedComponents: [] };
-
   const totalNeeded = targetComponents.reduce(
     (sum, c) => sum + c.cards.length,
     0,
@@ -489,18 +660,119 @@ export function canMatchSlingStructure(
   }
 
   const orderedTargets = sortComponentsCanonical(targetComponents);
-  const initialPool = groupCardsByKey(cards, trumpSuit, levelRank);
+  const hasF510KTarget = orderedTargets.some((c) => c.type === 'F510K');
+
+  let category = getSingleCategory(cards, trumpSuit, levelRank);
+  if (!category && hasF510KTarget) {
+    const firstSuit = cards[0]?.suit;
+    if (
+      firstSuit &&
+      firstSuit !== 'J' &&
+      firstSuit !== trumpSuit &&
+      cards.every((c) => c.suit === firstSuit)
+    ) {
+      category = firstSuit;
+    }
+  }
+  if (!category) return { matched: false, matchedComponents: [] };
+
+  const f510kSuit: StandardSuit | null =
+    category === 'TRUMP' ? trumpSuit : category;
 
   const search = (
     idx: number,
-    pool: KeyGroup[],
+    remCards: readonly Card[],
     acc: AtomicPattern[],
   ): AtomicPattern[] | null => {
     if (idx === orderedTargets.length) {
-      return pool.length === 0 ? acc : null;
+      return remCards.length === 0 ? [...acc] : null;
     }
 
     const target = orderedTargets[idx];
+
+    if (target.type === 'F510K') {
+      const k = target.length;
+      const remPool = groupCardsByKey(remCards, trumpSuit, levelRank);
+      const candidates: Array<{ pattern: AtomicPattern; usedIds: Set<number> }> = [];
+
+      // 1. Prefer beating shapes first: TRIPLE (for k=1) or TRIPLE_TRACTOR(k) (for k>=2)
+      //    only using genuine cards of `category`
+      const inCatRem = remCards.filter(
+        (c) => getCardCategory(c, trumpSuit, levelRank) === category,
+      );
+      const inCatPool = groupCardsByKey(inCatRem, trumpSuit, levelRank);
+      if (k === 1) {
+        for (const g of inCatPool) {
+          if (g.cards.length === 3) {
+            candidates.push({
+              pattern: {
+                type: 'TRIPLE',
+                cards: g.cards.slice(0, 3),
+                cardKeys: [g.key],
+                length: 1,
+                topOrder: g.order,
+                usedLowAce: false,
+              },
+              usedIds: new Set(g.cards.slice(0, 3).map((c) => c.id)),
+            });
+          }
+        }
+      } else {
+        for (const ch of enumerateChainCandidates(inCatPool, 3, { exactLength: k })) {
+          candidates.push({
+            pattern: toAtomicPattern(ch),
+            usedIds: new Set(ch.cards.map((c) => c.id)),
+          });
+        }
+      }
+
+      // 2. Also allow matching with k units of same-suit F510K (e.g. trump 510K killing side 510K)
+      if (f510kSuit) {
+        const c5 = remCards.filter((c) => c.suit === f510kSuit && c.rank === '5');
+        const c10 = remCards.filter((c) => c.suit === f510kSuit && c.rank === '10');
+        const cK = remCards.filter((c) => c.suit === f510kSuit && c.rank === 'K');
+        if (Math.min(c5.length, c10.length, cK.length) >= k) {
+          const picked: Card[] = [];
+          for (let i = 0; i < k; i++) picked.push(c5[i], c10[i], cK[i]);
+          candidates.push({
+            pattern: {
+              type: 'F510K',
+              cards: picked,
+              cardKeys: [`${f510kSuit}:5`, `${f510kSuit}:10`, `${f510kSuit}:K`],
+              length: k,
+              topOrder: -100,
+              usedLowAce: false,
+            },
+            usedIds: new Set(picked.map((c) => c.id)),
+          });
+        }
+      }
+
+      // Unused variable suppression for remPool if needed
+      void remPool;
+
+      for (const cand of candidates) {
+        const nextRem = remCards.filter((c) => !cand.usedIds.has(c.id));
+        acc.push(cand.pattern);
+        const res = search(idx + 1, nextRem, acc);
+        if (res) return res;
+        acc.pop();
+      }
+      return null;
+    }
+
+    // For all remaining non-F510K targets, every remaining card must strictly belong to `category`
+    if (
+      !orderedTargets.slice(idx).some((t) => t.type === 'F510K') &&
+      getSingleCategory(remCards, trumpSuit, levelRank) !== category
+    ) {
+      return null;
+    }
+
+    const inCatRem = remCards.filter(
+      (c) => getCardCategory(c, trumpSuit, levelRank) === category,
+    );
+    const pool = groupCardsByKey(inCatRem, trumpSuit, levelRank);
 
     if (target.type === 'TRIPLE_TRACTOR' || target.type === 'TRACTOR') {
       const mult: 2 | 3 = target.type === 'TRIPLE_TRACTOR' ? 3 : 2;
@@ -508,59 +780,40 @@ export function canMatchSlingStructure(
         exactLength: target.length,
       });
       for (const ch of chains) {
-        const usedSet = new Set(ch.keys);
-        const nextPool: KeyGroup[] = [];
-        for (const g of pool) {
-          if (usedSet.has(g.key)) {
-            const rem = g.cards.slice(mult);
-            if (rem.length > 0) nextPool.push({ ...g, cards: rem });
-          } else {
-            nextPool.push(g);
-          }
-        }
+        const usedIds = new Set(ch.cards.map((c) => c.id));
+        const nextRem = remCards.filter((c) => !usedIds.has(c.id));
         acc.push(toAtomicPattern(ch));
-        const res = search(idx + 1, nextPool, acc);
+        const res = search(idx + 1, nextRem, acc);
         if (res) return res;
         acc.pop();
       }
       return null;
     }
 
-    if (target.type === 'F510K') {
-      return null;
-    }
-
     const needCount =
       target.type === 'TRIPLE' ? 3 : target.type === 'PAIR' ? 2 : 1;
 
-    for (let i = 0; i < pool.length; i++) {
-      const g = pool[i];
+    for (const g of pool) {
       if (g.cards.length < needCount) continue;
-      const nextPool: KeyGroup[] = [];
-      for (let j = 0; j < pool.length; j++) {
-        if (j === i) {
-          const rem = pool[j].cards.slice(needCount);
-          if (rem.length > 0) nextPool.push({ ...pool[j], cards: rem });
-        } else {
-          nextPool.push(pool[j]);
-        }
-      }
+      const picked = g.cards.slice(0, needCount);
+      const usedIds = new Set(picked.map((c) => c.id));
+      const nextRem = remCards.filter((c) => !usedIds.has(c.id));
       acc.push({
         type: target.type,
-        cards: g.cards.slice(0, needCount),
+        cards: picked,
         cardKeys: [g.key],
         length: 1,
         topOrder: g.order,
         usedLowAce: false,
       });
-      const res = search(idx + 1, nextPool, acc);
+      const res = search(idx + 1, nextRem, acc);
       if (res) return res;
       acc.pop();
     }
     return null;
   };
 
-  const matched = search(0, initialPool, []);
+  const matched = search(0, cards, []);
   if (!matched) return { matched: false, matchedComponents: [] };
   return { matched: true, matchedComponents: matched };
 }

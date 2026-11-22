@@ -16,12 +16,12 @@ function follow(hand: Card[], sel: string, lead: ParsedPlay, t = T, l = L) {
   return validateFollowPlay(hand, ids(pick(hand, sel)), lead, t, l);
 }
 
-describe('AUDIT B3: follow obligations (体系一, 不需要对子补齐)', () => {
-  it('PAIR lead: must play a pair if any (a triple may be split); otherwise any same-suit cards', () => {
+describe('AUDIT B3: follow obligations (仅强制跟同门花色，无强制对子/三张/拖拉机限制)', () => {
+  it('PAIR lead: must follow suit count, NO forced pair even when holding pair or triple', () => {
     const lead = parsed(cards('S:9*2'), T, L);
     const hand = cards('S:K*3 S:7 S:6 H:4');
-    assert.equal(follow(hand, 'S:7 S:6', lead).valid, false);
-    assert.equal(follow(hand, 'S:K S:7', lead).valid, false);
+    assert.equal(follow(hand, 'S:7 S:6', lead).valid, true);
+    assert.equal(follow(hand, 'S:K S:7', lead).valid, true);
     assert.equal(follow(hand, 'S:K*2', lead).valid, true);
     const noPair = cards('S:K S:7 S:6 H:4*2');
     assert.equal(follow(noPair, 'S:7 S:6', lead).valid, true);
@@ -32,40 +32,36 @@ describe('AUDIT B3: follow obligations (体系一, 不需要对子补齐)', () =
     assert.equal(follow(oneSpade, 'H:4*2', lead).valid, false);
   });
 
-  it('TRIPLE lead: must play a triple if held; no triple -> NOT forced to pad with a pair', () => {
+  it('TRIPLE lead: only same-suit count is mandatory; holding triple does NOT force playing it', () => {
     const lead = parsed(cards('S:9*3'), T, L);
     const withTriple = cards('S:4*3 S:K*2 S:7');
-    assert.equal(follow(withTriple, 'S:K*2 S:7', lead).valid, false);
+    assert.equal(follow(withTriple, 'S:K*2 S:7', lead).valid, true);
     assert.equal(follow(withTriple, 'S:4*3', lead).valid, true);
     const pairsOnly = cards('S:K*2 S:Q*2 S:7');
     assert.equal(follow(pairsOnly, 'S:K S:Q S:7', lead).valid, true);
     assert.equal(follow(pairsOnly, 'S:K*2 S:7', lead).valid, true);
   });
 
-  it('TRACTOR lead: must play a tractor (incl. A=1 tractor) if held; else as many pairs as possible', () => {
+  it('TRACTOR lead: only same-suit count is mandatory; holding tractor or pairs does NOT force playing them', () => {
     const lead = parsed(cards('H:9*2 H:10*2'), T, L);
-    // A=1 tractor ♥AA44 (打2 主♦) is a real tractor and is mandatory
     const lowA = cards('H:A*2 H:4*2 H:K*2 H:7');
     assert.equal(follow(lowA, 'H:A*2 H:4*2', lead).valid, true);
-    assert.equal(follow(lowA, 'H:K*2 H:4*2', lead).valid, false);
-    // no tractor: must use both pairs
+    assert.equal(follow(lowA, 'H:K*2 H:4*2', lead).valid, true);
+    assert.equal(follow(lowA, 'H:A H:4 H:K H:7', lead).valid, true);
     const twoPairs = cards('H:A*2 H:Q*2 H:7 H:6');
     assert.equal(follow(twoPairs, 'H:A*2 H:Q*2', lead).valid, true);
-    assert.equal(follow(twoPairs, 'H:A*2 H:7 H:6', lead).valid, false);
-    // one pair only: pair + any
-    const onePair = cards('H:A*2 H:Q H:7 H:6');
-    assert.equal(follow(onePair, 'H:A*2 H:Q H:7', lead).valid, true);
-    assert.equal(follow(onePair, 'H:Q H:7 H:6 H:A', lead).valid, false);
+    assert.equal(follow(twoPairs, 'H:A*2 H:7 H:6', lead).valid, true);
+    assert.equal(follow(twoPairs, 'H:A H:Q H:7 H:6', lead).valid, true);
   });
 
-  it('TRIPLE_TRACTOR lead: tractor of triples mandatory; missing triples NOT padded with pairs', () => {
+  it('TRIPLE_TRACTOR lead: only same-suit count is mandatory', () => {
     const lead = parsed(cards('S:9*3 S:10*3'), T, L);
     const oneTriple = cards('S:4*3 S:K*2 S:Q*2 S:7');
     assert.equal(follow(oneTriple, 'S:4*3 S:K S:Q S:7', lead).valid, true);
-    assert.equal(follow(oneTriple, 'S:K*2 S:Q*2 S:7 S:4', lead).valid, false, 'the triple is mandatory');
+    assert.equal(follow(oneTriple, 'S:K*2 S:Q*2 S:7 S:4', lead).valid, true);
     const twoLoose = cards('S:4*3 S:8*3 S:K');
     assert.equal(follow(twoLoose, 'S:4*3 S:8*3', lead).valid, true);
-    assert.equal(follow(twoLoose, 'S:4*3 S:8*2 S:K', lead).valid, false);
+    assert.equal(follow(twoLoose, 'S:4*3 S:8*2 S:K', lead).valid, true);
   });
 
   it('findLegalFollowCards always yields only legal plays and at least one', () => {
@@ -276,10 +272,11 @@ describe('AUDIT B3: engine-level play flow', () => {
 });
 
 describe('AUDIT B3 (pending user confirmation – documents CURRENT behaviour)', () => {
-  it('[待确认] pair-TRACTOR lead, follower without tractor but with pairs: currently MUST play the pairs', () => {
+  it('pair-TRACTOR lead, follower without tractor but with pairs: NOT forced to play pairs (confirmed #9B)', () => {
     const lead = parsed(cards('S:9*2 S:10*2'), T, L);
     const hand = cards('S:K*2 S:7*2 S:4 S:5');
-    assert.equal(follow(hand, 'S:K*2 S:4 S:5', lead).valid, false);
+    assert.equal(follow(hand, 'S:K*2 S:4 S:5', lead).valid, true);
+    assert.equal(follow(hand, 'S:K S:7 S:4 S:5', lead).valid, true);
     assert.equal(follow(hand, 'S:K*2 S:7*2', lead).valid, true);
   });
 

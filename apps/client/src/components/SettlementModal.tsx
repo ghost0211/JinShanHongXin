@@ -39,24 +39,49 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
               gap: 8,
             }}
           >
-            <div className="card-panel" style={{ padding: 10 }}>
-              <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>桌面闲家抓分</div>
-              <div style={{ fontSize: 18, fontWeight: 800 }}>{s.tableChallengerPoints} 分</div>
-            </div>
-            <div className="card-panel" style={{ padding: 10 }}>
-              <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
-                底牌分 {s.bottomKilled ? '（抠底 ×2）' : '（庄家保底）'}
-              </div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: s.bottomKilled ? '#fca5a5' : undefined }}>
-                +{s.bottomBonusPoints} 分
-              </div>
-            </div>
-            <div className="card-panel" style={{ padding: 10 }}>
-              <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>闲家结算总分</div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--gold-strong)' }}>
-                {s.totalChallengerScore} 分
-              </div>
-            </div>
+            {s.mode === 'heixin' ? (
+              <>
+                <div className="card-panel" style={{ padding: 10 }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>庄家叫分目标</div>
+                  <div style={{ fontSize: 18, fontWeight: 800 }}>{s.bidScore} 分</div>
+                </div>
+                <div className="card-panel" style={{ padding: 10 }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                    底牌影响 {s.bottomKilled ? '（闲家抠底 ×2）' : '（庄家保底）'}
+                  </div>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: s.bottomKilled ? '#fca5a5' : '#6ee7b7' }}>
+                    {s.bottomKilled ? `-${s.bottomBonusPoints} 分` : `+${s.bottomPointsRaw} 分`}
+                  </div>
+                </div>
+                <div className="card-panel" style={{ padding: 10 }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>庄家结算得分</div>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--gold-strong)' }}>
+                    {s.bankerNetScore} 分
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="card-panel" style={{ padding: 10 }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>桌面闲家抓分</div>
+                  <div style={{ fontSize: 18, fontWeight: 800 }}>{s.tableChallengerPoints} 分</div>
+                </div>
+                <div className="card-panel" style={{ padding: 10 }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                    底牌分 {s.bottomKilled ? '（抠底 ×2）' : '（庄家保底）'}
+                  </div>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: s.bottomKilled ? '#fca5a5' : undefined }}>
+                    +{s.bottomBonusPoints} 分
+                  </div>
+                </div>
+                <div className="card-panel" style={{ padding: 10 }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>闲家结算总分</div>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--gold-strong)' }}>
+                    {s.totalChallengerScore} 分
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           {s.mode === 'hongxin' ? (

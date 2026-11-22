@@ -56,6 +56,8 @@ export function isRedSuit(suit: Suit): boolean {
 
 export function getPhaseLabel(phase: GamePhase, mode: GameMode): string {
   switch (phase) {
+    case 'DEALING':
+      return '发牌中';
     case 'BIDDING':
       return '叫分抢庄';
     case 'CHOOSE_TRUMP':
@@ -63,7 +65,9 @@ export function getPhaseLabel(phase: GamePhase, mode: GameMode): string {
     case 'CALLING':
       return mode === 'hongxin' ? '亮牌叫主' : '叫主';
     case 'COUNTER_BIDDING':
-      return '比牌反主';
+      return '自由反主';
+    case 'COUNTER_RESPONSE':
+      return '被反主回应';
     case 'BURYING':
       return '庄家埋底';
     case 'PLAYING':
@@ -95,9 +99,60 @@ export function getPatternLabel(parsed: ParsedPlay | undefined): string {
         ? `主牌${prefix}510K`
         : `${prefix}510K`;
     }
-    case 'SLING':
+    case 'SLING': {
+      if (parsed.components.length > 0) {
+        const grouped: Array<{ label: string; count: number }> = [];
+        for (const c of parsed.components) {
+          let label: string;
+          switch (c.type) {
+            case 'F510K':
+              label = c.length === 3 ? '三510K' : c.length === 2 ? '双510K' : '510K';
+              break;
+            case 'TRIPLE_TRACTOR':
+              label = `${c.length}连三`;
+              break;
+            case 'TRIPLE':
+              label = '三张';
+              break;
+            case 'TRACTOR':
+              label = `${c.length}连对`;
+              break;
+            case 'PAIR':
+              label = '对子';
+              break;
+            case 'SINGLE':
+              label = '单';
+              break;
+          }
+          const last = grouped[grouped.length - 1];
+          if (last && last.label === label) {
+            last.count += 1;
+          } else {
+            grouped.push({ label, count: 1 });
+          }
+        }
+        if (grouped.length <= 3) {
+          const summary = grouped
+            .map((g) => (g.count > 1 ? `${g.label}×${g.count}` : g.label))
+            .join('+');
+          return `甩牌(${summary})`;
+        }
+      }
       return `甩牌(${parsed.cards.length}张)`;
+    }
   }
+}
+
+export function getTrickPlayLabel(
+  parsed: ParsedPlay | undefined,
+  cardCount: number,
+  isLead: boolean,
+): string {
+  if (!parsed) return `${cardCount}张`;
+  if (!isLead && parsed.patternType === 'SLING') {
+    return `跟牌(${cardCount}张)`;
+  }
+  return getPatternLabel(parsed);
 }
 
 export function getCardRoleBadge(
@@ -245,6 +300,120 @@ export function previewSelection(
   }
 
   return { valid: false };
+}
+
+export interface MandatoryAutoSelection {
+  cardIds: number[];
+  complete: boolean;
+  reason: string;
+}
+
+/**
+ * Automatically detect cards the player is mathematically forced to include
+ * when following a trick:
+ * 1. Following a category where remaining cards in that category are 1..leadCount
+ *    (except when an off-suit 510K can be formed via borrowed ♥5 / level 10 / level K).
+ * 2. Following a trump 510K (or trump sling with 510K) when holding NO trump triple
+ *    and NO trump 510K to beat/cancel -> forced to include the top 3*k largest trumps.
+ */
+export function getMandatoryFollowSelection(
+  view: PlayerView,
+): MandatoryAutoSelection | null {
+  if (
+    view.phase !== 'PLAYING' ||
+    view.currentTurn !== view.viewerSeat ||
+    view.currentTrick.length === 0
+  ) {
+    return null;
+  }
+
+  const hand = view.myHand;
+  const leadPlay = view.currentTrick[0].parsed;
+  const leadCount = leadPlay.cards.length;
+  if (hand.length === 0 || leadCount === 0) return null;
+
+  const inCatHand = hand.filter(
+    (c) => getCardCategory(c, view.trumpSuit, view.levelRank) === leadPlay.category,
+  );
+  const lead510KUnits = leadPlay.components
+    .filter((c) => c.type === 'F510K')
+    .reduce((sum, c) => sum + c.length, 0);
+
+  // Case B: Remaining cards in led category are 1..leadCount -> every one of them is mandatory
+  if (inCatHand.length > 0 && inCatHand.length <= leadCount) {
+    // Guard: if lead is an off-suit 510K (or sling with off-suit 510K) and player can borrow
+    // a trump-category card (♥5 / level 10 / level K) of that suit to form a same-suit 510K,
+    // do not over-select all inCatHand when inCatHand.length === leadCount.
+    if (
+      leadPlay.category !== 'TRUMP' &&
+      lead510KUnits > 0 &&
+      inCatHand.length === leadCount
+    ) {
+      const targetSuit = leadPlay.category;
+      const s5 = hand.filter((c) => c.suit === targetSuit && c.rank === '5');
+      const s10 = hand.filter((c) => c.suit === targetSuit && c.rank === '10');
+      const sK = hand.filter((c) => c.suit === targetSuit && c.rank === 'K');
+      if (Math.min(s5.length, s10.length, sK.length) >= 1) {
+        const inCatSet = new Set(inCatHand.map((c) => c.id));
+        const usesBorrowedCard =
+          s5.some((c) => !inCatSet.has(c.id)) ||
+          s10.some((c) => !inCatSet.has(c.id)) ||
+          sK.some((c) => !inCatSet.has(c.id));
+        if (usesBorrowedCard) {
+          return null;
+        }
+      }
+    }
+
+    const complete = inCatHand.length === leadCount;
+    const catName =
+      leadPlay.category === 'TRUMP'
+        ? '主牌'
+        : `${getSuitSymbol(leadPlay.category)}${getSuitName(leadPlay.category)}`;
+    return {
+      cardIds: inCatHand.map((c) => c.id),
+      complete,
+      reason: complete
+        ? `已自动选中全部必跟的 ${catName}（${inCatHand.length} 张）`
+        : `已自动选中全部剩余 ${catName}（${inCatHand.length} 张），请再补选 ${leadCount - inCatHand.length} 张垫牌`,
+    };
+  }
+
+  // Case A: Following TRUMP 510K (or TRUMP sling with 510K) with no trump triple and no trump 510K
+  if (
+    leadPlay.category === 'TRUMP' &&
+    lead510KUnits > 0 &&
+    inCatHand.length > leadCount
+  ) {
+    const groups = groupCardsByKey(inCatHand, view.trumpSuit, view.levelRank);
+    const hasTrumpTriple = groups.some((g) => g.cards.length === 3);
+    const hasTrump510K =
+      view.trumpSuit !== null &&
+      inCatHand.some((c) => c.suit === view.trumpSuit && c.rank === '5') &&
+      inCatHand.some((c) => c.suit === view.trumpSuit && c.rank === '10') &&
+      inCatHand.some((c) => c.suit === view.trumpSuit && c.rank === 'K');
+
+    if (!hasTrumpTriple && !hasTrump510K) {
+      const needTop = Math.min(lead510KUnits * 3, inCatHand.length);
+      const sortedDesc = [...inCatHand].sort((a, b) => {
+        const diff =
+          getCardOrder(b, view.trumpSuit, view.levelRank) -
+          getCardOrder(a, view.trumpSuit, view.levelRank);
+        return diff !== 0 ? diff : a.id - b.id;
+      });
+      const picked = sortedDesc.slice(0, needTop);
+      const complete = needTop === leadCount;
+      return {
+        cardIds: picked.map((c) => c.id),
+        complete,
+        reason: complete
+          ? `无主三张或主510K可压/抵，已自动选中最大的 ${needTop} 张主牌`
+          : `无主三张或主510K可压/抵，已自动选中最大的 ${needTop} 张主牌，请再补选 ${leadCount - needTop} 张主牌`,
+      };
+    }
+  }
+
+  return null;
 }
 
 export function getHintOptions(view: PlayerView): number[][] {

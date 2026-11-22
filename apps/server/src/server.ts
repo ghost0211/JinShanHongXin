@@ -4,10 +4,11 @@ import { extname, join, resolve } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage } from '@jinshan/protocol';
-import { HistoryStore } from './db.js';
+import { AuthError, HistoryStore } from './db.js';
+import type { RoomTimingOptions } from './room.js';
 import { RoomManager } from './roomManager.js';
 
-export interface GameServerOptions {
+export interface GameServerOptions extends RoomTimingOptions {
   port?: number;
   host?: string;
   dbPath?: string;
@@ -31,14 +32,50 @@ const MIME_TYPES: Record<string, string> = {
   '.webmanifest': 'application/manifest+json; charset=utf-8',
 };
 
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    ...CORS_HEADERS,
   });
   res.end(JSON.stringify(body));
+}
+
+function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolveBody, rejectBody) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > 64 * 1024) {
+        rejectBody(new AuthError(413, 'PAYLOAD_TOO_LARGE', '请求体过大'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      try {
+        const raw = Buffer.concat(chunks).toString('utf8').trim();
+        resolveBody(raw ? (JSON.parse(raw) as Record<string, unknown>) : {});
+      } catch {
+        rejectBody(new AuthError(400, 'INVALID_JSON', 'JSON 格式错误'));
+      }
+    });
+    req.on('error', (err) => rejectBody(err));
+  });
+}
+
+function extractBearerToken(req: IncomingMessage): string | null {
+  const auth = req.headers.authorization;
+  if (!auth) return null;
+  const match = /^Bearer\s+(.+)$/i.exec(auth.trim());
+  return match ? match[1].trim() : null;
 }
 
 function sendWs(ws: WebSocket, msg: ServerMessage): void {
@@ -65,33 +102,106 @@ export function createGameServer(
   const roomManager = new RoomManager({
     store,
     botDelayMs: options.botDelayMs ?? 450,
+    withDealing: options.withDealing,
+    dealStepMs: options.dealStepMs,
+    callWindowMs: options.callWindowMs,
+    counterWindowMs: options.counterWindowMs,
+    reCounterWindowMs: options.reCounterWindowMs,
+    responseTimeoutMs: options.responseTimeoutMs,
+    trickIntervalMs: options.trickIntervalMs,
+    disconnectGraceMs: options.disconnectGraceMs,
   });
   const staticRoot = options.staticDir ? resolve(options.staticDir) : null;
 
   const contexts = new Map<WebSocket, ConnContext>();
 
-  const handleHttp = (req: IncomingMessage, res: ServerResponse) => {
+  const handleHttp = async (req: IncomingMessage, res: ServerResponse) => {
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-      });
+      res.writeHead(204, CORS_HEADERS);
       res.end();
       return;
     }
 
     const url = new URL(req.url ?? '/', 'http://localhost');
-    if (url.pathname === '/api/health') {
-      sendJson(res, 200, { ok: true, rooms: roomManager.listRooms().length });
-      return;
-    }
-    if (url.pathname === '/api/rooms') {
-      sendJson(res, 200, { rooms: roomManager.listRooms() });
-      return;
-    }
-    if (url.pathname === '/api/history') {
-      sendJson(res, 200, { matches: store.listRecentMatches(20) });
+
+    try {
+      if (url.pathname === '/api/health' && req.method === 'GET') {
+        sendJson(res, 200, { ok: true, rooms: roomManager.listRooms().length });
+        return;
+      }
+      if (url.pathname === '/api/rooms' && req.method === 'GET') {
+        sendJson(res, 200, { rooms: roomManager.listRooms() });
+        return;
+      }
+      if (url.pathname === '/api/history' && req.method === 'GET') {
+        sendJson(res, 200, { matches: store.listRecentMatches(20) });
+        return;
+      }
+      if (url.pathname === '/api/leaderboard' && req.method === 'GET') {
+        sendJson(res, 200, { users: store.getLeaderboard(20) });
+        return;
+      }
+
+      // Auth endpoints
+      if (url.pathname === '/api/auth/register' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const username = typeof body.username === 'string' ? body.username : '';
+        const password = typeof body.password === 'string' ? body.password : '';
+        const nickname = typeof body.nickname === 'string' ? body.nickname : undefined;
+        const result = store.registerUser(username, password, nickname);
+        sendJson(res, 201, result);
+        return;
+      }
+
+      if (url.pathname === '/api/auth/login' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const username = typeof body.username === 'string' ? body.username : '';
+        const password = typeof body.password === 'string' ? body.password : '';
+        const result = store.loginUser(username, password);
+        sendJson(res, 200, result);
+        return;
+      }
+
+      if (url.pathname === '/api/auth/me' && req.method === 'GET') {
+        const token = extractBearerToken(req);
+        const user = store.getUserByToken(token);
+        if (!user) {
+          sendJson(res, 401, { code: 'UNAUTHORIZED', error: '登录已失效，请重新登录' });
+          return;
+        }
+        sendJson(res, 200, { user });
+        return;
+      }
+
+      if (url.pathname === '/api/auth/logout' && req.method === 'POST') {
+        const token = extractBearerToken(req);
+        if (token) store.logoutToken(token);
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (url.pathname === '/api/auth/profile' && req.method === 'POST') {
+        const token = extractBearerToken(req);
+        const user = store.getUserByToken(token);
+        if (!user) {
+          sendJson(res, 401, { code: 'UNAUTHORIZED', error: '请先登录' });
+          return;
+        }
+        const body = await readJsonBody(req);
+        const nickname = typeof body.nickname === 'string' ? body.nickname : '';
+        const updated = store.updateNickname(user.id, nickname);
+        sendJson(res, 200, { user: updated });
+        return;
+      }
+    } catch (err) {
+      if (err instanceof AuthError) {
+        sendJson(res, err.status, { code: err.code, error: err.message });
+        return;
+      }
+      sendJson(res, 500, {
+        code: 'INTERNAL_ERROR',
+        error: err instanceof Error ? err.message : '服务端错误',
+      });
       return;
     }
 
@@ -117,7 +227,9 @@ export function createGameServer(
     sendJson(res, 404, { error: 'Not Found' });
   };
 
-  const httpServer = createServer(handleHttp);
+  const httpServer = createServer((req, res) => {
+    void handleHttp(req, res);
+  });
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
 
   wss.on('connection', (ws) => {
@@ -146,17 +258,18 @@ export function createGameServer(
 
         if (msg.type === 'CREATE_ROOM') {
           if (ctx.roomId && ctx.playerId) {
-            roomManager.getRoom(ctx.roomId)?.handleDisconnect(ctx.playerId);
+            roomManager.getRoom(ctx.roomId)?.handleDisconnect(ctx.playerId, ws);
             roomManager.pruneIfEmpty(ctx.roomId);
           }
+          const authUser = store.getUserByToken(msg.authToken);
+          const displayName = authUser ? authUser.nickname : msg.playerName;
           const room = roomManager.createRoom({
             mode: msg.mode ?? 'hongxin',
             debugMode: msg.debugMode ?? false,
           });
-          const joined = room.addHuman(msg.playerName, ws, 0);
+          const joined = room.addHuman(displayName, ws, 0, authUser?.id ?? null);
           if (msg.fillBots) {
             room.fillEmptySeatsWithBots();
-            // Trigger room summary with bots populated
             room.setRoomMode(joined.seat, room.mode);
           }
           ctx.roomId = room.roomId;
@@ -178,13 +291,19 @@ export function createGameServer(
             return;
           }
           if (msg.playerId) {
-            const seat = room.reconnect(msg.playerId, ws);
+            room.reconnect(msg.playerId, ws);
             ctx.roomId = room.roomId;
             ctx.playerId = msg.playerId;
-            void seat;
             return;
           }
-          const joined = room.addHuman(msg.playerName, ws, msg.preferredSeat);
+          const authUser = store.getUserByToken(msg.authToken);
+          const displayName = authUser ? authUser.nickname : msg.playerName;
+          const joined = room.addHuman(
+            displayName,
+            ws,
+            msg.preferredSeat,
+            authUser?.id ?? null,
+          );
           ctx.roomId = room.roomId;
           ctx.playerId = joined.playerId;
           return;
@@ -274,7 +393,7 @@ export function createGameServer(
       if (ctx?.roomId && ctx.playerId) {
         const room = roomManager.getRoom(ctx.roomId);
         if (room) {
-          room.handleDisconnect(ctx.playerId);
+          room.handleDisconnect(ctx.playerId, ws);
           roomManager.pruneIfEmpty(ctx.roomId);
         }
       }

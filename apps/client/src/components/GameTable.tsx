@@ -1,21 +1,37 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { countBipai, getSeatTeam, STANDARD_SUITS } from '@jinshan/game-core';
-import type { GameAction, PlayerView, RoomSummary, Seat } from '@jinshan/protocol';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  countBipai,
+  getSeatTeam,
+  sortHandForDisplay,
+  STANDARD_SUITS,
+} from '@jinshan/game-core';
+import type {
+  Card,
+  GameAction,
+  PlayerView,
+  RoomSummary,
+  Seat,
+  SeatCallDisplay,
+} from '@jinshan/protocol';
 import {
   getHintOptions,
   getLegalCallOptions,
   getLegalCounterOptions,
-  getPatternLabel,
+  getMandatoryFollowSelection,
   getPhaseLabel,
   getSuitName,
   getSuitSymbol,
+  getTrickPlayLabel,
+  isRedSuit,
   previewSelection,
 } from '../utils/cardHints.js';
 import { HandArea } from './HandArea.js';
+import { BottomDeckStack, OpponentHandFan } from './OpponentHandFan.js';
 import { PlayingCard } from './PlayingCard.js';
 import { SettlementModal } from './SettlementModal.js';
 import { RulesModal } from './RulesModal.js';
 import { LastTrickModal } from './LastTrickModal.js';
+import { ScoreDetailModal } from './ScoreDetailModal.js';
 import { DebugDrawer } from './DebugDrawer.js';
 
 interface GameTableProps {
@@ -44,7 +60,13 @@ export const GameTable: React.FC<GameTableProps> = ({
   const [hintIdx, setHintIdx] = useState(0);
   const [showRules, setShowRules] = useState(false);
   const [showLastTrick, setShowLastTrick] = useState(false);
+  const [showScoreDetail, setShowScoreDetail] = useState(false);
   const [showDebugDrawer, setShowDebugDrawer] = useState(false);
+  const [inspectTrickSeat, setInspectTrickSeat] = useState<Seat | null>(null);
+  const [autoSelectNote, setAutoSelectNote] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [isTrickPaused, setIsTrickPaused] = useState(false);
+  const lastAutoSelectKeyRef = useRef<string | null>(null);
 
   const meSeat = view.viewerSeat;
   const rightSeat = ((meSeat + 1) % 4) as Seat;
@@ -52,6 +74,36 @@ export const GameTable: React.FC<GameTableProps> = ({
   const leftSeat = ((meSeat + 3) % 4) as Seat;
   const isMyTurn = view.currentTurn === meSeat;
   const meRoomSeat = room.seats[meSeat];
+
+  useEffect(() => {
+    if (!view.phaseDeadlineMs) return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 200);
+    return () => clearInterval(timer);
+  }, [view.phaseDeadlineMs]);
+
+  useEffect(() => {
+    if (
+      view.phase === 'PLAYING' &&
+      view.currentTrick.length === 0 &&
+      view.trickPauseMs &&
+      view.trickPauseMs > 0
+    ) {
+      setIsTrickPaused(true);
+      const timer = window.setTimeout(() => {
+        setIsTrickPaused(false);
+      }, view.trickPauseMs);
+      return () => clearTimeout(timer);
+    }
+    setIsTrickPaused(false);
+  }, [view.phase, view.roundNumber, view.trickNumber, view.currentTrick.length, view.trickPauseMs]);
+
+  const countdownSec = useMemo(() => {
+    if (!view.phaseDeadlineMs) return null;
+    return Math.max(0, Math.ceil((view.phaseDeadlineMs - nowMs) / 1000));
+  }, [view.phaseDeadlineMs, nowMs]);
 
   useEffect(() => {
     const validIds = new Set(view.myHand.map((c) => c.id));
@@ -62,9 +114,39 @@ export const GameTable: React.FC<GameTableProps> = ({
     setSelectedIds([]);
     setHintedIds([]);
     setHintIdx(0);
+    setAutoSelectNote(null);
+    setInspectTrickSeat(null);
   }, [view.phase, view.trickNumber, view.roundNumber]);
 
+  const turnAutoKey =
+    view.phase === 'PLAYING' &&
+    view.currentTurn === meSeat &&
+    view.currentTrick.length > 0
+      ? `${view.roundNumber}:${view.trickNumber}:${view.currentTrick.length}:${view.currentTurn}`
+      : null;
+
+  useEffect(() => {
+    if (!turnAutoKey) {
+      lastAutoSelectKeyRef.current = null;
+      setAutoSelectNote(null);
+      return;
+    }
+    if (lastAutoSelectKeyRef.current === turnAutoKey) {
+      return;
+    }
+    lastAutoSelectKeyRef.current = turnAutoKey;
+    const mandatory = getMandatoryFollowSelection(view);
+    if (mandatory) {
+      setSelectedIds(mandatory.cardIds);
+      setHintedIds([]);
+      setAutoSelectNote(mandatory.reason);
+    } else {
+      setAutoSelectNote(null);
+    }
+  }, [turnAutoKey, view]);
+
   const handleApplySelection = (ids: number[], mode: 'select' | 'deselect') => {
+    setAutoSelectNote(null);
     setSelectedIds((prev) => {
       const set = new Set(prev);
       for (const id of ids) {
@@ -80,18 +162,30 @@ export const GameTable: React.FC<GameTableProps> = ({
     [view, selectedIds],
   );
 
+  const canCallNow =
+    view.mode === 'hongxin' &&
+    view.callState.callerSeat === null &&
+    (view.phase === 'DEALING' ||
+      (view.phase === 'CALLING' && !view.callState.passedSeats.includes(meSeat)));
+
   const callOptions = useMemo(
-    () => (view.phase === 'CALLING' && isMyTurn ? getLegalCallOptions(view) : []),
-    [view, isMyTurn],
+    () => (canCallNow ? getLegalCallOptions(view) : []),
+    [view, canCallNow],
   );
 
+  const canCounterNow =
+    view.phase === 'COUNTER_BIDDING' &&
+    view.callState.eligibleCounterSeats.includes(meSeat);
+
   const counterOptions = useMemo(
-    () =>
-      view.phase === 'COUNTER_BIDDING' && isMyTurn
-        ? getLegalCounterOptions(view)
-        : [],
-    [view, isMyTurn],
+    () => (canCounterNow ? getLegalCounterOptions(view) : []),
+    [view, canCounterNow],
   );
+
+  const isMyCounterResponse =
+    view.phase === 'COUNTER_RESPONSE' &&
+    view.callState.callerSeat === meSeat &&
+    view.callState.pendingCounter !== null;
 
   const myBipaiCount = useMemo(
     () => countBipai(view.myHand, view.levelRank),
@@ -104,6 +198,7 @@ export const GameTable: React.FC<GameTableProps> = ({
     const chosen = options[hintIdx % options.length];
     setSelectedIds(chosen);
     setHintedIds(chosen);
+    setAutoSelectNote(null);
     setHintIdx((i) => i + 1);
   };
 
@@ -114,29 +209,100 @@ export const GameTable: React.FC<GameTableProps> = ({
   };
 
   const handleConfirmPlay = () => {
-    if (!preview.valid) return;
+    if (!preview.valid || isTrickPaused) return;
     onSendAction({ type: 'PLAY_CARDS', seat: meSeat, cardIds: selectedIds });
     setSelectedIds([]);
     setHintedIds([]);
+    setAutoSelectNote(null);
   };
 
-  const renderOpponentBadge = (seat: Seat, posClass: string) => {
+  const getCallDisplayMeta = (display: SeatCallDisplay) => {
+    switch (display.kind) {
+      case 'CALL':
+        return { text: '叫主', pillClass: 'pill-gold' };
+      case 'COUNTER':
+        return { text: '反主', pillClass: 'pill-red' };
+      case 'COUNTER_SUCCESS':
+        return { text: '反主成功', pillClass: 'pill-red' };
+      case 'COUNTER_ACCEPTED':
+        return { text: '让反成主', pillClass: 'pill-green' };
+      case 'COUNTER_FAILED':
+        return { text: '反主失败', pillClass: 'call-pill-muted' };
+    }
+  };
+
+  const renderCallDisplaySlot = (seat: Seat, slotClass: string) => {
+    const display = view.callState.seatCallDisplays?.[seat];
+    if (!display) return null;
+    const meta = getCallDisplayMeta(display);
+    const suitSym = getSuitSymbol(display.suit);
+    const suitNm = getSuitName(display.suit);
+    const red = isRedSuit(display.suit);
+    const isFinalCaller = view.callState.callerSeat === seat;
+
+    return (
+      <div
+        className={`${slotClass} call-display-wrap ${
+          display.kind === 'COUNTER_FAILED' ? 'is-failed' : ''
+        } ${isFinalCaller ? 'is-active-caller' : ''}`}
+      >
+        {display.cards.length > 0 && (
+          <div
+            className="trick-cards-row call-cards-row"
+            style={{ '--trick-overlap': '-20px' } as React.CSSProperties}
+          >
+            {display.cards.map((c, idx) => (
+              <PlayingCard
+                key={c.id}
+                card={c}
+                trumpSuit={view.trumpSuit}
+                levelRank={view.levelRank}
+                size="sm"
+                style={{ zIndex: idx + 1 }}
+              />
+            ))}
+          </div>
+        )}
+        <span className={`pill call-suit-pill ${meta.pillClass}`}>
+          <span>{meta.text}</span>
+          <strong className={`call-suit-emblem ${red ? 'is-red-suit' : ''}`}>
+            {suitSym}
+            {suitNm}
+          </strong>
+        </span>
+      </div>
+    );
+  };
+
+  const renderOpponentSeat = (
+    seat: Seat,
+    side: 'top' | 'left' | 'right',
+  ) => {
     const info = room.seats[seat];
     const isTurn = view.currentTurn === seat;
     const isDealer = view.dealer === seat;
     const isTeammate =
       view.mode === 'hongxin' && getSeatTeam(seat) === getSeatTeam(meSeat);
-    return (
-      <div className={`seat-badge ${posClass} ${isTurn ? 'is-turn' : ''}`}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 4 }}>
-          <strong style={{ fontSize: 12, color: isTurn ? 'var(--gold-strong)' : '#fff' }}>
+    const handCount = view.handCounts[seat];
+    const isTrumpCaller =
+      view.callState.callerSeat === seat && view.trumpSuit !== null;
+
+    const badgeEl = (
+      <div className={`seat-badge ${isTurn ? 'is-turn' : ''}`}>
+        <div className="seat-badge-row">
+          <strong className={`seat-name ${isTurn ? 'is-turn' : ''}`}>
             {info.name}
           </strong>
           {isDealer && <span className="pill pill-red">庄</span>}
           {!isDealer && isTeammate && <span className="pill pill-green">友</span>}
+          {isTrumpCaller && view.trumpSuit && (
+            <span className="pill pill-gold" title="本局定主玩家">
+              主{getSuitSymbol(view.trumpSuit)}
+            </span>
+          )}
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)' }}>
-          <span>余 {view.handCounts[seat]} 张</span>
+        <div className="seat-badge-sub">
+          <span>余 {handCount} 张</span>
           {view.mode === 'heixin' ? (
             <span>{view.playerScores[seat]} 分</span>
           ) : (
@@ -150,34 +316,150 @@ export const GameTable: React.FC<GameTableProps> = ({
         )}
       </div>
     );
+
+    const fanEl = (
+      <OpponentHandFan count={handCount} side={side} isTurn={isTurn} />
+    );
+
+    return (
+      <div className={`seat-zone seat-${side}`}>
+        {side === 'right' ? (
+          <>
+            {fanEl}
+            {badgeEl}
+          </>
+        ) : (
+          <>
+            {badgeEl}
+            {fanEl}
+          </>
+        )}
+      </div>
+    );
   };
+
+  // Keep previous trick's 4 plays visible on table until the first card of the next trick is played
+  const isShowingLastTrick =
+    view.currentTrick.length === 0 &&
+    view.lastTrick !== null &&
+    (view.phase === 'PLAYING' ||
+      view.phase === 'ROUND_OVER' ||
+      view.phase === 'MATCH_OVER');
+
+  const activeTrickPlays = useMemo(
+    () =>
+      isShowingLastTrick && view.lastTrick
+        ? view.lastTrick.plays
+        : view.currentTrick,
+    [view.currentTrick, view.lastTrick, isShowingLastTrick],
+  );
 
   const trickBySeat = useMemo(() => {
     const map = new Map<Seat, (typeof view.currentTrick)[number]>();
-    for (const p of view.currentTrick) {
+    for (const p of activeTrickPlays) {
       map.set(p.seat, p);
     }
     return map;
-  }, [view.currentTrick]);
+  }, [activeTrickPlays]);
 
-  const renderTrickSlot = (seat: Seat, slotClass: string) => {
+  const activeLeadSeat = activeTrickPlays[0]?.seat ?? null;
+
+  const splitCardsIntoRows = (cards: readonly Card[], rowCount: number): Card[][] => {
+    if (rowCount <= 1 || cards.length <= 1) return [[...cards]];
+    const rows: Card[][] = [];
+    const perRow = Math.ceil(cards.length / rowCount);
+    for (let i = 0; i < cards.length; i += perRow) {
+      rows.push(cards.slice(i, i + perRow));
+    }
+    return rows;
+  };
+
+  const renderTrickSlot = (
+    seat: Seat,
+    slotClass: string,
+    placement: 'top' | 'bottom' | 'left' | 'right',
+  ) => {
     const play = trickBySeat.get(seat);
     if (!play) return null;
+
+    const sortedCards = sortHandForDisplay(
+      play.cards,
+      view.trumpSuit,
+      view.levelRank,
+    );
+    const count = sortedCards.length;
+    const isSide = placement === 'left' || placement === 'right';
+
+    // Adaptive sizing + multi-row wrapping so large slings (10~24+ cards) NEVER overflow or cover opponent fans
+    let cardSize: 'sm' | 'xs' = 'sm';
+    let rowCount = 1;
+    let overlapRatio = -0.44;
+
+    if (count <= 5) {
+      cardSize = 'sm';
+      rowCount = 1;
+      overlapRatio = count <= 4 ? -0.42 : -0.5;
+    } else if (count === 6) {
+      cardSize = 'sm';
+      rowCount = isSide ? 2 : 1;
+      overlapRatio = isSide ? -0.44 : -0.56;
+    } else if (count <= 12) {
+      cardSize = isSide && count <= 10 ? 'sm' : 'xs';
+      rowCount = 2;
+      overlapRatio = cardSize === 'sm' ? -0.54 : -0.46;
+    } else {
+      cardSize = 'xs';
+      rowCount = count <= 16 ? 2 : 3;
+      overlapRatio = -0.52;
+    }
+
+    const rows = splitCardsIntoRows(sortedCards, rowCount);
+    const cardWVar = cardSize === 'xs' ? 'var(--card-xs-w)' : 'var(--card-sm-w)';
+    const cardHVar = cardSize === 'xs' ? 'var(--card-xs-h)' : 'var(--card-sm-h)';
+    const rowOverlapRatio = rowCount >= 3 ? -0.56 : -0.48;
+
+    const isTrickWinner =
+      isShowingLastTrick && view.lastTrick?.winnerSeat === seat;
+    const isLead = activeLeadSeat === seat;
+    const labelText = getTrickPlayLabel(play.parsed, count, isLead);
+
     return (
-      <div className={slotClass} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-        <div className="trick-cards-row">
-          {play.cards.map((c) => (
-            <PlayingCard
-              key={c.id}
-              card={c}
-              trumpSuit={view.trumpSuit}
-              levelRank={view.levelRank}
-              size="sm"
-            />
+      <div
+        className={`${slotClass} trick-slot-wrap ${
+          isShowingLastTrick ? 'is-completed-trick' : ''
+        } ${isTrickWinner ? 'is-trick-winner' : ''} ${
+          count >= 6 ? 'is-inspectable' : ''
+        }`}
+        onClick={count >= 6 ? () => setInspectTrickSeat(seat) : undefined}
+        title={count >= 6 ? '点击放大查看全部牌面' : undefined}
+      >
+        <div
+          className={`trick-cards-stack ${rowCount > 1 ? 'is-multi-row' : ''}`}
+          style={
+            {
+              '--trick-overlap': `calc(${cardWVar} * ${overlapRatio})`,
+              '--trick-row-overlap': `calc(${cardHVar} * ${rowOverlapRatio})`,
+            } as React.CSSProperties
+          }
+        >
+          {rows.map((rowCards, rowIdx) => (
+            <div key={rowIdx} className="trick-cards-row">
+              {rowCards.map((c, idx) => (
+                <PlayingCard
+                  key={c.id}
+                  card={c}
+                  trumpSuit={view.trumpSuit}
+                  levelRank={view.levelRank}
+                  size={cardSize}
+                  style={{ zIndex: rowIdx * 20 + idx + 1 }}
+                />
+              ))}
+            </div>
           ))}
         </div>
-        <span className="pill" style={{ fontSize: 10 }}>
-          {getPatternLabel(play.parsed)}
+        <span className={`pill trick-pattern-tag ${isTrickWinner ? 'pill-gold' : ''}`}>
+          {isTrickWinner ? '★赢 ' : ''}
+          {labelText}
         </span>
       </div>
     );
@@ -186,7 +468,13 @@ export const GameTable: React.FC<GameTableProps> = ({
   const latestEvent =
     view.events.length > 0 ? view.events[view.events.length - 1].message : '';
 
-  const scorePct = Math.min(100, Math.round((view.challengerPoints / 300) * 100));
+  const heixinBidTarget = view.bidState?.highestBid || 0;
+  const scorePct =
+    view.mode === 'hongxin'
+      ? Math.min(100, Math.round((view.challengerPoints / 300) * 100))
+      : heixinBidTarget > 0
+        ? Math.min(100, Math.round((view.bankerPoints / heixinBidTarget) * 100))
+        : 0;
 
   return (
     <div className="table-root">
@@ -223,7 +511,16 @@ export const GameTable: React.FC<GameTableProps> = ({
             </span>
           )}
 
-          <div className="score-meter" title="闲家抓分进度（共300分）">
+          <button
+            type="button"
+            className="score-meter is-clickable"
+            onClick={() => setShowScoreDetail(true)}
+            title={
+              view.mode === 'hongxin'
+                ? '点击查看已抓分与已跑分牌（共300分）'
+                : '点击查看庄家已抓分与闲家已跑分牌'
+            }
+          >
             <div className="score-meter-fill" style={{ width: `${scorePct}%` }} />
             {view.mode === 'hongxin' && (
               <>
@@ -234,21 +531,31 @@ export const GameTable: React.FC<GameTableProps> = ({
               </>
             )}
             <div className="score-meter-label">
-              {view.mode === 'hongxin'
-                ? `闲分 ${view.challengerPoints} / 及格120`
-                : `闲分 ${view.challengerPoints}`}
+              <span>
+                {view.mode === 'hongxin'
+                  ? `闲分 ${view.challengerPoints} / 及格120`
+                  : `庄分 ${view.bankerPoints} / 目标${heixinBidTarget || '-'}`}
+              </span>
+              <span className="score-meter-hint">查分</span>
             </div>
-          </div>
+          </button>
         </div>
 
         <div className="hud-group">
           <button
             type="button"
             className="btn btn-xs"
+            onClick={() => setShowScoreDetail(true)}
+          >
+            查分
+          </button>
+          <button
+            type="button"
+            className="btn btn-xs"
             onClick={() => setShowLastTrick(true)}
             disabled={!view.lastTrick}
           >
-            上一墩
+            上一轮
           </button>
           <button
             type="button"
@@ -282,19 +589,64 @@ export const GameTable: React.FC<GameTableProps> = ({
         </div>
       </div>
 
-      {/* Arena: 3 Opponents + Center Trick Mat */}
+      {/* Arena: 3 Opponents (with card backs) + Center Trick Mat */}
       <div className="table-arena">
-        {renderOpponentBadge(topSeat, 'seat-top')}
-        {renderOpponentBadge(leftSeat, 'seat-left')}
-        {renderOpponentBadge(rightSeat, 'seat-right')}
+        {renderOpponentSeat(topSeat, 'top')}
+        {renderOpponentSeat(leftSeat, 'left')}
+        {renderOpponentSeat(rightSeat, 'right')}
 
         <div className="trick-center">
-          <div className="trick-grid">
-            {renderTrickSlot(topSeat, 'trick-slot-top')}
-            {renderTrickSlot(leftSeat, 'trick-slot-left')}
-            {renderTrickSlot(rightSeat, 'trick-slot-right')}
-            {renderTrickSlot(meSeat, 'trick-slot-bottom')}
-          </div>
+          {view.phase === 'DEALING' ||
+          view.phase === 'CALLING' ||
+          view.phase === 'COUNTER_BIDDING' ||
+          view.phase === 'COUNTER_RESPONSE' ||
+          view.phase === 'BURYING' ||
+          view.phase === 'BIDDING' ||
+          view.phase === 'CHOOSE_TRUMP' ? (
+            <div className="call-stage-grid">
+              {renderCallDisplaySlot(topSeat, 'call-slot-top')}
+              {renderCallDisplaySlot(leftSeat, 'call-slot-left')}
+              <div className="call-slot-center">
+                {view.phase === 'DEALING' ? (
+                  <div className="dealing-center-box">
+                    <BottomDeckStack
+                      count={Math.max(1, Math.min(10, Math.ceil((38 - view.dealtCount) / 4) + 2))}
+                      label={`发牌中 ${view.dealtCount} / 38`}
+                    />
+                  </div>
+                ) : view.phase === 'COUNTER_RESPONSE' && view.callState.pendingCounter ? (
+                  <div className="counter-response-banner">
+                    <div className="counter-response-title">
+                      {room.seats[view.callState.pendingCounter.seat].name} 发起反主：
+                      <strong>
+                        {getSuitSymbol(view.callState.pendingCounter.suit)}
+                        {getSuitName(view.callState.pendingCounter.suit)}
+                      </strong>
+                    </div>
+                    <div className="counter-response-sub">
+                      等待 {room.seats[view.callState.callerSeat ?? 0].name} 选择让反或比牌
+                      {countdownSec !== null ? `（${countdownSec}s）` : ''}
+                    </div>
+                  </div>
+                ) : view.phase === 'BURYING' ? (
+                  <span className="pill pill-gold">
+                    {room.seats[view.dealer ?? 0].name} 正在埋底...
+                  </span>
+                ) : view.bottomCount > 0 ? (
+                  <BottomDeckStack count={view.bottomCount} />
+                ) : null}
+              </div>
+              {renderCallDisplaySlot(rightSeat, 'call-slot-right')}
+              {renderCallDisplaySlot(meSeat, 'call-slot-bottom')}
+            </div>
+          ) : (
+            <div className="trick-grid">
+              {renderTrickSlot(topSeat, 'trick-slot-top', 'top')}
+              {renderTrickSlot(leftSeat, 'trick-slot-left', 'left')}
+              {renderTrickSlot(rightSeat, 'trick-slot-right', 'right')}
+              {renderTrickSlot(meSeat, 'trick-slot-bottom', 'bottom')}
+            </div>
+          )}
           {latestEvent && <div className="event-ribbon">{latestEvent}</div>}
         </div>
       </div>
@@ -302,45 +654,113 @@ export const GameTable: React.FC<GameTableProps> = ({
       {/* Phase Contextual Action Bar */}
       <div className="action-bar">
         <div className="action-bar-group">
-          <span className={`pill ${isMyTurn ? 'pill-gold' : ''}`}>
+          <span
+            className={`pill ${
+              isMyTurn || canCounterNow || isMyCounterResponse || (canCallNow && callOptions.length > 0)
+                ? 'pill-gold'
+                : ''
+            }`}
+          >
             我·座{meSeat + 1}
             {view.dealer === meSeat ? '【庄】' : ''}
-            {isMyTurn ? '（轮到你）' : ''}
+            {view.callState.callerSeat === meSeat && view.trumpSuit
+              ? `·主${getSuitSymbol(view.trumpSuit)}`
+              : ''}
+            {isMyTurn || isMyCounterResponse ? '（轮到你）' : ''}
           </span>
 
-          {view.phase === 'CALLING' && isMyTurn && (
+          {meRoomSeat.autoBot && (
+            <button
+              type="button"
+              className="btn btn-xs btn-gold"
+              onClick={() => onSetAutoBot(false)}
+            >
+              ⚠ 托管代打中（点此取消）
+            </button>
+          )}
+
+          {countdownSec !== null &&
+            (view.phase === 'CALLING' ||
+              view.phase === 'COUNTER_BIDDING' ||
+              view.phase === 'COUNTER_RESPONSE') && (
+              <span className="pill countdown-pill">
+                ⏱ {countdownSec}s
+              </span>
+            )}
+
+          {view.phase === 'DEALING' && (
             <>
-              {callOptions.map((opt, idx) => (
-                <button
-                  key={`${opt.suit}-${opt.count}-${idx}`}
-                  type="button"
-                  className="btn btn-gold"
-                  onClick={() =>
-                    onSendAction({
-                      type: 'CALL_TRUMP',
-                      seat: meSeat,
-                      suit: opt.suit,
-                      cardIds: opt.cardIds,
-                    })
-                  }
-                >
-                  {opt.label}
-                </button>
-              ))}
-              <button
-                type="button"
-                className="btn"
-                onClick={() => onSendAction({ type: 'PASS_CALL', seat: meSeat })}
-              >
-                不叫
-              </button>
+              {canCallNow && callOptions.length > 0 ? (
+                callOptions.map((opt, idx) => (
+                  <button
+                    key={`${opt.suit}-${opt.count}-${idx}`}
+                    type="button"
+                    className="btn btn-gold"
+                    onClick={() =>
+                      onSendAction({
+                        type: 'CALL_TRUMP',
+                        seat: meSeat,
+                        suit: opt.suit,
+                        cardIds: opt.cardIds,
+                      })
+                    }
+                  >
+                    {opt.label}
+                  </button>
+                ))
+              ) : (
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  {view.mode === 'heixin'
+                    ? `正在发牌 (${view.dealtCount}/38)...`
+                    : view.callState.callerSeat !== null
+                      ? `已有人叫主，发完 38 张牌后进入反主阶段 (${view.dealtCount}/38)...`
+                      : `正在发牌 (${view.dealtCount}/38)，拿到箭牌可随时亮主...`}
+                </span>
+              )}
+            </>
+          )}
+
+          {view.phase === 'CALLING' && (
+            <>
+              {canCallNow ? (
+                <>
+                  {callOptions.map((opt, idx) => (
+                    <button
+                      key={`${opt.suit}-${opt.count}-${idx}`}
+                      type="button"
+                      className="btn btn-gold"
+                      onClick={() =>
+                        onSendAction({
+                          type: 'CALL_TRUMP',
+                          seat: meSeat,
+                          suit: opt.suit,
+                          cardIds: opt.cardIds,
+                        })
+                      }
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => onSendAction({ type: 'PASS_CALL', seat: meSeat })}
+                  >
+                    不叫
+                  </button>
+                </>
+              ) : (
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  已选择不叫，等待其他玩家叫主...
+                </span>
+              )}
             </>
           )}
 
           {view.phase === 'COUNTER_BIDDING' && (
             <>
               <span className="pill pill-gold">我的21张比牌：{myBipaiCount} 张</span>
-              {isMyTurn && (
+              {canCounterNow ? (
                 <>
                   {counterOptions.map((opt) => (
                     <button
@@ -369,6 +789,45 @@ export const GameTable: React.FC<GameTableProps> = ({
                     放弃反主
                   </button>
                 </>
+              ) : (
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  {view.callState.counterAttempts === 0
+                    ? '等待敌方决定是否反主（先点先得）...'
+                    : '等待败方队友决定是否再反主...'}
+                </span>
+              )}
+            </>
+          )}
+
+          {view.phase === 'COUNTER_RESPONSE' && view.callState.pendingCounter && (
+            <>
+              <span className="pill pill-gold">我的21张比牌：{myBipaiCount} 张</span>
+              {isMyCounterResponse ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-emerald"
+                    onClick={() =>
+                      onSendAction({ type: 'ACCEPT_COUNTER', seat: meSeat })
+                    }
+                  >
+                    接受被反（改打{getSuitSymbol(view.callState.pendingCounter.suit)}
+                    {getSuitName(view.callState.pendingCounter.suit)}）
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-crimson"
+                    onClick={() =>
+                      onSendAction({ type: 'DEFEND_COUNTER', seat: meSeat })
+                    }
+                  >
+                    拒绝并比牌
+                  </button>
+                </>
+              ) : (
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  等待被反主方（{room.seats[view.callState.callerSeat ?? 0].name}）决定接受让反或比牌...
+                </span>
               )}
             </>
           )}
@@ -466,6 +925,9 @@ export const GameTable: React.FC<GameTableProps> = ({
 
           {view.phase === 'PLAYING' && isMyTurn && (
             <>
+              {autoSelectNote && (
+                <span className="pill auto-select-pill">{autoSelectNote}</span>
+              )}
               {selectedIds.length > 0 && (
                 <span className={`pill ${preview.valid ? 'pill-green' : 'pill-red'}`}>
                   {preview.valid ? preview.label : preview.error}
@@ -477,6 +939,7 @@ export const GameTable: React.FC<GameTableProps> = ({
                 onClick={() => {
                   setSelectedIds([]);
                   setHintedIds([]);
+                  setAutoSelectNote(null);
                 }}
                 disabled={selectedIds.length === 0}
               >
@@ -488,15 +951,19 @@ export const GameTable: React.FC<GameTableProps> = ({
               <button
                 type="button"
                 className="btn btn-gold btn-lg"
-                disabled={!preview.valid}
+                disabled={!preview.valid || isTrickPaused}
                 onClick={handleConfirmPlay}
               >
-                出牌 ({selectedIds.length})
+                {isTrickPaused ? '稍候...' : `出牌 (${selectedIds.length})`}
               </button>
             </>
           )}
 
           {!isMyTurn &&
+            view.phase !== 'DEALING' &&
+            view.phase !== 'CALLING' &&
+            view.phase !== 'COUNTER_BIDDING' &&
+            view.phase !== 'COUNTER_RESPONSE' &&
             view.phase !== 'ROUND_OVER' &&
             view.phase !== 'MATCH_OVER' && (
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
@@ -535,8 +1002,59 @@ export const GameTable: React.FC<GameTableProps> = ({
       )}
 
       {showRules && <RulesModal onClose={() => setShowRules(false)} />}
+      {showScoreDetail && (
+        <ScoreDetailModal view={view} onClose={() => setShowScoreDetail(false)} />
+      )}
       {showLastTrick && (
-        <LastTrickModal view={view} onClose={() => setShowLastTrick(false)} />
+        <LastTrickModal
+          room={room}
+          view={view}
+          onClose={() => setShowLastTrick(false)}
+        />
+      )}
+      {inspectTrickSeat !== null && trickBySeat.has(inspectTrickSeat) && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setInspectTrickSeat(null)}
+        >
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>
+                {room.seats[inspectTrickSeat]?.name ?? `座位 ${inspectTrickSeat + 1}`} 本轮出牌详情（
+                {trickBySeat.get(inspectTrickSeat)!.cards.length} 张）
+              </h3>
+              <button
+                type="button"
+                className="btn btn-xs"
+                onClick={() => setInspectTrickSeat(null)}
+              >
+                关闭
+              </button>
+            </div>
+            <div style={{ marginBottom: 8, fontSize: 12, color: 'var(--gold-strong)' }}>
+              {getTrickPlayLabel(
+                trickBySeat.get(inspectTrickSeat)!.parsed,
+                trickBySeat.get(inspectTrickSeat)!.cards.length,
+                activeLeadSeat === inspectTrickSeat,
+              )}
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {sortHandForDisplay(
+                trickBySeat.get(inspectTrickSeat)!.cards,
+                view.trumpSuit,
+                view.levelRank,
+              ).map((card) => (
+                <PlayingCard
+                  key={card.id}
+                  card={card}
+                  trumpSuit={view.trumpSuit}
+                  levelRank={view.levelRank}
+                  size="sm"
+                />
+              ))}
+            </div>
+          </div>
+        </div>
       )}
       {showDebugDrawer && view.debugView && (
         <DebugDrawer view={view} onClose={() => setShowDebugDrawer(false)} />

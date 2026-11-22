@@ -1,6 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { isTrump } from '@jinshan/game-core';
-import type { Card, GameMode, GamePhase, LevelRank, StandardSuit } from '@jinshan/protocol';
+import type {
+  Card,
+  GameMode,
+  GamePhase,
+  LevelRank,
+  StandardSuit,
+} from '@jinshan/protocol';
 import { PlayingCard } from './PlayingCard.js';
 import { soundFX } from '../utils/sound.js';
 
@@ -16,17 +22,22 @@ interface HandAreaProps {
 }
 
 function getResponsiveCardWidth(): number {
-  if (typeof window === 'undefined') return 58;
-  if (window.innerWidth >= 920 && window.innerHeight >= 540) return 72;
-  if (window.innerHeight <= 440) return 50;
-  return 58;
+  if (typeof window === 'undefined') return 62;
+  if (window.innerWidth >= 920 && window.innerHeight >= 540) return 76;
+  if (window.innerHeight <= 450) return 52;
+  return 62;
 }
 
-function computeRowOverlap(rowCount: number, containerWidth: number, cardWidth: number): number {
+function computeRowOverlap(
+  rowCount: number,
+  containerWidth: number,
+  cardWidth: number,
+): number {
   if (rowCount <= 1) return 0;
-  const ideal = -Math.round(cardWidth * 0.44);
-  const minOverlap = -Math.round(cardWidth * 0.72);
-  const maxStep = Math.floor((containerWidth - cardWidth - 18) / (rowCount - 1));
+  // Expose at least ~34%-54% of card width so left-strip rank/suit/badges stay clear
+  const ideal = -Math.round(cardWidth * 0.46);
+  const minOverlap = -Math.round(cardWidth * 0.69);
+  const maxStep = Math.floor((containerWidth - cardWidth - 16) / (rowCount - 1));
   const target = maxStep - cardWidth;
   return Math.min(ideal, Math.max(minOverlap, target));
 }
@@ -136,19 +147,8 @@ export const HandArea: React.FC<HandAreaProps> = ({
       onPointerMove={handlePointerMove}
     >
       {cards.length > 18 && (
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            padding: '0 6px',
-            fontSize: 11,
-            color: 'var(--text-muted)',
-          }}
-        >
-          <span>
-            手牌 {cards.length} 张（可左右滑动连续选牌）
-          </span>
+        <div className="hand-meta-bar">
+          <span>手牌 {cards.length} 张（可左右滑动连续选牌）</span>
           <button
             type="button"
             className="btn btn-xs btn-ghost"
@@ -165,10 +165,10 @@ export const HandArea: React.FC<HandAreaProps> = ({
         return (
           <div
             key={rowIdx}
-            className="hand-row"
+            className={`hand-row ${rows.length > 1 ? 'is-multi-row' : ''}`}
             style={{ '--hand-overlap': `${overlap}px` } as React.CSSProperties}
           >
-            {rowCards.map((card) => (
+            {rowCards.map((card, cardIdx) => (
               <PlayingCard
                 key={card.id}
                 card={card}
@@ -179,6 +179,8 @@ export const HandArea: React.FC<HandAreaProps> = ({
                 selected={selectedSet.has(card.id)}
                 hinted={hintedSet.has(card.id)}
                 interactive
+                // Strictly preserve physical left-to-right stacking even when selected
+                style={{ zIndex: cardIdx + 1 }}
               />
             ))}
           </div>

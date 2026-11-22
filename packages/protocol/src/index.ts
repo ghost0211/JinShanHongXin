@@ -37,10 +37,12 @@ export interface Card {
 }
 
 export type GamePhase =
+  | 'DEALING'
   | 'BIDDING'
   | 'CHOOSE_TRUMP'
   | 'CALLING'
   | 'COUNTER_BIDDING'
+  | 'COUNTER_RESPONSE'
   | 'BURYING'
   | 'PLAYING'
   | 'ROUND_OVER'
@@ -92,6 +94,19 @@ export interface BidState {
   step: number;
 }
 
+export interface PendingCounterBid {
+  seat: Seat;
+  team: TeamId;
+  suit: StandardSuit;
+  cardIds: number[];
+}
+
+export interface SeatCallDisplay {
+  kind: 'CALL' | 'COUNTER' | 'COUNTER_SUCCESS' | 'COUNTER_ACCEPTED' | 'COUNTER_FAILED';
+  suit: StandardSuit;
+  cards: Card[];
+}
+
 export interface RoundCallState {
   callerSeat: Seat | null;
   callerTeam: TeamId | null;
@@ -99,9 +114,13 @@ export interface RoundCallState {
   calledCount: number;
   passedSeats: Seat[];
   counterAttempts: number;
+  counteredSeats: Seat[];
+  beenCounteredSeats: Seat[];
   failedCounterSeats: Seat[];
   passedCounterSeats: Seat[];
   eligibleCounterSeats: Seat[];
+  pendingCounter: PendingCounterBid | null;
+  seatCallDisplays: Partial<Record<Seat, SeatCallDisplay>>;
 }
 
 export interface TrickPlayView {
@@ -157,12 +176,17 @@ export interface GameEvent {
 }
 
 export type GameAction =
+  | { type: 'DEAL_STEP' }
+  | { type: 'FINISH_CALL_WINDOW' }
+  | { type: 'FINISH_COUNTER_WINDOW' }
   | { type: 'BID_SCORE'; seat: Seat; score: number }
   | { type: 'PASS_BID'; seat: Seat }
   | { type: 'CHOOSE_TRUMP'; seat: Seat; suit: StandardSuit }
   | { type: 'CALL_TRUMP'; seat: Seat; suit: StandardSuit; cardIds: number[] }
   | { type: 'PASS_CALL'; seat: Seat }
   | { type: 'COUNTER_BID'; seat: Seat; suit: StandardSuit; cardIds: number[] }
+  | { type: 'ACCEPT_COUNTER'; seat: Seat }
+  | { type: 'DEFEND_COUNTER'; seat: Seat }
   | { type: 'PASS_COUNTER'; seat: Seat }
   | { type: 'BURY_BOTTOM'; seat: Seat; cardIds: number[] }
   | { type: 'PLAY_CARDS'; seat: Seat; cardIds: number[] }
@@ -190,6 +214,7 @@ export interface PlayerView {
   currentTurn: Seat | null;
   myHand: Card[];
   handCounts: Record<Seat, number>;
+  dealtCount: number;
   bottomCount: number;
   revealedBottom: Card[] | null;
   bidState: BidState | null;
@@ -199,10 +224,28 @@ export interface PlayerView {
   lastTrick: CompletedTrickView | null;
   trickNumber: number;
   challengerPoints: number;
+  bankerPoints: number;
+  capturedPointCards: Card[];
+  escapedPointCards: Card[];
+  phaseDeadlineMs?: number | null;
+  phaseWindowTotalSec?: number | null;
+  trickPauseMs?: number | null;
   settlement: RoundSettlement | null;
   matchWinner: TeamId | null;
   events: GameEvent[];
   debugView?: DebugView;
+}
+
+export interface UserProfile {
+  id: number;
+  username: string;
+  nickname: string;
+  hongxinGames: number;
+  hongxinWins: number;
+  heixinGames: number;
+  heixinWins: number;
+  heixinTotalScore: number;
+  createdAt: string;
 }
 
 export interface RoomSeatInfo {
@@ -210,6 +253,7 @@ export interface RoomSeatInfo {
   team: TeamId;
   occupied: boolean;
   playerId: string | null;
+  userId: number | null;
   name: string;
   isBot: boolean;
   connected: boolean;
@@ -229,8 +273,8 @@ export interface RoomSummary {
 }
 
 export type ClientMessage =
-  | { type: 'CREATE_ROOM'; playerName: string; mode?: GameMode; debugMode?: boolean; fillBots?: boolean; autoStart?: boolean }
-  | { type: 'JOIN_ROOM'; roomId: string; playerName: string; playerId?: string; preferredSeat?: Seat }
+  | { type: 'CREATE_ROOM'; playerName: string; authToken?: string; mode?: GameMode; debugMode?: boolean; fillBots?: boolean; autoStart?: boolean }
+  | { type: 'JOIN_ROOM'; roomId: string; playerName: string; authToken?: string; playerId?: string; preferredSeat?: Seat }
   | { type: 'RECONNECT'; roomId: string; playerId: string }
   | { type: 'SET_ROOM_MODE'; mode: GameMode }
   | { type: 'SET_SEAT_BOT'; seat: Seat; isBot: boolean }
