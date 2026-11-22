@@ -3,11 +3,16 @@ import assert from 'node:assert/strict';
 import {
   applyAction,
   chooseBotAction,
+  configureBotSearch,
   createInitialMatchState,
   getCardPoints,
   startNextRound,
 } from '../index.js';
 import type { GameState, Seat } from '../index.js';
+
+// This suite checks rule invariants over many full matches; the fast heuristic policy is
+// enough (the sampled-lookahead search is covered by bot-search.test.ts).
+configureBotSearch({ enabled: false });
 
 describe('full-match 4-bot simulation (2 -> A)', () => {
   it('completes 5 full seeded matches from level 2 to A with full card & point conservation', () => {

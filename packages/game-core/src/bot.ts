@@ -32,11 +32,12 @@ import {
   resolveTrickWinner,
   validateFollowPlay,
 } from './validator.js';
+import { searchPlayCards } from './botSearch.js';
 
 const ALL_SEATS: readonly Seat[] = [0, 1, 2, 3];
 const ALL_CATEGORIES: readonly CardCategory[] = ['TRUMP', 'S', 'H', 'C', 'D'];
 
-interface PublicCardTracker {
+export interface PublicCardTracker {
   unseenByCat: Map<CardCategory, Card[]>;
   voidSeatsByCat: Map<CardCategory, Set<Seat>>;
   unseenCount: (cat: CardCategory) => number;
@@ -45,7 +46,7 @@ interface PublicCardTracker {
   isSeatVoid: (seat: Seat, cat: CardCategory) => boolean;
 }
 
-function isSameSide(state: GameState, a: Seat, b: Seat): boolean {
+export function isSameSide(state: GameState, a: Seat, b: Seat): boolean {
   if (state.mode === 'heixin') {
     return (a === state.dealer) === (b === state.dealer);
   }
@@ -57,7 +58,7 @@ function isSameSide(state: GameState, a: Seat, b: Seat): boolean {
  * completed tricks, current trick, the bot's own hand, and (if bot is dealer)
  * the 10 cards the bot itself buried. Never reads other seats' hidden hands.
  */
-function buildPublicCardTracker(state: GameState, seat: Seat): PublicCardTracker {
+export function buildPublicCardTracker(state: GameState, seat: Seat): PublicCardTracker {
   const { trumpSuit, levelRank } = state;
   const knownIds = new Set<number>();
 
@@ -191,7 +192,7 @@ function scoreSuitStrength(
   return score;
 }
 
-function getCardValueCost(
+export function getCardValueCost(
   card: Card,
   trumpSuit: StandardSuit | null,
   levelRank: LevelRank,
@@ -616,7 +617,8 @@ function chooseBuryAction(state: GameState, seat: Seat): GameAction {
   };
 }
 
-function chooseLeadCards(state: GameState, seat: Seat): number[] {
+/** All sensible lead options, best-first by heuristic priority (each structurally legal). */
+export function rankLeadCandidates(state: GameState, seat: Seat): Card[][] {
   const hand = state.hands[seat];
   const { trumpSuit, levelRank } = state;
   const tracker = buildPublicCardTracker(state, seat);
@@ -899,6 +901,7 @@ function chooseLeadCards(state: GameState, seat: Seat): number[] {
   candidatePlays.sort((a, b) => b.priority - a.priority);
 
   // Strictly verify structural legality via parsePlay (NO peeking at otherHands!)
+  const ranked: Card[][] = [];
   for (const cand of candidatePlays) {
     const parsed = parsePlay(cand.cards, trumpSuit, levelRank);
     if (!parsed) continue;
@@ -908,13 +911,17 @@ function chooseLeadCards(state: GameState, seat: Seat): number[] {
       );
       if (!safeSling) continue;
     }
-    return cand.cards.map((c) => c.id);
+    ranked.push(cand.cards);
   }
-
-  return [hand[hand.length - 1].id];
+  if (ranked.length === 0) ranked.push([hand[hand.length - 1]]);
+  return ranked;
 }
 
-function buildSmartFollowCandidates(
+function chooseLeadCards(state: GameState, seat: Seat): number[] {
+  return rankLeadCandidates(state, seat)[0].map((c) => c.id);
+}
+
+export function buildSmartFollowCandidates(
   state: GameState,
   seat: Seat,
 ): Card[][] {
@@ -1147,14 +1154,15 @@ function estimateWinHoldConfidence(
   return 0.22;
 }
 
-function chooseFollowCards(state: GameState, seat: Seat): number[] {
+/** All legal follow options, best-first by heuristic score. */
+export function rankFollowCandidates(state: GameState, seat: Seat): Card[][] {
   const hand = state.hands[seat];
   const { trumpSuit, levelRank } = state;
   const leadPlay = state.currentTrick[0].parsed;
   const candidates = buildSmartFollowCandidates(state, seat);
 
-  if (candidates.length === 1) {
-    return candidates[0].map((c) => c.id);
+  if (candidates.length <= 1) {
+    return candidates.length === 1 ? candidates : [hand.slice(0, leadPlay.cards.length)];
   }
 
   const tracker = buildPublicCardTracker(state, seat);
@@ -1207,8 +1215,7 @@ function chooseFollowCards(state: GameState, seat: Seat): number[] {
     }
   }
 
-  let bestChoice = candidates[0];
-  let bestScore = Number.NEGATIVE_INFINITY;
+  const scoredCands: { cards: Card[]; score: number }[] = [];
 
   for (const cards of candidates) {
     const parsed = parsePlay(cards, trumpSuit, levelRank) ?? {
@@ -1331,13 +1338,22 @@ function chooseFollowCards(state: GameState, seat: Seat): number[] {
       score = -candPts * 6.8 + voidBonus - cardCost * 1.15;
     }
 
-    if (score > bestScore) {
-      bestScore = score;
-      bestChoice = cards;
-    }
+    scoredCands.push({ cards, score });
   }
 
-  return bestChoice.map((c) => c.id);
+  scoredCands.sort((a, b) => b.score - a.score);
+  return scoredCands.map((c) => c.cards);
+}
+
+function chooseFollowCards(state: GameState, seat: Seat): number[] {
+  return rankFollowCandidates(state, seat)[0].map((c) => c.id);
+}
+
+/** Fast pure-heuristic card play (used as the rollout policy by the search bot). */
+export function chooseHeuristicPlayCards(state: GameState, seat: Seat): number[] {
+  return state.currentTrick.length === 0
+    ? chooseLeadCards(state, seat)
+    : chooseFollowCards(state, seat);
 }
 
 export function chooseBotAction(state: GameState, seat: Seat): GameAction {
@@ -1360,10 +1376,7 @@ export function chooseBotAction(state: GameState, seat: Seat): GameAction {
       return {
         type: 'PLAY_CARDS',
         seat,
-        cardIds:
-          state.currentTrick.length === 0
-            ? chooseLeadCards(state, seat)
-            : chooseFollowCards(state, seat),
+        cardIds: searchPlayCards(state, seat),
       };
     case 'ROUND_OVER':
       return { type: 'NEXT_ROUND' };
@@ -1378,9 +1391,7 @@ export function getSuggestedHintCards(state: GameState, seat: Seat): number[] {
     return act.type === 'BURY_BOTTOM' ? act.cardIds : [];
   }
   if (state.phase === 'PLAYING' && state.currentTurn === seat) {
-    return state.currentTrick.length === 0
-      ? chooseLeadCards(state, seat)
-      : chooseFollowCards(state, seat);
+    return searchPlayCards(state, seat);
   }
   return [];
 }
