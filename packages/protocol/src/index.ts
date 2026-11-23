@@ -252,6 +252,7 @@ export interface RoomSeatInfo {
   seat: Seat;
   team: TeamId;
   occupied: boolean;
+  /** Reserved for compatibility; public room summaries always set this to null. */
   playerId: string | null;
   userId: number | null;
   name: string;
@@ -275,7 +276,8 @@ export interface RoomSummary {
 export type ClientMessage =
   | { type: 'CREATE_ROOM'; playerName: string; authToken?: string; mode?: GameMode; debugMode?: boolean; fillBots?: boolean; autoStart?: boolean }
   | { type: 'JOIN_ROOM'; roomId: string; playerName: string; authToken?: string; playerId?: string; preferredSeat?: Seat }
-  | { type: 'RECONNECT'; roomId: string; playerId: string }
+  | { type: 'RECONNECT'; roomId: string; playerId: string; authToken?: string }
+  | { type: 'LEAVE_ROOM' }
   | { type: 'SET_ROOM_MODE'; mode: GameMode }
   | { type: 'SET_SEAT_BOT'; seat: Seat; isBot: boolean }
   | { type: 'SWAP_SEAT'; targetSeat: Seat }
@@ -289,6 +291,7 @@ export type ClientMessage =
 export type ServerMessage =
   | { type: 'ROOM_JOINED'; roomId: string; playerId: string; seat: Seat; room: RoomSummary }
   | { type: 'ROOM_UPDATED'; room: RoomSummary }
+  | { type: 'ROOM_LEFT' }
   | { type: 'GAME_STATE'; view: PlayerView }
   | { type: 'ACTION_ERROR'; code: string; message: string }
   | { type: 'PONG'; ts: number; serverTs: number };
