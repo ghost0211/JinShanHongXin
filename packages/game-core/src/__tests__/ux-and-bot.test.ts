@@ -9,6 +9,7 @@ import {
   getCardPoints,
   getPlayerView,
   parsePlay,
+  suggestBuryCards,
   type GameState,
 } from '../index.js';
 
@@ -496,5 +497,169 @@ describe('Bot burying strategy', () => {
         assert.ok(buriedSet.has(dCard.id), `expected short-suit ${dCard.suit}${dCard.rank} to be buried to create a void`);
       }
     }
+  });
+
+  it('never breaks a 3-of-a-kind (♥2×3) or pairs when 10 clean off-suit singles exist (Screenshot 2 hand)', () => {
+    resetCardIds();
+    // Exact 48-card hand from 打6 主♦ screenshot
+    const hand48: Card[] = [
+      // 12 trumps
+      c('H', '5'), c('J', 'BJ'), c('D', '3'), c('D', '6'), c('D', '6'),
+      c('D', '8'), c('D', '8'), c('D', '7'), c('D', '7'), c('D', '5'),
+      c('D', '4'), c('D', '2'),
+      // 14 spades
+      c('S', 'A'), c('S', 'K'), c('S', 'Q'), c('S', 'Q'), c('S', '10'),
+      c('S', '9'), c('S', '9'), c('S', '8'), c('S', '7'), c('S', '7'),
+      c('S', '5'), c('S', '4'), c('S', '3'), c('S', '3'),
+      // 11 hearts (includes ♥2×3 triple!)
+      c('H', 'A'), c('H', 'K'), c('H', 'K'), c('H', 'Q'), c('H', 'J'),
+      c('H', '10'), c('H', '10'), c('H', '8'), c('H', '7'),
+      c('H', '2'), c('H', '2'), c('H', '2'),
+      // 11 clubs (includes ♣9×2, ♣2×2)
+      c('C', 'A'), c('C', 'K'), c('C', 'J'), c('C', '9'), c('C', '9'),
+      c('C', '8'), c('C', '7'), c('C', '3'), c('C', '2'), c('C', '2'),
+    ];
+    // Fix count: 12 + 14 + 12 + 10 = 48
+    assert.equal(hand48.length, 48);
+
+    const buriedIds = suggestBuryCards(hand48, 'D', '6', 'hongxin');
+    assert.equal(buriedIds.length, 10);
+    const buriedSet = new Set(buriedIds);
+    const buried = hand48.filter((card) => buriedSet.has(card.id));
+
+    // Must NOT break ♥2×3 triple, must NOT bury trumps, Aces, points, or pairs!
+    assert.equal(buried.filter((x) => x.suit === 'H' && x.rank === '2').length, 0);
+    assert.equal(buried.filter((x) => getCardCategory(x, 'D', '6') === 'TRUMP').length, 0);
+    assert.equal(buried.filter((x) => x.rank === 'A').length, 0);
+    assert.equal(buried.reduce((s, x) => s + getCardPoints(x), 0), 0);
+  });
+});
+
+describe('Smart sling trump-kill and dealer bottom peek', () => {
+  it('kills a 3-single sling without wasting 大王 alongside two ♥5s (Screenshot 1 hand)', () => {
+    const init = createInitialMatchState({ mode: 'hongxin', seed: 9, withDealing: false });
+    const all = [
+      ...init.hands[0],
+      ...init.hands[1],
+      ...init.hands[2],
+      ...init.hands[3],
+      ...init.bottomCards,
+    ];
+    const used = new Set<number>();
+    const take = (suit: Card['suit'], rank: Card['rank']): Card => {
+      const card = all.find((x) => !used.has(x.id) && x.suit === suit && x.rank === rank)!;
+      used.add(card.id);
+      return card;
+    };
+
+    // Lead (Seat 0, teammate of Seat 2): ♥K ♥10 ♥8 (20 pts off-suit singles, trump=♣, level=4)
+    const lead = [take('H', 'K'), take('H', '10'), take('H', '8')];
+    // Seat 1 (Enemy, void in hearts): trump-kills with ♣K ♣10 ♣5 (25 pts -> 45 pts total on table!)
+    const p1 = [take('C', 'K'), take('C', '10'), take('C', '5')];
+    // Seat 2 (Teammate of Seat 0, void in hearts): holds ♥5×2, 大王, plus small trumps ♣9, ♣7, ♣6 and off-suits!
+    const h5a = take('H', '5');
+    const h5b = take('H', '5');
+    const bj = take('J', 'BJ');
+    const c9 = take('C', '9');
+    const c7 = take('C', '7');
+    const c6 = take('C', '6');
+    const s2Hand: Card[] = [
+      h5a, h5b, bj, c9, c7, c6,
+      take('S', 'A'), take('S', '8'), take('D', '9'), take('D', '7'),
+    ];
+    const remaining = all.filter((x) => !used.has(x.id));
+    const prior = remaining.slice(0, 96); // 24 cards each already played
+    const live = remaining.slice(96);
+
+    const state: GameState = {
+      ...init,
+      phase: 'PLAYING',
+      dealer: 0,
+      bankerTeam: 'A',
+      trumpSuit: 'C',
+      levelRank: '4',
+      currentTurn: 2,
+      hands: {
+        0: live.slice(0, 7),
+        1: live.slice(7, 14),
+        2: s2Hand,
+        3: live.slice(14, 24),
+      },
+      bottomCards: live.slice(24, 34),
+      completedTricks: Array.from({ length: 8 }, (_, idx) => ({
+        trickNumber: idx + 1,
+        leadSeat: 0 as Seat,
+        winnerSeat: 0 as Seat,
+        points: 0,
+        killedByTrump: false,
+        plays: ([0, 1, 2, 3] as Seat[]).map((seat, j) => {
+          const cards = prior.slice(idx * 12 + j * 3, idx * 12 + j * 3 + 3);
+          return {
+            seat,
+            cards,
+            parsed: parsePlay(cards, 'C', '4') ?? {
+              patternType: 'SLING',
+              category: 'D',
+              cards,
+              components: [],
+            },
+          };
+        }),
+      })),
+      currentTrick: [
+        { seat: 0, cards: lead, parsed: parsePlay(lead, 'C', '4')! },
+        { seat: 1, cards: p1, parsed: parsePlay(p1, 'C', '4')! },
+      ],
+    };
+
+    const act = chooseBotAction(state, 2);
+    assert.equal(act.type, 'PLAY_CARDS');
+    if (act.type === 'PLAY_CARDS') {
+      const ids = new Set(act.cardIds);
+      const chosen = s2Hand.filter((card) => ids.has(card.id));
+      // Must over-kill with trumps to capture 45+ points!
+      assert.equal(
+        chosen.every((card) => getCardCategory(card, 'C', '4') === 'TRUMP'),
+        true,
+        `expected bot to trump over-kill for 45 pts, got ${chosen.map((x) => `${x.suit}:${x.rank}`).join(' ')}`,
+      );
+      // MUST NOT waste 大王 alongside two ♥5s — must include at least one cheap small trump!
+      assert.equal(
+        ids.has(h5a.id) && ids.has(h5b.id) && ids.has(bj.id),
+        false,
+        'bot must NOT waste ♥5 + ♥5 + 大王 when ♥5 + ♥5 + small trump is already unbeatable',
+      );
+      assert.ok(
+        ids.has(c6.id) || ids.has(c7.id) || ids.has(c9.id),
+        'bot should pair high anchor(s) with cheap low trump filler(s)',
+      );
+    }
+  });
+
+  it('reveals buried bottom ONLY to the dealer during PLAYING phase (hidden from non-dealers)', () => {
+    const state = createCleanPlayingState({
+      trumpSuit: 'S',
+      levelRank: '2',
+      dealer: 2,
+      currentTurn: 2,
+      hands: {
+        0: [c('S', 'A')],
+        1: [c('H', 'A')],
+        2: [c('C', 'A')],
+        3: [c('D', 'A')],
+      },
+    });
+    const withBottom: GameState = {
+      ...state,
+      bottomCards: Array.from({ length: 10 }, () => c('D', '4')),
+    };
+
+    const dealerView = getPlayerView(withBottom, 2, false);
+    const allyView = getPlayerView(withBottom, 0, false);
+    const enemyView = getPlayerView(withBottom, 1, false);
+
+    assert.equal(dealerView.revealedBottom?.length, 10);
+    assert.equal(allyView.revealedBottom, null);
+    assert.equal(enemyView.revealedBottom, null);
   });
 });

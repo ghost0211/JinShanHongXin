@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   countBipai,
+  getCardPoints,
   getSeatTeam,
   sortHandForDisplay,
   STANDARD_SUITS,
@@ -64,6 +65,7 @@ export const GameTable: React.FC<GameTableProps> = ({
   const [showRules, setShowRules] = useState(false);
   const [showLastTrick, setShowLastTrick] = useState(false);
   const [showScoreDetail, setShowScoreDetail] = useState(false);
+  const [showBottomModal, setShowBottomModal] = useState(false);
   const [showDebugDrawer, setShowDebugDrawer] = useState(false);
   const [inspectTrickSeat, setInspectTrickSeat] = useState<Seat | null>(null);
   const [autoSelectNote, setAutoSelectNote] = useState<string | null>(null);
@@ -119,6 +121,7 @@ export const GameTable: React.FC<GameTableProps> = ({
     setHintIdx(0);
     setAutoSelectNote(null);
     setInspectTrickSeat(null);
+    setShowBottomModal(false);
   }, [view.phase, view.trickNumber, view.roundNumber]);
 
   const turnAutoKey =
@@ -992,6 +995,18 @@ export const GameTable: React.FC<GameTableProps> = ({
         </div>
 
         <div className="action-bar-group">
+          {view.phase === 'PLAYING' &&
+            view.dealer === meSeat &&
+            view.revealedBottom &&
+            view.revealedBottom.length > 0 && (
+              <button
+                type="button"
+                className="btn btn-xs btn-ghost"
+                onClick={() => setShowBottomModal(true)}
+              >
+                看底牌
+              </button>
+            )}
           {view.phase === 'PLAYING' && (
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
               第 {view.trickNumber} 墩
@@ -1075,6 +1090,46 @@ export const GameTable: React.FC<GameTableProps> = ({
           </div>
         </div>
       )}
+      {showBottomModal &&
+        view.dealer === meSeat &&
+        view.revealedBottom &&
+        view.revealedBottom.length > 0 && (
+          <div
+            className="modal-backdrop"
+            onClick={() => setShowBottomModal(false)}
+          >
+            <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3>
+                  庄家底牌（共 {view.revealedBottom.length} 张 · 含{' '}
+                  {view.revealedBottom.reduce((sum, c) => sum + getCardPoints(c), 0)} 分）
+                </h3>
+                <button
+                  type="button"
+                  className="btn btn-xs"
+                  onClick={() => setShowBottomModal(false)}
+                >
+                  关闭
+                </button>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {sortHandForDisplay(
+                  view.revealedBottom,
+                  view.trumpSuit,
+                  view.levelRank,
+                ).map((card) => (
+                  <PlayingCard
+                    key={card.id}
+                    card={card}
+                    trumpSuit={view.trumpSuit}
+                    levelRank={view.levelRank}
+                    size="sm"
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       {showDebugDrawer && view.debugView && (
         <DebugDrawer view={view} onClose={() => setShowDebugDrawer(false)} />
       )}
