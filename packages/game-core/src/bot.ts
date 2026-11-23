@@ -930,6 +930,13 @@ export function buildSmartFollowCandidates(
   const leadPlay = state.currentTrick[0].parsed;
   const N = leadPlay.cards.length;
 
+  const currentBest = resolveTrickWinner(
+    state.currentTrick,
+    trumpSuit,
+    levelRank,
+  );
+  const currentWinningAlly = isSameSide(state, seat, currentBest.winnerSeat);
+
   const base = findLegalFollowCards(hand, leadPlay, trumpSuit, levelRank);
   const candidates: Card[][] = [];
   const seen = new Set<string>();
@@ -946,8 +953,32 @@ export function buildSmartFollowCandidates(
     }
   };
 
+  const hasTrump510KLead =
+    leadPlay.category === 'TRUMP' &&
+    leadPlay.components.some((comp) => comp.type === 'F510K');
+
   for (const c of base) {
-    pushIfValid(c);
+    if (currentWinningAlly || hasTrump510KLead) {
+      pushIfValid(c);
+    } else {
+      // When enemy is currently winning, keep all beating plays from `base`,
+      // but don't blindly import max-point feeding dumps (which cause noisy PIMC blunders);
+      // losing discards are constructed cleanly below by low/balanced/void-making rankers.
+      const parsed = parsePlay(c, trumpSuit, levelRank) ?? {
+        patternType: 'SLING' as const,
+        category: leadPlay.category,
+        cards: c,
+        components: [],
+      };
+      const sim = resolveTrickWinner(
+        [...state.currentTrick, { seat, cards: c, parsed }],
+        trumpSuit,
+        levelRank,
+      );
+      if (sim.winnerSeat === seat) {
+        pushIfValid(c);
+      }
+    }
   }
 
   const inCatHand = hand.filter(
@@ -1002,6 +1033,29 @@ export function buildSmartFollowCandidates(
       );
     });
 
+  const rankForBalancedDiscard = (
+    pool: readonly Card[],
+    ptWeight: number,
+    keepPairs: boolean,
+  ): Card[] =>
+    [...pool].sort((a, b) => {
+      const aT = getCardCategory(a, trumpSuit, levelRank) === 'TRUMP' ? 1 : 0;
+      const bT = getCardCategory(b, trumpSuit, levelRank) === 'TRUMP' ? 1 : 0;
+      if (aT !== bT) return aT - bT;
+      const mA = keyMult.get(getCardKey(a)) ?? 1;
+      const mB = keyMult.get(getCardKey(b)) ?? 1;
+      const aCost = getCardValueCost(a, trumpSuit, levelRank);
+      const bCost = getCardValueCost(b, trumpSuit, levelRank);
+      const aStruct =
+        mA >= 3 ? 20 : keepPairs && mA === 2 ? (aCost >= 16 ? 12 : 4) : 0;
+      const bStruct =
+        mB >= 3 ? 20 : keepPairs && mB === 2 ? (bCost >= 16 ? 12 : 4) : 0;
+      const aScore = getCardPoints(a) * ptWeight + aCost + aStruct;
+      const bScore = getCardPoints(b) * ptWeight + bCost + bStruct;
+      if (aScore !== bScore) return aScore - bScore;
+      return a.id - b.id;
+    });
+
   const rankForSafePointFeed = (pool: readonly Card[]): Card[] =>
     [...pool].sort((a, b) => {
       const aT = getCardCategory(a, trumpSuit, levelRank) === 'TRUMP' ? 1 : 0;
@@ -1022,10 +1076,14 @@ export function buildSmartFollowCandidates(
     });
 
   if (inCatHand.length === 0) {
-    // Void in led category: add smart discards + all distinct trump kill strengths
+    // Void in led category: add smart discards (strict 0-pt, balanced low-loss, void-making; point feed only when ally winning) + trump kills
     pushIfValid(rankForLowSafeDiscard(hand).slice(0, N));
+    pushIfValid(rankForBalancedDiscard(hand, 2.4, true).slice(0, N));
+    pushIfValid(rankForBalancedDiscard(hand, 1.5, true).slice(0, N));
     pushIfValid(rankForVoidMakingDiscard(hand).slice(0, N));
-    pushIfValid(rankForSafePointFeed(hand).slice(0, N));
+    if (currentWinningAlly) {
+      pushIfValid(rankForSafePointFeed(hand).slice(0, N));
+    }
 
     if (leadPlay.category !== 'TRUMP') {
       const trumps = hand.filter(
@@ -1091,12 +1149,28 @@ export function buildSmartFollowCandidates(
     // Forced to play all inCatHand + pick (N - inCatHand.length) extra cards
     const needExtra = N - inCatHand.length;
     pushIfValid([...inCatHand, ...rankForLowSafeDiscard(outCatHand).slice(0, needExtra)]);
+    pushIfValid([...inCatHand, ...rankForBalancedDiscard(outCatHand, 2.4, true).slice(0, needExtra)]);
+    pushIfValid([...inCatHand, ...rankForBalancedDiscard(outCatHand, 1.5, true).slice(0, needExtra)]);
     pushIfValid([...inCatHand, ...rankForVoidMakingDiscard(outCatHand).slice(0, needExtra)]);
-    pushIfValid([...inCatHand, ...rankForSafePointFeed(outCatHand).slice(0, needExtra)]);
+    if (currentWinningAlly) {
+      pushIfValid([...inCatHand, ...rankForSafePointFeed(outCatHand).slice(0, needExtra)]);
+    }
   } else if (inCatHand.length > N) {
-    // Richer in-category follow options
+    // Richer in-category follow options: include balanced low-loss discards so bot never
+    // has to choose only between sacrificing high trumps (参谋/王) vs dumping 20 points!
     pushIfValid(rankForLowSafeDiscard(inCatHand).slice(0, N));
-    pushIfValid(rankForSafePointFeed(inCatHand).slice(0, N));
+    pushIfValid(rankForBalancedDiscard(inCatHand, 2.4, true).slice(0, N));
+    pushIfValid(rankForBalancedDiscard(inCatHand, 1.5, true).slice(0, N));
+    if (currentWinningAlly) {
+      pushIfValid(rankForSafePointFeed(inCatHand).slice(0, N));
+    }
+  }
+
+  // Fallback for special forced-rule plays (e.g. trump 510K top-trump surrender or exact inCatHand.length === N)
+  if (candidates.length === 0) {
+    for (const c of base) {
+      pushIfValid(c);
+    }
   }
 
   return candidates;
@@ -1334,8 +1408,8 @@ export function rankFollowCandidates(state: GameState, seat: Seat): Card[][] {
         score -= 28;
       }
     } else {
-      // Enemy keeps winning: strictly dodge points, keep high cards & structures, try to void short suits!
-      score = -candPts * 6.8 + voidBonus - cardCost * 1.15;
+      // Enemy keeps winning: strictly dodge points without throwing away Jokers/参谋 over a lone 5!
+      score = -candPts * 4.2 + voidBonus - cardCost * 1.15;
     }
 
     scoredCands.push({ cards, score });
