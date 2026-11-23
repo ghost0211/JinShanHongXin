@@ -34,3 +34,4 @@ for long horizons. A better rollout policy is the next lever.
 | heuristic-only (balanced discard + enemy-win point-dump prune + point-dodge weight 4.2) | 320 | +3.0 ± 1.8 | 50.8% | 109 vs 106 | 14 ms |
 | heuristic-only, round 3 | 80 | +1.2 ± 3.6 | 51.9% | 24 vs 27 | 24 ms |
 | **PIMC search (12 worlds, Bayesian bottom/dealer sampling + structure-aware eval + balanced discard)** | 120 | **+5.4 ± 3.5** | **51.7%** | **37 vs 30** | **1332 vs 1487 ms/game (-10%)** |
+| PIMC search + anchor-low sling trump-kills + triple/pair-preserving bury (vs `b174513`) | 80 | +0.4 ± 2.5 | 49.4% | 22 vs 19 | 1475 vs 1419 ms/game |

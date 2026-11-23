@@ -3,6 +3,7 @@ import type {
   Card,
   CardCategory,
   GameAction,
+  GameMode,
   LevelRank,
   ParsedPlay,
   Seat,
@@ -25,6 +26,7 @@ import {
   enumerateChainCandidates,
   groupCardsByKey,
   parsePlay,
+  sortComponentsCanonical,
 } from './patterns.js';
 import type { GameState } from './types.js';
 import {
@@ -498,9 +500,16 @@ export function chooseBotDealingCallAction(
   return null;
 }
 
-function chooseBuryAction(state: GameState, seat: Seat): GameAction {
-  const hand = state.hands[seat];
-  const { trumpSuit, levelRank, mode } = state;
+/**
+ * Recommend 10 cards to bury into the bottom (shared by bots and the UI's "智能选底" button).
+ * Preserves trumps, Aces, triples, tractors, 510K, and pairs; voids short weak off-suits when feasible.
+ */
+export function suggestBuryCards(
+  hand: readonly Card[],
+  trumpSuit: StandardSuit | null,
+  levelRank: LevelRank,
+  mode: GameMode,
+): number[] {
   const buryPool = mode === 'heixin' ? hand.filter((c) => c.rank !== '10') : hand;
 
   const trumps = hand.filter((c) => getCardCategory(c, trumpSuit, levelRank) === 'TRUMP');
@@ -566,7 +575,7 @@ function chooseBuryAction(state: GameState, seat: Seat): GameAction {
   let voidBudget = 10;
   for (const info of offSuitsSorted) {
     if (info.len <= voidBudget && info.aces <= 1) {
-      // Avoid burying 30+ points in a void suit if trump control is weak
+      // Avoid burying 25+ points in a void suit if trump control is weak
       if (!strongTrumpControl && info.pts >= 25 && info.len >= 3) continue;
       voidTargetSuits.add(info.suit);
       voidBudget -= info.len;
@@ -582,7 +591,7 @@ function chooseBuryAction(state: GameState, seat: Seat): GameAction {
     let keepScore = 0;
 
     if (cat === 'TRUMP') {
-      keepScore += 220 + getCardValueCost(card, trumpSuit, levelRank) * 4;
+      keepScore += 260 + getCardValueCost(card, trumpSuit, levelRank) * 4;
     } else {
       const len = suitCards.get(cat)?.length ?? 0;
       const isVoidTarget = voidTargetSuits.has(cat);
@@ -595,10 +604,10 @@ function chooseBuryAction(state: GameState, seat: Seat): GameAction {
         }
       } else {
         keepScore = order * 2.8 + len * 2.4;
-        if (card.rank === 'A') keepScore += 58;
-        if (mult === 3) keepScore += 55;
-        else if (mult === 2) keepScore += 22;
-        if (protectedIds.has(card.id)) keepScore += 28;
+        if (card.rank === 'A') keepScore += 60;
+        if (mult === 3) keepScore += 75;
+        else if (mult === 2) keepScore += 30;
+        if (protectedIds.has(card.id)) keepScore += 32;
         if (pts > 0) {
           // Burying 10/K/5 is risky if bottom might get killed; safe only with very strong trumps
           keepScore += strongTrumpControl ? 4 : 26 + pts * 0.8;
@@ -610,10 +619,19 @@ function chooseBuryAction(state: GameState, seat: Seat): GameAction {
   });
 
   scored.sort((a, b) => a.keepScore - b.keepScore || a.card.id - b.card.id);
+  return scored.slice(0, 10).map((s) => s.card.id);
+}
+
+function chooseBuryAction(state: GameState, seat: Seat): GameAction {
   return {
     type: 'BURY_BOTTOM',
     seat,
-    cardIds: scored.slice(0, 10).map((s) => s.card.id),
+    cardIds: suggestBuryCards(
+      state.hands[seat],
+      state.trumpSuit,
+      state.levelRank,
+      state.mode,
+    ),
   };
 }
 
@@ -921,6 +939,211 @@ function chooseLeadCards(state: GameState, seat: Seat): number[] {
   return rankLeadCandidates(state, seat)[0].map((c) => c.id);
 }
 
+/**
+ * Construct minimal-waste sling matches (for trump-killing or beating a multi-card sling).
+ * Anchors the primary deciding component(s) with strong cards while filling all remaining
+ * slots with the cheapest low cards (e.g. ♥5 + ♥5 + low trump instead of ♥5 + ♥5 + BJ!).
+ */
+function enumerateSmartSlingMatches(
+  pool: readonly Card[],
+  targetComponents: readonly AtomicPattern[],
+  trumpSuit: StandardSuit | null,
+  levelRank: LevelRank,
+): Card[][] {
+  const totalNeeded = targetComponents.reduce((s, c) => s + c.cards.length, 0);
+  if (pool.length < totalNeeded || targetComponents.length === 0) return [];
+
+  const ordered = sortComponentsCanonical(targetComponents);
+  const results: Card[][] = [];
+  const seen = new Set<string>();
+  const emit = (cards: readonly Card[]) => {
+    if (cards.length !== totalNeeded) return;
+    const sig = cards
+      .map((c) => c.id)
+      .sort((a, b) => a - b)
+      .join(',');
+    if (seen.has(sig)) return;
+    if (canMatchSlingStructure(cards, targetComponents, trumpSuit, levelRank).matched) {
+      seen.add(sig);
+      results.push([...cards]);
+    }
+  };
+
+  const asc = [...pool].sort((a, b) => {
+    const ordDiff =
+      getCardOrder(a, trumpSuit, levelRank) - getCardOrder(b, trumpSuit, levelRank);
+    if (ordDiff !== 0) return ordDiff;
+    const ptsDiff = getCardPoints(a) - getCardPoints(b);
+    if (ptsDiff !== 0) return ptsDiff;
+    return a.id - b.id;
+  });
+  const desc = [...pool].sort((a, b) => {
+    const ordDiff =
+      getCardOrder(b, trumpSuit, levelRank) - getCardOrder(a, trumpSuit, levelRank);
+    if (ordDiff !== 0) return ordDiff;
+    const ptsDiff = getCardPoints(a) - getCardPoints(b);
+    if (ptsDiff !== 0) return ptsDiff;
+    return a.id - b.id;
+  });
+
+  // Fast & exact path for pure-SINGLE slings (e.g., 单×2, 单×3, 单×4)
+  if (ordered.every((c) => c.type === 'SINGLE')) {
+    const k = ordered.length;
+    // 1. Cheapest all-low kill
+    emit(asc.slice(0, k));
+
+    // 2. Single-anchor kills: 1 strong card + (k-1) cheapest low fillers
+    const seenAnchorOrd = new Set<number>();
+    let anchorCount = 0;
+    for (const anchor of desc) {
+      const ord = getCardOrder(anchor, trumpSuit, levelRank);
+      if (seenAnchorOrd.has(ord)) continue;
+      seenAnchorOrd.add(ord);
+      const fillers = asc.filter((c) => c.id !== anchor.id).slice(0, k - 1);
+      emit([anchor, ...fillers]);
+      anchorCount += 1;
+      if (anchorCount >= 6) break;
+    }
+
+    // 3. Double-anchor kills (e.g. ♥5 + ♥5 + cheapest low trump — 100% unbeatable without burning BJ!)
+    if (k >= 2 && desc.length >= 2) {
+      const top2 = desc.slice(0, 2);
+      const top2Ids = new Set(top2.map((c) => c.id));
+      const fillers = asc.filter((c) => !top2Ids.has(c.id)).slice(0, k - 2);
+      emit([...top2, ...fillers]);
+
+      // Also consider top1 + next distinct higher anchor + low fillers (e.g. ♥5 + BJ + low when holding only 1 ♥5)
+      if (k >= 3) {
+        const firstOrd = getCardOrder(desc[0], trumpSuit, levelRank);
+        const secondDistinct = desc.find(
+          (c) =>
+            c.id !== desc[0].id &&
+            getCardOrder(c, trumpSuit, levelRank) < firstOrd,
+        );
+        if (secondDistinct) {
+          const usedIds = new Set([desc[0].id, secondDistinct.id]);
+          const remFillers = asc.filter((c) => !usedIds.has(c.id)).slice(0, k - 2);
+          emit([desc[0], secondDistinct, ...remFillers]);
+        }
+      }
+    }
+
+    return results;
+  }
+
+  // General structured sling path (PAIR / TRIPLE / TRACTOR / TRIPLE_TRACTOR / F510K + fillers)
+  const extractOptions = (
+    rem: readonly Card[],
+    target: AtomicPattern,
+    maxOpts: number,
+  ): Card[][] => {
+    const opts: Card[][] = [];
+    const remGroupsAsc = groupCardsByKey(rem, trumpSuit, levelRank).sort(
+      (a, b) => a.order - b.order,
+    );
+
+    if (target.type === 'SINGLE') {
+      const remAsc = [...rem].sort(
+        (a, b) =>
+          getCardOrder(a, trumpSuit, levelRank) - getCardOrder(b, trumpSuit, levelRank) ||
+          getCardPoints(a) - getCardPoints(b),
+      );
+      if (remAsc.length > 0) opts.push([remAsc[0]]);
+      if (maxOpts > 1 && remAsc.length > 1) {
+        opts.push([remAsc[remAsc.length - 1]]);
+      }
+      return opts;
+    }
+
+    if (target.type === 'PAIR' || target.type === 'TRIPLE') {
+      const need = target.type === 'TRIPLE' ? 3 : 2;
+      const eligible = remGroupsAsc.filter((g) => g.cards.length >= need);
+      if (eligible.length === 0) return [];
+      const picks =
+        eligible.length <= maxOpts
+          ? eligible
+          : [
+              eligible[0],
+              eligible[Math.floor(eligible.length / 2)],
+              eligible[eligible.length - 1],
+            ];
+      for (const g of picks) opts.push(g.cards.slice(0, need));
+      return opts;
+    }
+
+    if (target.type === 'TRACTOR' || target.type === 'TRIPLE_TRACTOR') {
+      const mult: 2 | 3 = target.type === 'TRIPLE_TRACTOR' ? 3 : 2;
+      const chains = enumerateChainCandidates(remGroupsAsc, mult, {
+        exactLength: target.length,
+      });
+      if (chains.length === 0) return [];
+      // chains is sorted descending by topOrder -> push lowest first, then highest
+      opts.push(chains[chains.length - 1].cards);
+      if (maxOpts > 1 && chains.length > 1) opts.push(chains[0].cards);
+      return opts;
+    }
+
+    // F510K target: match with lowest/highest triple(s) or trump 510K
+    if (target.length === 1) {
+      const triples = remGroupsAsc.filter((g) => g.cards.length === 3);
+      if (triples.length > 0) {
+        opts.push(triples[0].cards.slice(0, 3));
+        if (maxOpts > 1 && triples.length > 1) {
+          opts.push(triples[triples.length - 1].cards.slice(0, 3));
+        }
+      }
+    } else {
+      const chains = enumerateChainCandidates(remGroupsAsc, 3, {
+        exactLength: target.length,
+      });
+      if (chains.length > 0) {
+        opts.push(chains[chains.length - 1].cards);
+        if (maxOpts > 1 && chains.length > 1) opts.push(chains[0].cards);
+      }
+    }
+    if (trumpSuit !== null) {
+      const t5 = rem.filter((c) => c.suit === trumpSuit && c.rank === '5');
+      const t10 = rem.filter((c) => c.suit === trumpSuit && c.rank === '10');
+      const tK = rem.filter((c) => c.suit === trumpSuit && c.rank === 'K');
+      if (Math.min(t5.length, t10.length, tK.length) >= target.length) {
+        const picked: Card[] = [];
+        for (let i = 0; i < target.length; i++) picked.push(t5[i], t10[i], tK[i]);
+        opts.push(picked);
+      }
+    }
+    return opts;
+  };
+
+  const fillRestLowest = (
+    rem: readonly Card[],
+    idx: number,
+  ): Card[] | null => {
+    if (idx >= ordered.length) return [];
+    const lowOpts = extractOptions(rem, ordered[idx], 1);
+    for (const opt of lowOpts) {
+      const used = new Set(opt.map((c) => c.id));
+      const next = fillRestLowest(
+        rem.filter((c) => !used.has(c.id)),
+        idx + 1,
+      );
+      if (next) return [...opt, ...next];
+    }
+    return null;
+  };
+
+  const primaryOpts = extractOptions(pool, ordered[0], 4);
+  for (const opt0 of primaryOpts) {
+    const used0 = new Set(opt0.map((c) => c.id));
+    const remAfter0 = pool.filter((c) => !used0.has(c.id));
+    const rest = fillRestLowest(remAfter0, 1);
+    if (rest) emit([...opt0, ...rest]);
+  }
+
+  // Fallback low kill if pool already aligns directly
+  emit(asc.slice(0, totalNeeded));
+  return results;
+}
+
 export function buildSmartFollowCandidates(
   state: GameState,
   seat: Seat,
@@ -1126,22 +1349,16 @@ export function buildSmartFollowCandidates(
             pushIfValid(ch.cards);
           }
         } else if (leadPlay.patternType === 'SLING') {
-          // Try constructing minimal & maximal trump kills for multi-card slings!
-          const lowKill = canMatchSlingStructure(
-            sortedAsc.slice(0, N),
+          // Construct minimal-waste sling trump kills (e.g. ♥5 + ♥5 + low trump instead of ♥5 + ♥5 + BJ!)
+          const slingKills = enumerateSmartSlingMatches(
+            trumps,
             leadPlay.components,
             trumpSuit,
             levelRank,
           );
-          if (lowKill.matched) pushIfValid(sortedAsc.slice(0, N));
-          const sortedDesc = [...sortedAsc].reverse();
-          const highKill = canMatchSlingStructure(
-            sortedDesc.slice(0, N),
-            leadPlay.components,
-            trumpSuit,
-            levelRank,
-          );
-          if (highKill.matched) pushIfValid(sortedDesc.slice(0, N));
+          for (const kill of slingKills) {
+            pushIfValid(kill);
+          }
         }
       }
     }
@@ -1163,6 +1380,17 @@ export function buildSmartFollowCandidates(
     pushIfValid(rankForBalancedDiscard(inCatHand, 1.5, true).slice(0, N));
     if (currentWinningAlly) {
       pushIfValid(rankForSafePointFeed(inCatHand).slice(0, N));
+    }
+    if (leadPlay.patternType === 'SLING') {
+      const slingBeats = enumerateSmartSlingMatches(
+        inCatHand,
+        leadPlay.components,
+        trumpSuit,
+        levelRank,
+      );
+      for (const beat of slingBeats) {
+        pushIfValid(beat);
+      }
     }
   }
 
