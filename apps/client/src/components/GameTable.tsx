@@ -472,12 +472,20 @@ export const GameTable: React.FC<GameTableProps> = ({
     view.events.length > 0 ? view.events[view.events.length - 1].message : '';
 
   const heixinBidTarget = view.bidState?.highestBid || 0;
+  const capturedPoints =
+    view.mode === 'hongxin' ? view.challengerPoints : view.bankerPoints;
+  const escapedPoints =
+    view.mode === 'hongxin' ? view.bankerPoints : view.challengerPoints;
   const scorePct =
     view.mode === 'hongxin'
-      ? Math.min(100, Math.round((view.challengerPoints / 300) * 100))
+      ? Math.min(100, Math.round((capturedPoints / 300) * 100))
       : heixinBidTarget > 0
-        ? Math.min(100, Math.round((view.bankerPoints / heixinBidTarget) * 100))
+        ? Math.min(100, Math.round((capturedPoints / heixinBidTarget) * 100))
         : 0;
+  const escapedPct = Math.min(
+    Math.max(0, 100 - scorePct),
+    Math.round((escapedPoints / 300) * 100),
+  );
 
   return (
     <div className="table-root" data-table-skin={tableSkin}>
@@ -521,11 +529,17 @@ export const GameTable: React.FC<GameTableProps> = ({
               onClick={() => setShowScoreDetail(true)}
               title={
                 view.mode === 'hongxin'
-                  ? '点击查看已抓分与已跑分牌（共300分）'
-                  : '点击查看庄家已抓分与闲家已跑分牌'
+                  ? `闲家已拿 ${capturedPoints} 分（及格 120），庄家已跑 ${escapedPoints} 分，点击查看详情`
+                  : `庄家已拿 ${capturedPoints} 分（目标 ${heixinBidTarget || '-'}），闲家已跑 ${escapedPoints} 分，点击查看详情`
               }
             >
               <div className="score-meter-fill" style={{ width: `${scorePct}%` }} />
+              {escapedPct > 0 && (
+                <div
+                  className="score-meter-escaped"
+                  style={{ width: `${escapedPct}%` }}
+                />
+              )}
               {view.mode === 'hongxin' && (
                 <>
                   <div className="score-meter-tick" style={{ left: '13.3%' }} />
@@ -537,8 +551,8 @@ export const GameTable: React.FC<GameTableProps> = ({
               <div className="score-meter-label">
                 <span>
                   {view.mode === 'hongxin'
-                    ? `闲分 ${view.challengerPoints} / 及格120`
-                    : `庄分 ${view.bankerPoints} / 目标${heixinBidTarget || '-'}`}
+                    ? `拿 ${capturedPoints}/120 · 跑 ${escapedPoints}`
+                    : `拿 ${capturedPoints}/${heixinBidTarget || '-'} · 跑 ${escapedPoints}`}
                 </span>
                 <span className="score-meter-hint">查分</span>
               </div>
@@ -546,13 +560,6 @@ export const GameTable: React.FC<GameTableProps> = ({
           </div>
 
           <div className="hud-group hud-tools">
-            <button
-              type="button"
-              className="btn btn-xs"
-              onClick={() => setShowScoreDetail(true)}
-            >
-              查分
-            </button>
             <button
               type="button"
               className="btn btn-xs"

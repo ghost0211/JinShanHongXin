@@ -885,8 +885,8 @@ input {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 5px 10px;
+  gap: 6px;
+  padding: 5px 8px;
   background: rgba(4, 18, 13, 0.82);
   border-bottom: 1px solid rgba(244, 201, 107, 0.22);
   font-size: 12px;
@@ -897,13 +897,13 @@ input {
 .hud-group {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   flex-shrink: 0;
 }
 
 .score-meter {
   position: relative;
-  width: 185px;
+  width: 204px;
   height: 20px;
   padding: 0;
   background: rgba(0, 0, 0, 0.45);
@@ -931,7 +931,7 @@ input {
 
 @media (min-width: 920px) {
   .score-meter {
-    width: 256px;
+    width: 236px;
   }
 }
 
@@ -939,6 +939,16 @@ input {
   height: 100%;
   background: linear-gradient(90deg, #27a474 0%, #eab308 45%, #ef4444 100%);
   transition: width 260ms ease;
+}
+
+.score-meter-escaped {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(148, 163, 184, 0.32);
+  transition: width 260ms ease;
+  pointer-events: none;
 }
 
 .score-meter-tick {

@@ -128,7 +128,7 @@ export class GameRoom {
     this.debugOpenHands = false;
     this.botDelayMs = options.botDelayMs ?? 450;
     this.withDealing = options.withDealing ?? true;
-    this.dealStepMs = options.dealStepMs ?? 135;
+    this.dealStepMs = options.dealStepMs ?? 340;
     this.callWindowMs = options.callWindowMs ?? 10000;
     this.counterWindowMs = options.counterWindowMs ?? 10000;
     this.reCounterWindowMs = options.reCounterWindowMs ?? 5000;
