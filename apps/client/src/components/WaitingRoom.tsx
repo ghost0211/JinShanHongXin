@@ -27,6 +27,7 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
   const isHost = mySeat === room.hostSeat;
   const me = room.seats[mySeat];
   const allOccupied = room.seats.every((s) => s.occupied);
+  const allOnline = room.seats.every((s) => s.isBot || s.connected);
   const allReady = room.seats.every(
     (s) => s.occupied && (s.isBot || s.seat === room.hostSeat || s.ready),
   );
@@ -103,7 +104,7 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
                   {room.mode === 'hongxin' ? `${slot.team} 队（与座${((slot.seat + 2) % 4) + 1}对家）` : '1 打 3 个人积分'} ·{' '}
-                  {slot.occupied ? (slot.ready ? '已准备' : '未准备') : '空位'}
+                  {!slot.occupied ? '空位' : !slot.connected ? '离线（保留座位）' : slot.ready ? '已准备' : '未准备'}
                 </div>
               </div>
 
@@ -164,10 +165,10 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
           <button
             type="button"
             className="btn btn-gold btn-lg"
-            disabled={!allOccupied || !allReady}
+            disabled={!allOccupied || !allOnline || !allReady}
             onClick={onStartGame}
           >
-            {!allOccupied ? '请先添满 4 个座位（可加机器人）' : !allReady ? '等待其他玩家准备' : '开始对局'}
+            {!allOccupied ? '请先添满 4 个座位（可加机器人）' : !allOnline ? '等待离线玩家重连' : !allReady ? '等待其他玩家准备' : '开始对局'}
           </button>
         )}
       </div>

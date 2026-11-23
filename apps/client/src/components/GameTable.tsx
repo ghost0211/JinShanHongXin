@@ -33,6 +33,8 @@ import { RulesModal } from './RulesModal.js';
 import { LastTrickModal } from './LastTrickModal.js';
 import { ScoreDetailModal } from './ScoreDetailModal.js';
 import { DebugDrawer } from './DebugDrawer.js';
+import { readTableSkin, saveTableSkin, TableSkinPicker } from './TableSkinPicker.js';
+import '../styles/table-skins.css';
 
 interface GameTableProps {
   room: RoomSummary;
@@ -55,6 +57,7 @@ export const GameTable: React.FC<GameTableProps> = ({
   onToggleDebugOpenHands,
   onLeaveRoom,
 }) => {
+  const [tableSkin, setTableSkin] = useState(readTableSkin);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [hintedIds, setHintedIds] = useState<number[]>([]);
   const [hintIdx, setHintIdx] = useState(0);
@@ -477,116 +480,125 @@ export const GameTable: React.FC<GameTableProps> = ({
         : 0;
 
   return (
-    <div className="table-root">
+    <div className="table-root" data-table-skin={tableSkin}>
       {/* Top HUD */}
-      <div className="table-hud">
-        <div className="hud-group">
-          <span className="pill pill-gold">
-            {view.mode === 'hongxin' ? '打红心' : '打黑心'} · 第{view.roundNumber}局
-          </span>
-          <span className="pill">
-            打 <strong>{view.levelRank}</strong>
-          </span>
-          <span className="pill pill-red">
-            主：{view.trumpSuit ? `${getSuitSymbol(view.trumpSuit)}${getSuitName(view.trumpSuit)}` : '无主'}
-          </span>
-          <span className="pill">{getPhaseLabel(view.phase, view.mode)}</span>
-        </div>
-
-        <div className="hud-group">
-          {view.mode === 'hongxin' ? (
-            <>
-              <span className="pill pill-green">
-                A:{view.teams.A.levelRank}
-                {view.teams.A.penaltyCount > 0 ? `(罚${view.teams.A.penaltyCount})` : ''}
-              </span>
-              <span className="pill">
-                B:{view.teams.B.levelRank}
-                {view.teams.B.penaltyCount > 0 ? `(罚${view.teams.B.penaltyCount})` : ''}
-              </span>
-            </>
-          ) : (
+      <div className="table-hud-shell">
+        <div className="table-hud">
+          <div className="hud-group hud-match">
             <span className="pill pill-gold">
-              叫分:{view.bidState?.highestBid || '-'} · 我的分:{view.playerScores[meSeat]}
+              {view.mode === 'hongxin' ? '打红心' : '打黑心'} · 第{view.roundNumber}局
             </span>
-          )}
+            <span className="pill">
+              打 <strong>{view.levelRank}</strong>
+            </span>
+            <span className="pill pill-red">
+              主：{view.trumpSuit ? `${getSuitSymbol(view.trumpSuit)}${getSuitName(view.trumpSuit)}` : '无主'}
+            </span>
+            <span className="pill">{getPhaseLabel(view.phase, view.mode)}</span>
+          </div>
 
-          <button
-            type="button"
-            className="score-meter is-clickable"
-            onClick={() => setShowScoreDetail(true)}
-            title={
-              view.mode === 'hongxin'
-                ? '点击查看已抓分与已跑分牌（共300分）'
-                : '点击查看庄家已抓分与闲家已跑分牌'
-            }
-          >
-            <div className="score-meter-fill" style={{ width: `${scorePct}%` }} />
-            {view.mode === 'hongxin' && (
+          <div className="hud-group hud-score">
+            {view.mode === 'hongxin' ? (
               <>
-                <div className="score-meter-tick" style={{ left: '13.3%' }} />
-                <div className="score-meter-tick" style={{ left: '40%' }} />
-                <div className="score-meter-tick" style={{ left: '60%' }} />
-                <div className="score-meter-tick" style={{ left: '80%' }} />
+                <span className="pill pill-green">
+                  A:{view.teams.A.levelRank}
+                  {view.teams.A.penaltyCount > 0 ? `(罚${view.teams.A.penaltyCount})` : ''}
+                </span>
+                <span className="pill">
+                  B:{view.teams.B.levelRank}
+                  {view.teams.B.penaltyCount > 0 ? `(罚${view.teams.B.penaltyCount})` : ''}
+                </span>
               </>
-            )}
-            <div className="score-meter-label">
-              <span>
-                {view.mode === 'hongxin'
-                  ? `闲分 ${view.challengerPoints} / 及格120`
-                  : `庄分 ${view.bankerPoints} / 目标${heixinBidTarget || '-'}`}
+            ) : (
+              <span className="pill pill-gold">
+                叫分:{view.bidState?.highestBid || '-'} · 我的分:{view.playerScores[meSeat]}
               </span>
-              <span className="score-meter-hint">查分</span>
-            </div>
-          </button>
-        </div>
+            )}
 
-        <div className="hud-group">
-          <button
-            type="button"
-            className="btn btn-xs"
-            onClick={() => setShowScoreDetail(true)}
-          >
-            查分
-          </button>
-          <button
-            type="button"
-            className="btn btn-xs"
-            onClick={() => setShowLastTrick(true)}
-            disabled={!view.lastTrick}
-          >
-            上一轮
-          </button>
-          <button
-            type="button"
-            className={`btn btn-xs ${meRoomSeat.autoBot ? 'btn-gold' : ''}`}
-            onClick={() => onSetAutoBot(!meRoomSeat.autoBot)}
-          >
-            {meRoomSeat.autoBot ? '取消托管' : '托管'}
-          </button>
-          <button type="button" className="btn btn-xs" onClick={onToggleMute}>
-            {muted ? '静音' : '音效'}
-          </button>
-          {room.debugMode && (
             <button
               type="button"
-              className={`btn btn-xs ${room.debugOpenHands ? 'btn-emerald' : ''}`}
-              onClick={() => {
-                const next = !room.debugOpenHands;
-                onToggleDebugOpenHands(next);
-                setShowDebugDrawer(next);
-              }}
+              className="score-meter is-clickable"
+              onClick={() => setShowScoreDetail(true)}
+              title={
+                view.mode === 'hongxin'
+                  ? '点击查看已抓分与已跑分牌（共300分）'
+                  : '点击查看庄家已抓分与闲家已跑分牌'
+              }
             >
-              上帝视角
+              <div className="score-meter-fill" style={{ width: `${scorePct}%` }} />
+              {view.mode === 'hongxin' && (
+                <>
+                  <div className="score-meter-tick" style={{ left: '13.3%' }} />
+                  <div className="score-meter-tick" style={{ left: '40%' }} />
+                  <div className="score-meter-tick" style={{ left: '60%' }} />
+                  <div className="score-meter-tick" style={{ left: '80%' }} />
+                </>
+              )}
+              <div className="score-meter-label">
+                <span>
+                  {view.mode === 'hongxin'
+                    ? `闲分 ${view.challengerPoints} / 及格120`
+                    : `庄分 ${view.bankerPoints} / 目标${heixinBidTarget || '-'}`}
+                </span>
+                <span className="score-meter-hint">查分</span>
+              </div>
             </button>
-          )}
-          <button type="button" className="btn btn-xs" onClick={() => setShowRules(true)}>
-            规则
-          </button>
-          <button type="button" className="btn btn-xs btn-crimson" onClick={onLeaveRoom}>
-            退出
-          </button>
+          </div>
+
+          <div className="hud-group hud-tools">
+            <button
+              type="button"
+              className="btn btn-xs"
+              onClick={() => setShowScoreDetail(true)}
+            >
+              查分
+            </button>
+            <button
+              type="button"
+              className="btn btn-xs"
+              onClick={() => setShowLastTrick(true)}
+              disabled={!view.lastTrick}
+            >
+              上一轮
+            </button>
+            <button
+              type="button"
+              className={`btn btn-xs ${meRoomSeat.autoBot ? 'btn-gold' : ''}`}
+              onClick={() => onSetAutoBot(!meRoomSeat.autoBot)}
+            >
+              {meRoomSeat.autoBot ? '取消托管' : '托管'}
+            </button>
+            <button type="button" className="btn btn-xs" onClick={onToggleMute}>
+              {muted ? '静音' : '音效'}
+            </button>
+            {room.debugMode && (
+              <button
+                type="button"
+                className={`btn btn-xs ${room.debugOpenHands ? 'btn-emerald' : ''}`}
+                onClick={() => {
+                  const next = !room.debugOpenHands;
+                  onToggleDebugOpenHands(next);
+                  setShowDebugDrawer(next);
+                }}
+              >
+                上帝视角
+              </button>
+            )}
+            <button type="button" className="btn btn-xs" onClick={() => setShowRules(true)}>
+              规则
+            </button>
+            <button type="button" className="btn btn-xs btn-crimson" onClick={onLeaveRoom}>
+              退出
+            </button>
+          </div>
         </div>
+        <TableSkinPicker
+          value={tableSkin}
+          onChange={(next) => {
+            setTableSkin(next);
+            saveTableSkin(next);
+          }}
+        />
       </div>
 
       {/* Arena: 3 Opponents (with card backs) + Center Trick Mat */}

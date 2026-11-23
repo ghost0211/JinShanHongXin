@@ -11,9 +11,11 @@ import {
   getSavedServerUrl,
   ManagedWsClient,
   resolveHttpBase,
+  resolveWsUrl,
   saveServerUrl,
   type ConnectionStatus,
 } from '../net/wsClient.js';
+import { latestNewPlay, newRecentGameEvents } from '../utils/cardAudio.js';
 import { soundFX } from '../utils/sound.js';
 
 export interface SavedSession {
@@ -43,23 +45,28 @@ export interface MatchHistoryRow {
   }>;
 }
 
-const SESSION_KEY = 'jinshan_session';
+const SESSION_KEY = 'jinshan_session_v2';
 const NAME_KEY = 'jinshan_player_name';
-const AUTH_TOKEN_KEY = 'jinshan_auth_token';
+const AUTH_TOKEN_KEY = 'jinshan_auth_token_v2';
 
-function loadSavedSession(): SavedSession | null {
+function scopedKey(key: string, serverUrl: string): string {
+  return `${key}:${resolveWsUrl(serverUrl)}`;
+}
+
+function loadSavedSession(serverUrl: string): SavedSession | null {
   try {
-    const raw = localStorage.getItem(SESSION_KEY);
+    const raw = localStorage.getItem(scopedKey(SESSION_KEY, serverUrl));
     return raw ? (JSON.parse(raw) as SavedSession) : null;
   } catch {
     return null;
   }
 }
 
-function saveSession(session: SavedSession | null): void {
+function saveSession(serverUrl: string, session: SavedSession | null): void {
   try {
-    if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    else localStorage.removeItem(SESSION_KEY);
+    const key = scopedKey(SESSION_KEY, serverUrl);
+    if (session) localStorage.setItem(key, JSON.stringify(session));
+    else localStorage.removeItem(key);
   } catch {
     // ignore
   }
@@ -73,18 +80,22 @@ function loadPlayerName(): string {
   }
 }
 
-function loadAuthToken(): string | null {
+function loadAuthToken(serverUrl: string): string | null {
   try {
-    return localStorage.getItem(AUTH_TOKEN_KEY);
+    // Old, unscoped credentials must never be forwarded to another server.
+    localStorage.removeItem('jinshan_auth_token');
+    localStorage.removeItem('jinshan_session');
+    return localStorage.getItem(scopedKey(AUTH_TOKEN_KEY, serverUrl));
   } catch {
     return null;
   }
 }
 
-function saveAuthToken(token: string | null): void {
+function saveAuthToken(serverUrl: string, token: string | null): void {
   try {
-    if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
-    else localStorage.removeItem(AUTH_TOKEN_KEY);
+    const key = scopedKey(AUTH_TOKEN_KEY, serverUrl);
+    if (token) localStorage.setItem(key, token);
+    else localStorage.removeItem(key);
   } catch {
     // ignore
   }
@@ -93,11 +104,10 @@ function saveAuthToken(token: string | null): void {
 export function useGameClient() {
   const [serverUrl, setServerUrl] = useState<string>(() => getSavedServerUrl());
   const [playerName, setPlayerNameState] = useState<string>(() => loadPlayerName());
-  const [authToken, setAuthTokenState] = useState<string | null>(() => loadAuthToken());
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [connStatus, setConnStatus] = useState<ConnectionStatus>('disconnected');
   const [session, setSession] = useState<SavedSession | null>(null);
-  const [savedSession, setSavedSession] = useState<SavedSession | null>(() => loadSavedSession());
+  const [savedSession, setSavedSession] = useState<SavedSession | null>(() => loadSavedSession(serverUrl));
   const [room, setRoom] = useState<RoomSummary | null>(null);
   const [view, setView] = useState<PlayerView | null>(null);
   const [roomsList, setRoomsList] = useState<RoomSummary[]>([]);
@@ -107,10 +117,15 @@ export function useGameClient() {
   const [muted, setMuted] = useState<boolean>(() => soundFX.isMuted());
 
   const clientRef = useRef<ManagedWsClient | null>(null);
-  const sessionRef = useRef<SavedSession | null>(session);
-  sessionRef.current = session;
-  const authTokenRef = useRef<string | null>(authToken);
-  authTokenRef.current = authToken;
+  const sessionRef = useRef<SavedSession | null>(null);
+  const roomRef = useRef<RoomSummary | null>(null);
+  const viewRef = useRef<PlayerView | null>(null);
+  const reconnectingRef = useRef(false);
+  const leavingRef = useRef(false);
+  const serverUrlRef = useRef(serverUrl);
+  const authGeneration = useRef(0);
+  const [initialAuthToken] = useState(() => loadAuthToken(serverUrl));
+  const authTokenRef = useRef<string | null>(initialAuthToken);
   const toastIdRef = useRef(1);
 
   const pushToast = useCallback((text: string, isError = false) => {
@@ -131,58 +146,79 @@ export function useGameClient() {
     }
   }, []);
 
-  const refreshMe = useCallback(
-    async (tokenOverride?: string | null) => {
-      const token = tokenOverride !== undefined ? tokenOverride : authTokenRef.current;
-      if (!token) {
+  const clearActiveRoom = useCallback(() => {
+    sessionRef.current = null;
+    roomRef.current = null;
+    viewRef.current = null;
+    soundFX.stopCardSounds();
+    setSession(null);
+    setRoom(null);
+    setView(null);
+  }, []);
+
+  const forgetSavedRoom = useCallback(() => {
+    saveSession(serverUrl, null);
+    setSavedSession(null);
+  }, [serverUrl]);
+
+  const refreshMe = useCallback(async () => {
+    const token = authTokenRef.current;
+    if (!token || serverUrlRef.current !== serverUrl) return;
+    const generation = authGeneration.current;
+    const isCurrent = () => serverUrlRef.current === serverUrl &&
+      authGeneration.current === generation && authTokenRef.current === token;
+    try {
+      const base = resolveHttpBase(serverUrl);
+      const res = await fetch(`${base}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!isCurrent()) return;
+      if (res.status === 401) {
+        authTokenRef.current = null;
+        saveAuthToken(serverUrl, null);
         setCurrentUser(null);
         return;
       }
-      try {
-        const base = resolveHttpBase(serverUrl);
-        const res = await fetch(`${base}/api/auth/me`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.status === 401) {
-          saveAuthToken(null);
-          setAuthTokenState(null);
-          setCurrentUser(null);
-          return;
-        }
-        if (!res.ok) return;
-        const data = (await res.json()) as { user: UserProfile };
-        setCurrentUser(data.user);
-        setPlayerName(data.user.nickname);
-      } catch {
-        // server unreachable; keep cached token for retry
-      }
-    },
-    [serverUrl, setPlayerName],
-  );
+      if (!res.ok) return;
+      const data = (await res.json()) as { user: UserProfile };
+      if (isCurrent()) setCurrentUser(data.user);
+    } catch {
+      // Keep the token for retry when the server is unreachable.
+    }
+  }, [serverUrl]);
+
+  const reconnectRoom = useCallback((client: ManagedWsClient, target: SavedSession) => {
+    if (reconnectingRef.current || leavingRef.current) return;
+    reconnectingRef.current = client.send({
+      type: 'RECONNECT',
+      roomId: target.roomId,
+      playerId: target.playerId,
+      authToken: authTokenRef.current ?? undefined,
+    });
+  }, []);
 
   useEffect(() => {
-    void refreshMe();
-  }, [refreshMe]);
-
-  useEffect(() => {
-    const client = new ManagedWsClient(serverUrl);
+    const client = new ManagedWsClient(serverUrl, () => {
+      clearActiveRoom();
+      // Another tab may have just saved this seat in the shared localStorage.
+      setSavedSession(null);
+      pushToast('该座位已在另一连接打开');
+    });
     clientRef.current = client;
 
     const unsubStatus = client.onStatus((status) => {
       setConnStatus(status);
       if (status === 'connected') {
         void refreshMe();
-        if (sessionRef.current) {
-          client.send({
-            type: 'RECONNECT',
-            roomId: sessionRef.current.roomId,
-            playerId: sessionRef.current.playerId,
-          });
-        }
+        if (sessionRef.current) reconnectRoom(client, sessionRef.current);
+      } else if (status === 'disconnected') {
+        reconnectingRef.current = false;
+        leavingRef.current = false;
       }
     });
 
     const unsubMsg = client.onMessage((msg) => {
+      if (serverUrlRef.current !== serverUrl || (leavingRef.current && msg.type !== 'ROOM_LEFT')) return;
       switch (msg.type) {
         case 'ROOM_JOINED': {
           const nextSess: SavedSession = {
@@ -190,77 +226,71 @@ export function useGameClient() {
             playerId: msg.playerId,
             seat: msg.seat,
           };
+          const switchedRoom = roomRef.current?.roomId !== msg.roomId;
+          if (reconnectingRef.current || switchedRoom) {
+            viewRef.current = null;
+            soundFX.stopCardSounds();
+            if (switchedRoom) setView(null);
+          }
+          reconnectingRef.current = false;
+          sessionRef.current = nextSess;
+          roomRef.current = msg.room;
           setSession(nextSess);
           setSavedSession(nextSess);
-          saveSession(nextSess);
+          saveSession(serverUrl, nextSess);
           setRoom(msg.room);
           break;
         }
         case 'ROOM_UPDATED': {
-          setRoom(msg.room);
+          if (sessionRef.current?.roomId === msg.room.roomId) {
+            roomRef.current = msg.room;
+            setRoom(msg.room);
+          }
+          break;
+        }
+        case 'ROOM_LEFT': {
+          leavingRef.current = false;
+          clearActiveRoom();
           break;
         }
         case 'GAME_STATE': {
-          setView((prev) => {
-            if (
-              (msg.view.phase === 'ROUND_OVER' || msg.view.phase === 'MATCH_OVER') &&
-              prev?.phase !== msg.view.phase
-            ) {
-              void refreshMe();
-            }
-            if (
-              prev &&
-              msg.view.phase === 'DEALING' &&
-              msg.view.dealtCount > prev.dealtCount &&
-              msg.view.dealtCount % 2 === 1
-            ) {
-              soundFX.playTap();
-            }
-            if (prev && msg.view.events.length > prev.events.length) {
-              const newEvents = msg.view.events.slice(prev.events.length);
-              const lastEv = newEvents[newEvents.length - 1];
-              const hasCardPlayed = newEvents.some((e) => e.type === 'CARD_PLAYED');
-              if (lastEv?.type === 'SLING_FAILED') {
-                pushToast(lastEv.message, true);
-              } else if (lastEv?.type === 'COUNTER_FAILED') {
-                pushToast(lastEv.message, true);
-              } else if (
-                lastEv?.type === 'COUNTER_SUCCESS' ||
-                lastEv?.type === 'COUNTER_ACCEPTED'
-              ) {
-                soundFX.playSuccess();
-                pushToast(lastEv.message);
-              } else if (
-                lastEv?.type === 'TRUMP_CALLED' ||
-                lastEv?.type === 'COUNTER_PROPOSED'
-              ) {
-                soundFX.playSpecial();
-                pushToast(lastEv.message);
-              } else if (hasCardPlayed) {
-                const lastPlay =
-                  msg.view.currentTrick[msg.view.currentTrick.length - 1] ??
-                  msg.view.lastTrick?.plays[3];
-                if (
-                  lastPlay?.parsed.patternType === 'F510K' ||
-                  lastPlay?.parsed.patternType === 'TRACTOR' ||
-                  lastPlay?.parsed.patternType === 'TRIPLE_TRACTOR'
-                ) {
-                  soundFX.playSpecial();
-                } else {
-                  soundFX.playCards();
-                }
-              }
-            }
-            return msg.view;
-          });
+          if (!sessionRef.current) break;
+          // Handle each accepted snapshot once, outside a React state updater.
+          const prev = viewRef.current;
+          const next = msg.view;
+          viewRef.current = next;
+          setView(next);
+          if ((next.phase === 'ROUND_OVER' || next.phase === 'MATCH_OVER') && prev?.phase !== next.phase) {
+            void refreshMe();
+          }
+          if (!prev) break; // Do not replay the history bundled with a reconnect.
+          if (next.phase === 'DEALING' && next.dealtCount > prev.dealtCount && next.dealtCount % 2 === 1) {
+            soundFX.playTap();
+          }
+          const lastPlay = latestNewPlay(prev, next);
+          if (lastPlay) soundFX.playCards(lastPlay, next.viewerSeat);
+          const announcement = newRecentGameEvents(prev, next).findLast((event) =>
+            ['SLING_FAILED', 'COUNTER_FAILED', 'COUNTER_SUCCESS', 'COUNTER_ACCEPTED', 'TRUMP_CALLED', 'COUNTER_PROPOSED']
+              .includes(event.type));
+          if (announcement?.type === 'SLING_FAILED' || announcement?.type === 'COUNTER_FAILED') {
+            pushToast(announcement.message, true);
+          } else if (announcement?.type === 'COUNTER_SUCCESS' || announcement?.type === 'COUNTER_ACCEPTED') {
+            soundFX.playSuccess();
+            pushToast(announcement.message);
+          } else if (announcement) {
+            soundFX.playSpecial();
+            pushToast(announcement.message);
+          }
           break;
         }
         case 'ACTION_ERROR': {
           pushToast(msg.message, true);
-          if (msg.code === 'ROOM_NOT_FOUND' && !room) {
-            saveSession(null);
-            setSavedSession(null);
+          if (reconnectingRef.current) {
+            reconnectingRef.current = false;
+            clearActiveRoom();
+            if (msg.code === 'ROOM_NOT_FOUND' || msg.code === 'RECONNECT_EXPIRED') forgetSavedRoom();
           }
+          if (msg.code === 'UNAUTHORIZED') void refreshMe();
           break;
         }
       }
@@ -268,83 +298,50 @@ export function useGameClient() {
 
     client.connect(serverUrl);
     return () => {
+      clientRef.current = null;
       unsubStatus();
       unsubMsg();
       client.dispose();
     };
-  }, [serverUrl, pushToast, refreshMe]);
+  }, [serverUrl, pushToast, refreshMe, reconnectRoom, clearActiveRoom, forgetSavedRoom]);
 
-  const registerUser = useCallback(
-    async (
-      username: string,
-      password: string,
-      nickname?: string,
-    ): Promise<{ ok: boolean; error?: string }> => {
-      try {
-        const base = resolveHttpBase(serverUrl);
-        const res = await fetch(`${base}/api/auth/register`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password, nickname }),
-        });
-        const data = (await res.json()) as {
-          token?: string;
-          user?: UserProfile;
-          error?: string;
-        };
-        if (!res.ok || !data.token || !data.user) {
-          return { ok: false, error: data.error ?? '注册失败' };
-        }
-        saveAuthToken(data.token);
-        setAuthTokenState(data.token);
-        setCurrentUser(data.user);
-        setPlayerName(data.user.nickname);
-        pushToast(`欢迎加入，${data.user.nickname}！`);
-        return { ok: true };
-      } catch {
-        return { ok: false, error: '无法连接服务器，请检查网络或服务器地址' };
+  const submitCredentials = useCallback(async (
+    operation: 'register' | 'login',
+    credentials: { username: string; password: string; inviteCode?: string; nickname?: string },
+  ): Promise<{ ok: boolean; error?: string }> => {
+    const generation = ++authGeneration.current;
+    const isCurrent = () => serverUrlRef.current === serverUrl && authGeneration.current === generation;
+    try {
+      const res = await fetch(`${resolveHttpBase(serverUrl)}/api/auth/${operation}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(credentials),
+      });
+      const data = (await res.json()) as { token?: string; user?: UserProfile; error?: string };
+      if (!isCurrent()) return { ok: false, error: '登录状态已变化，请重试' };
+      if (!res.ok || !data.token || !data.user) {
+        return { ok: false, error: data.error ?? (operation === 'login' ? '登录失败' : '注册失败') };
       }
-    },
-    [serverUrl, setPlayerName, pushToast],
-  );
+      authTokenRef.current = data.token;
+      saveAuthToken(serverUrl, data.token);
+      setCurrentUser(data.user);
+      pushToast(`${operation === 'login' ? '欢迎回来' : '欢迎加入'}，${data.user.nickname}！`);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: '无法连接服务器，请检查网络或服务器地址' };
+    }
+  }, [serverUrl, pushToast]);
 
-  const loginUser = useCallback(
-    async (
-      username: string,
-      password: string,
-    ): Promise<{ ok: boolean; error?: string }> => {
-      try {
-        const base = resolveHttpBase(serverUrl);
-        const res = await fetch(`${base}/api/auth/login`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password }),
-        });
-        const data = (await res.json()) as {
-          token?: string;
-          user?: UserProfile;
-          error?: string;
-        };
-        if (!res.ok || !data.token || !data.user) {
-          return { ok: false, error: data.error ?? '登录失败' };
-        }
-        saveAuthToken(data.token);
-        setAuthTokenState(data.token);
-        setCurrentUser(data.user);
-        setPlayerName(data.user.nickname);
-        pushToast(`欢迎回来，${data.user.nickname}！`);
-        return { ok: true };
-      } catch {
-        return { ok: false, error: '无法连接服务器，请检查网络或服务器地址' };
-      }
-    },
-    [serverUrl, setPlayerName, pushToast],
-  );
+  const registerUser = useCallback((username: string, password: string, inviteCode: string, nickname?: string) =>
+    submitCredentials('register', { username, password, inviteCode, nickname }), [submitCredentials]);
+  const loginUser = useCallback((username: string, password: string) =>
+    submitCredentials('login', { username, password }), [submitCredentials]);
 
   const updateUserNickname = useCallback(
     async (nickname: string): Promise<{ ok: boolean; error?: string }> => {
       const token = authTokenRef.current;
       if (!token) return { ok: false, error: '请先登录' };
+      const generation = ++authGeneration.current;
       try {
         const base = resolveHttpBase(serverUrl);
         const res = await fetch(`${base}/api/auth/profile`, {
@@ -356,37 +353,41 @@ export function useGameClient() {
           body: JSON.stringify({ nickname }),
         });
         const data = (await res.json()) as { user?: UserProfile; error?: string };
+        if (serverUrlRef.current !== serverUrl || authGeneration.current !== generation || authTokenRef.current !== token) {
+          return { ok: false, error: '登录状态已变化，请重试' };
+        }
         if (!res.ok || !data.user) {
           return { ok: false, error: data.error ?? '修改失败' };
         }
         setCurrentUser(data.user);
-        setPlayerName(data.user.nickname);
         pushToast('昵称已更新');
         return { ok: true };
       } catch {
         return { ok: false, error: '网络错误' };
       }
     },
-    [serverUrl, setPlayerName, pushToast],
+    [serverUrl, pushToast],
   );
 
   const logoutUser = useCallback(async () => {
     const token = authTokenRef.current;
+    ++authGeneration.current;
+    authTokenRef.current = null;
+    saveAuthToken(serverUrl, null);
+    setCurrentUser(null);
     if (token) {
       try {
-        const base = resolveHttpBase(serverUrl);
-        await fetch(`${base}/api/auth/logout`, {
+        const res = await fetch(`${resolveHttpBase(serverUrl)}/api/auth/logout`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
         });
+        if (!res.ok) throw new Error();
       } catch {
-        // ignore
+        if (serverUrlRef.current === serverUrl) pushToast('已从本机退出，但未能确认服务端会话已注销', true);
+        return;
       }
     }
-    saveAuthToken(null);
-    setAuthTokenState(null);
-    setCurrentUser(null);
-    pushToast('已退出登录');
+    if (serverUrlRef.current === serverUrl) pushToast('已退出登录');
   }, [serverUrl, pushToast]);
 
   const fetchRooms = useCallback(async () => {
@@ -395,7 +396,7 @@ export function useGameClient() {
       const res = await fetch(`${base}/api/rooms`);
       if (!res.ok) return;
       const data = (await res.json()) as { rooms: RoomSummary[] };
-      setRoomsList(data.rooms);
+      if (serverUrlRef.current === serverUrl) setRoomsList(data.rooms);
     } catch {
       // ignore fetch errors while disconnected
     }
@@ -407,7 +408,7 @@ export function useGameClient() {
       const res = await fetch(`${base}/api/history`);
       if (!res.ok) return;
       const data = (await res.json()) as { matches: MatchHistoryRow[] };
-      setHistoryList(data.matches);
+      if (serverUrlRef.current === serverUrl) setHistoryList(data.matches);
     } catch {
       pushToast('获取历史战绩失败，请检查服务器连接', true);
     }
@@ -419,16 +420,30 @@ export function useGameClient() {
       const res = await fetch(`${base}/api/leaderboard`);
       if (!res.ok) return;
       const data = (await res.json()) as { users: UserProfile[] };
-      setLeaderboard(data.users);
+      if (serverUrlRef.current === serverUrl) setLeaderboard(data.users);
     } catch {
       pushToast('获取排行榜失败，请检查服务器连接', true);
     }
   }, [serverUrl, pushToast]);
 
   const updateServerUrl = useCallback((nextUrl: string) => {
-    saveServerUrl(nextUrl);
-    setServerUrl(nextUrl.trim().replace(/\/+$/, ''));
-  }, []);
+    const next = nextUrl.trim().replace(/\/+$/, '');
+    if (next === serverUrlRef.current) return;
+    serverUrlRef.current = next;
+    saveServerUrl(next);
+    clientRef.current?.dispose();
+    ++authGeneration.current;
+    authTokenRef.current = loadAuthToken(next);
+    reconnectingRef.current = false;
+    leavingRef.current = false;
+    clearActiveRoom();
+    setSavedSession(loadSavedSession(next));
+    setCurrentUser(null);
+    setRoomsList([]);
+    setHistoryList([]);
+    setLeaderboard([]);
+    setServerUrl(next);
+  }, [clearActiveRoom]);
 
   const toggleMute = useCallback(() => {
     const next = !soundFX.isMuted();
@@ -438,6 +453,7 @@ export function useGameClient() {
 
   const createRoom = useCallback(
     (opts: { mode: GameMode; debugMode: boolean; fillBots: boolean; autoStart?: boolean }) => {
+      if (leavingRef.current || reconnectingRef.current) return;
       clientRef.current?.send({
         type: 'CREATE_ROOM',
         playerName: currentUser?.nickname ?? playerName,
@@ -453,6 +469,7 @@ export function useGameClient() {
 
   const joinRoom = useCallback(
     (roomId: string) => {
+      if (leavingRef.current || reconnectingRef.current) return;
       clientRef.current?.send({
         type: 'JOIN_ROOM',
         roomId: roomId.trim(),
@@ -464,22 +481,17 @@ export function useGameClient() {
   );
 
   const reconnectSaved = useCallback(() => {
-    if (!savedSession) return;
-    clientRef.current?.send({
-      type: 'RECONNECT',
-      roomId: savedSession.roomId,
-      playerId: savedSession.playerId,
-    });
-  }, [savedSession]);
+    if (savedSession && clientRef.current) reconnectRoom(clientRef.current, savedSession);
+  }, [savedSession, reconnectRoom]);
 
   const leaveRoom = useCallback(() => {
-    setRoom(null);
-    setView(null);
-    setSession(null);
-    setSavedSession(null);
-    saveSession(null);
-    clientRef.current?.connect();
-  }, []);
+    const status = roomRef.current?.status;
+    if (leavingRef.current || !status) return;
+    leavingRef.current = clientRef.current?.send({ type: 'LEAVE_ROOM' }) ?? false;
+    reconnectingRef.current = false;
+    if (status !== 'IN_GAME') forgetSavedRoom();
+    clearActiveRoom();
+  }, [clearActiveRoom, forgetSavedRoom]);
 
   const setRoomMode = useCallback((mode: GameMode) => {
     clientRef.current?.send({ type: 'SET_ROOM_MODE', mode });

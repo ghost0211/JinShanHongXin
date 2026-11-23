@@ -23,6 +23,7 @@ interface LobbyScreenProps {
   onRegister: (
     username: string,
     password: string,
+    inviteCode: string,
     nickname?: string,
   ) => Promise<{ ok: boolean; error?: string }>;
   onUpdateNickname: (nickname: string) => Promise<{ ok: boolean; error?: string }>;
@@ -265,13 +266,13 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
               value={joinCode}
               maxLength={6}
               inputMode="numeric"
-              onChange={(e) => setJoinCode(e.target.value)}
+              onChange={(e) => setJoinCode(e.target.value.replace(/\D/g, ''))}
               placeholder="输入 6 位房间号加入"
             />
             <button
               type="button"
               className="btn btn-lg"
-              disabled={connStatus !== 'connected' || joinCode.trim().length < 4}
+              disabled={connStatus !== 'connected' || joinCode.length !== 6}
               onClick={() => onJoinRoom(joinCode)}
             >
               加入房间
@@ -335,7 +336,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         </span>
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                        {r.status === 'WAITING' ? '等待开局' : '对局中'} · {occupiedCount}/4 座
+                        {r.status === 'WAITING' ? '等待开局' : r.status === 'IN_GAME' ? '对局中' : '已结束'} · {occupiedCount}/4 座
                       </div>
                     </div>
                     <button

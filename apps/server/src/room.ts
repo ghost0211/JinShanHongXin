@@ -51,7 +51,35 @@ export interface RoomOptions extends RoomTimingOptions {
   debugMode?: boolean;
   botDelayMs?: number;
   store?: HistoryStore;
+  onReclaim?: (room: GameRoom) => void;
 }
+
+export class RoomAdmissionError extends Error {
+  constructor(
+    readonly code: 'ROOM_FULL' | 'ROOM_ALREADY_STARTED' | 'ALREADY_SEATED',
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function emptySeat(seat: Seat): SeatSlot {
+  return {
+    seat,
+    occupied: false,
+    playerId: null,
+    userId: null,
+    name: `空位 ${seat + 1}`,
+    isBot: false,
+    connected: false,
+    ready: false,
+    autoBot: false,
+    ws: null,
+  };
+}
+
+// An unattended room cannot advance past round settlement on its own.
+const ABANDONED_ROUND_TTL_MS = 30 * 60 * 1000;
 
 const INTERNAL_ONLY_ACTIONS = new Set([
   'DEAL_STEP',
@@ -77,6 +105,7 @@ export class GameRoom {
   private readonly trickIntervalMs: number;
   private readonly disconnectGraceMs: number;
   private readonly store?: HistoryStore;
+  private readonly onReclaim?: (room: GameRoom) => void;
   private readonly seats: [SeatSlot, SeatSlot, SeatSlot, SeatSlot];
   private gameState: GameState | null = null;
   private matchId: number | null = null;
@@ -84,6 +113,7 @@ export class GameRoom {
   private botTimer: ReturnType<typeof setTimeout> | null = null;
   private dealTimer: ReturnType<typeof setTimeout> | null = null;
   private phaseTimer: ReturnType<typeof setTimeout> | null = null;
+  private abandonedRoundTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly disconnectTimers = new Map<Seat, ReturnType<typeof setTimeout>>();
   private phaseDeadlineMs: number | null = null;
   private phaseWindowTotalSec: number | null = null;
@@ -106,19 +136,9 @@ export class GameRoom {
     this.trickIntervalMs = options.trickIntervalMs ?? 500;
     this.disconnectGraceMs = options.disconnectGraceMs ?? 15000;
     this.store = options.store;
+    this.onReclaim = options.onReclaim;
 
-    this.seats = [0, 1, 2, 3].map((s) => ({
-      seat: s as Seat,
-      occupied: false,
-      playerId: null,
-      userId: null,
-      name: `空位 ${s + 1}`,
-      isBot: false,
-      connected: false,
-      ready: false,
-      autoBot: false,
-      ws: null,
-    })) as [SeatSlot, SeatSlot, SeatSlot, SeatSlot];
+    this.seats = [emptySeat(0), emptySeat(1), emptySeat(2), emptySeat(3)];
   }
 
   private send(ws: WebSocket | null, msg: ServerMessage): void {
@@ -136,7 +156,8 @@ export class GameRoom {
       seat: s.seat,
       team: getSeatTeam(s.seat),
       occupied: s.occupied,
-      playerId: s.playerId,
+      // Reconnection credentials are only sent to the owning socket in ROOM_JOINED.
+      playerId: null,
       userId: s.userId,
       name: s.name,
       isBot: s.isBot,
@@ -192,9 +213,19 @@ export class GameRoom {
     }
   }
 
-  getSeatByPlayerId(playerId: string): Seat | null {
-    const found = this.seats.find((s) => s.playerId === playerId);
-    return found ? found.seat : null;
+  private findHumanSeat(playerId: string): SeatSlot | undefined {
+    if (this.disposed) return undefined;
+    return this.seats.find((s) => s.occupied && !s.isBot && s.playerId === playerId);
+  }
+
+  getSeatByPlayerId(playerId: string, ws?: WebSocket): Seat | null {
+    const slot = this.findHumanSeat(playerId);
+    if (!slot || (ws !== undefined && (!slot.connected || slot.ws !== ws))) return null;
+    return slot.seat;
+  }
+
+  getSeatOwnerId(playerId: string): number | null | undefined {
+    return this.findHumanSeat(playerId)?.userId;
   }
 
   hasAnyConnectedHuman(): boolean {
@@ -227,12 +258,15 @@ export class GameRoom {
     preferredSeat?: Seat,
     userId: number | null = null,
   ): { playerId: string; seat: Seat } {
-    if (this.status !== 'WAITING') {
-      throw new Error('游戏已经开始，无法加入新玩家');
+    if (this.disposed || this.status !== 'WAITING') {
+      throw new RoomAdmissionError('ROOM_ALREADY_STARTED', '房间已关闭或游戏已经开始，无法加入新玩家');
+    }
+    if (userId !== null && this.seats.some((s) => s.occupied && !s.isBot && s.userId === userId)) {
+      throw new RoomAdmissionError('ALREADY_SEATED', '该账号已在房间中，请使用原座位重连');
     }
 
     let targetSlot: SeatSlot | undefined;
-    if (preferredSeat !== undefined && !this.seats[preferredSeat].occupied) {
+    if (preferredSeat !== undefined && this.seats[preferredSeat]?.occupied === false) {
       targetSlot = this.seats[preferredSeat];
     }
     if (!targetSlot) {
@@ -247,10 +281,13 @@ export class GameRoom {
       }
     }
     if (!targetSlot) {
-      throw new Error('房间已满');
+      throw new RoomAdmissionError('ROOM_FULL', '房间已满');
     }
 
-    const playerId = randomUUID();
+    let playerId: string;
+    do {
+      playerId = randomUUID();
+    } while (this.findHumanSeat(playerId));
     const trimmedName = playerName.trim() || `玩家 ${targetSlot.seat + 1}`;
     const isFirstHuman = !this.hasAnyOccupiedHuman();
 
@@ -289,20 +326,21 @@ export class GameRoom {
   }
 
   reconnect(playerId: string, ws: WebSocket): Seat {
-    const slot = this.seats.find((s) => s.playerId === playerId && !s.isBot);
+    const slot = this.findHumanSeat(playerId);
     if (!slot) {
       throw new Error('无效的玩家会话，无法重连');
     }
 
     this.clearDisconnectTimer(slot.seat);
     const oldWs = slot.ws;
-    // Swap slot.ws BEFORE closing oldWs so oldWs's async 'close' event sees slot.ws !== oldWs and is ignored
+    // Bind the new socket before closing the previous one so its close event is stale.
     slot.ws = ws;
     slot.connected = true;
     slot.autoBot = false;
+    this.syncAbandonedRoundTimer();
 
     if (oldWs && oldWs !== ws && oldWs.readyState === WebSocket.OPEN) {
-      oldWs.close();
+      oldWs.close(4001, 'Seat opened on another connection');
     }
 
     if (this.gameState && this.gameState.currentTurn === slot.seat) {
@@ -329,50 +367,108 @@ export class GameRoom {
     return slot.seat;
   }
 
+  leave(playerId: string, ws: WebSocket): void {
+    const seat = this.getSeatByPlayerId(playerId, ws);
+    if (seat === null) return;
+    const slot = this.seats[seat];
+    slot.connected = false;
+    slot.ws = null;
+    this.clearDisconnectTimer(seat);
+
+    if (this.status === 'IN_GAME') {
+      this.enableDisconnectedAutoBot(slot);
+      this.syncAbandonedRoundTimer();
+    } else {
+      this.releaseHumanSeat(slot);
+      this.broadcastRoomSummary();
+      this.reclaimIfEmpty();
+    }
+  }
+
   handleDisconnect(playerId: string, ws?: WebSocket): void {
-    const slot = this.seats.find((s) => s.playerId === playerId && !s.isBot);
-    if (!slot) return;
-    // Ignore stale socket close events after player has already reconnected with a newer socket
-    if (ws && slot.ws !== ws) return;
+    const seat = this.getSeatByPlayerId(playerId, ws);
+    if (seat === null) return;
+    const slot = this.seats[seat];
+    if (!slot.connected) return;
 
     slot.connected = false;
     slot.ws = null;
+    this.clearDisconnectTimer(seat);
+    this.syncAbandonedRoundTimer();
 
-    if (this.status === 'IN_GAME') {
-      this.clearDisconnectTimer(slot.seat);
-      if (this.disconnectGraceMs <= 0) {
-        slot.autoBot = true;
-        this.broadcastRoomSummary();
-        this.scheduleActivities();
-        return;
-      }
-      this.broadcastRoomSummary();
-      const timer = setTimeout(() => {
-        this.disconnectTimers.delete(slot.seat);
-        if (this.disposed || slot.connected || this.status !== 'IN_GAME') return;
-        slot.autoBot = true;
-        this.broadcastRoomSummary();
-        this.scheduleActivities();
-      }, this.disconnectGraceMs);
-      this.disconnectTimers.set(slot.seat, timer);
+    if (this.status === 'FINISHED' || this.disconnectGraceMs <= 0) {
+      this.expireDisconnectedSeat(slot);
       return;
     }
 
-    slot.occupied = false;
-    slot.playerId = null;
-    slot.userId = null;
-    slot.name = `空位 ${slot.seat + 1}`;
-    slot.ready = false;
+    this.broadcastRoomSummary();
+    const timer = setTimeout(() => {
+      this.disconnectTimers.delete(seat);
+      this.expireDisconnectedSeat(slot);
+    }, this.disconnectGraceMs);
+    this.disconnectTimers.set(seat, timer);
+  }
+
+  private expireDisconnectedSeat(slot: SeatSlot): void {
+    if (this.disposed || slot.connected || !slot.occupied || slot.isBot) return;
+    if (this.status === 'IN_GAME') {
+      this.enableDisconnectedAutoBot(slot);
+    } else {
+      this.releaseHumanSeat(slot);
+      this.broadcastRoomSummary();
+      this.reclaimIfEmpty();
+    }
+  }
+
+  private enableDisconnectedAutoBot(slot: SeatSlot): void {
+    slot.autoBot = true;
+    this.broadcastRoomSummary();
+    this.scheduleActivities();
+  }
+
+  private releaseHumanSeat(slot: SeatSlot): void {
+    this.clearDisconnectTimer(slot.seat);
+    Object.assign(slot, emptySeat(slot.seat));
 
     if (slot.seat === this.hostSeat) {
-      const nextHuman = this.seats.find((s) => !s.isBot && s.occupied);
-      if (nextHuman) {
-        this.hostSeat = nextHuman.seat;
-        nextHuman.ready = true;
+      const occupiedHumans = this.seats.filter((s) => !s.isBot && s.occupied);
+      const nextHost = occupiedHumans.find((s) => s.connected) ?? occupiedHumans[0];
+      if (nextHost) {
+        this.hostSeat = nextHost.seat;
+        nextHost.ready = true;
       }
     }
+  }
 
-    this.broadcastRoomSummary();
+  private reclaimIfEmpty(): void {
+    if (this.status !== 'IN_GAME' && !this.hasAnyOccupiedHuman()) {
+      this.onReclaim?.(this);
+    }
+  }
+
+  private clearAbandonedRoundTimer(): void {
+    if (this.abandonedRoundTimer !== null) {
+      clearTimeout(this.abandonedRoundTimer);
+      this.abandonedRoundTimer = null;
+    }
+  }
+
+  private isAbandonedRound(): boolean {
+    return !this.disposed && this.status === 'IN_GAME' && this.gameState?.phase === 'ROUND_OVER'
+      && !this.hasAnyConnectedHuman();
+  }
+
+  private syncAbandonedRoundTimer(): void {
+    if (!this.onReclaim || !this.isAbandonedRound()) {
+      this.clearAbandonedRoundTimer();
+      return;
+    }
+    if (this.abandonedRoundTimer !== null) return;
+    this.abandonedRoundTimer = setTimeout(() => {
+      this.abandonedRoundTimer = null;
+      if (this.isAbandonedRound()) this.onReclaim?.(this);
+    }, ABANDONED_ROUND_TTL_MS);
+    this.abandonedRoundTimer.unref();
   }
 
   setRoomMode(actorSeat: Seat, mode: GameMode): void {
@@ -536,6 +632,11 @@ export class GameRoom {
       this.sendError(this.seats[actorSeat].ws, 'NOT_FULL', '请先凑齐 4 名玩家或添加机器人补位');
       return;
     }
+    const offlineHuman = this.seats.find((s) => !s.isBot && !s.connected);
+    if (offlineHuman) {
+      this.sendError(this.seats[actorSeat].ws, 'PLAYER_OFFLINE', `玩家 ${offlineHuman.name} 当前离线`);
+      return;
+    }
     const unreadyHuman = this.seats.find(
       (s) => !s.isBot && s.seat !== this.hostSeat && !s.ready,
     );
@@ -690,8 +791,6 @@ export class GameRoom {
       this.matchId !== null
     ) {
       const settlement = nextState.settlement;
-      this.store.recordRound(this.matchId, settlement);
-
       const userStatUpdates = this.seats
         .filter((s) => !s.isBot && s.userId !== null)
         .map((s) => {
@@ -714,25 +813,26 @@ export class GameRoom {
             won,
           };
         });
-      if (userStatUpdates.length > 0) {
-        this.store.recordPlayerRoundStats(userStatUpdates);
-      }
-
-      if (nextState.phase === 'MATCH_OVER' && nextState.matchWinner) {
-        this.status = 'FINISHED';
-        this.store.finishMatch(this.matchId, `${nextState.matchWinner}队获胜`);
-      }
+      const winnerSummary = nextState.phase === 'MATCH_OVER' && nextState.matchWinner
+        ? `${nextState.matchWinner}队获胜`
+        : undefined;
+      this.store.recordRound(this.matchId, settlement, userStatUpdates, winnerSummary);
     }
 
     if (nextState.phase === 'MATCH_OVER') {
       this.status = 'FINISHED';
+      for (const slot of this.seats) {
+        if (!slot.isBot && slot.occupied && !slot.connected) this.releaseHumanSeat(slot);
+      }
       this.broadcastRoomSummary();
     }
+    this.syncAbandonedRoundTimer();
 
     // Update phase deadline BEFORE broadcasting so clients get the exact countdown immediately
     this.syncPhaseTimerForState(nextState);
     this.broadcastGameState();
     this.scheduleActivities();
+    if (nextState.phase === 'MATCH_OVER') this.reclaimIfEmpty();
   }
 
   private syncPhaseTimerForState(state: GameState): void {
@@ -971,6 +1071,7 @@ export class GameRoom {
     this.clearBotTimer();
     this.clearDealTimer();
     this.clearPhaseTimer();
+    this.clearAbandonedRoundTimer();
     for (const timer of this.disconnectTimers.values()) {
       clearTimeout(timer);
     }

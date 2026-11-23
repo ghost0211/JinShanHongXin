@@ -30,7 +30,12 @@ export class RoomManager {
       const code = String(Math.floor(100000 + Math.random() * 900000));
       if (!this.rooms.has(code)) return code;
     }
-    return String(Date.now()).slice(-6);
+    // Even when random generation repeatedly collides, never overwrite an existing room.
+    for (let id = 100000; id < 1000000; id++) {
+      const code = String(id);
+      if (!this.rooms.has(code)) return code;
+    }
+    throw new Error('房间数量已达上限');
   }
 
   createRoom(options?: {
@@ -46,6 +51,7 @@ export class RoomManager {
       botDelayMs: this.botDelayMs,
       store: this.store,
       ...this.timingOptions,
+      onReclaim: (room) => this.reclaim(room),
     });
     this.rooms.set(roomId, room);
     return room;
@@ -62,10 +68,15 @@ export class RoomManager {
   pruneIfEmpty(roomId: string): void {
     const room = this.rooms.get(roomId);
     if (!room) return;
-    if (!room.hasAnyConnectedHuman() && room.status === 'WAITING') {
-      room.dispose();
-      this.rooms.delete(roomId);
+    if (room.status !== 'IN_GAME' && !room.hasAnyOccupiedHuman()) {
+      this.reclaim(room);
     }
+  }
+
+  private reclaim(room: GameRoom): void {
+    if (this.rooms.get(room.roomId) !== room) return;
+    this.rooms.delete(room.roomId);
+    room.dispose();
   }
 
   disposeAll(): void {

@@ -42,12 +42,10 @@ export function saveServerUrl(url: string): void {
 export function resolveHttpBase(customUrl: string): string {
   const trimmed = customUrl.trim().replace(/\/+$/, '');
   if (trimmed) {
-    if (trimmed.startsWith('ws://')) return `http://${trimmed.slice(5)}`;
-    if (trimmed.startsWith('wss://')) return `https://${trimmed.slice(6)}`;
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-      return trimmed;
-    }
-    return `http://${trimmed}`;
+    const http = trimmed.startsWith('ws://') ? `http://${trimmed.slice(5)}`
+      : trimmed.startsWith('wss://') ? `https://${trimmed.slice(6)}`
+      : /^https?:\/\//.test(trimmed) ? trimmed : `http://${trimmed}`;
+    return http.endsWith('/ws') ? http.slice(0, -3) : http;
   }
   if (
     typeof window !== 'undefined' &&
@@ -62,16 +60,7 @@ export function resolveHttpBase(customUrl: string): string {
 export function resolveWsUrl(customUrl: string): string {
   const trimmed = customUrl.trim().replace(/\/+$/, '');
   if (trimmed) {
-    if (trimmed.startsWith('ws://') || trimmed.startsWith('wss://')) {
-      return trimmed.endsWith('/ws') ? trimmed : `${trimmed}/ws`;
-    }
-    if (trimmed.startsWith('http://')) {
-      return `ws://${trimmed.slice(7)}/ws`;
-    }
-    if (trimmed.startsWith('https://')) {
-      return `wss://${trimmed.slice(8)}/ws`;
-    }
-    return `ws://${trimmed}/ws`;
+    return `${resolveHttpBase(trimmed).replace(/^http/, 'ws')}/ws`;
   }
   if (
     typeof window !== 'undefined' &&
@@ -95,9 +84,7 @@ export class ManagedWsClient {
 
   private readonly messageListeners = new Set<(msg: ServerMessage) => void>();
   private readonly statusListeners = new Set<(status: ConnectionStatus) => void>();
-  private pendingQueue: ClientMessage[] = [];
-
-  constructor(initialUrl: string) {
+  constructor(initialUrl: string, private readonly onSeatReplaced?: () => void) {
     this.wsUrl = resolveWsUrl(initialUrl);
   }
 
@@ -142,13 +129,10 @@ export class ManagedWsClient {
       this.retryAttempt = 0;
       this.setStatus('connected');
       this.startHeartbeat();
-      while (this.pendingQueue.length > 0 && socket.readyState === WebSocket.OPEN) {
-        const msg = this.pendingQueue.shift()!;
-        socket.send(JSON.stringify(msg));
-      }
     };
 
     socket.onmessage = (ev) => {
+      if (this.ws !== socket) return;
       try {
         const parsed = JSON.parse(String(ev.data)) as ServerMessage;
         for (const cb of this.messageListeners) {
@@ -163,10 +147,11 @@ export class ManagedWsClient {
       // close listener handles reconnect
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (this.ws !== socket) return;
       this.ws = null;
       this.clearPing();
+      if (event.code === 4001) this.onSeatReplaced?.();
       this.setStatus('disconnected');
       if (!this.disposed) {
         const delay = Math.min(8000, 1000 * Math.pow(2, this.retryAttempt));
@@ -178,14 +163,11 @@ export class ManagedWsClient {
     };
   }
 
-  send(msg: ClientMessage): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(msg));
-      return;
-    }
-    // Never queue stale gameplay actions across disconnects
-    if (msg.type === 'GAME_ACTION') return;
-    this.pendingQueue.push(msg);
+  send(msg: ClientMessage): boolean {
+    // A reconnect takes a fresh snapshot; never replay stale mutations into it.
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify(msg));
+    return true;
   }
 
   private startHeartbeat(): void {

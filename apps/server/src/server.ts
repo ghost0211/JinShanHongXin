@@ -4,8 +4,8 @@ import { extname, join, resolve } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage } from '@jinshan/protocol';
-import { AuthError, HistoryStore } from './db.js';
-import type { RoomTimingOptions } from './room.js';
+import { AuthError, DEFAULT_DB_PATH, HistoryStore } from './db.js';
+import { RoomAdmissionError, type RoomTimingOptions } from './room.js';
 import { RoomManager } from './roomManager.js';
 
 export interface GameServerOptions extends RoomTimingOptions {
@@ -19,6 +19,38 @@ export interface GameServerOptions extends RoomTimingOptions {
 interface ConnContext {
   roomId: string | null;
   playerId: string | null;
+}
+
+class RoomMessageError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+  }
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isSeat(value: unknown): value is 0 | 1 | 2 | 3 {
+  return value === 0 || value === 1 || value === 2 || value === 3;
+}
+
+function isGameMode(value: unknown): value is 'hongxin' | 'heixin' {
+  return value === 'hongxin' || value === 'heixin';
+}
+
+function badRoomMessage(): never {
+  throw new RoomMessageError('INVALID_MESSAGE', '房间消息参数无效');
+}
+
+function requireBoolean(value: unknown): boolean {
+  if (typeof value !== 'boolean') badRoomMessage();
+  return value;
+}
+
+function playerName(value: unknown): string {
+  if (typeof value !== 'string') badRoomMessage();
+  return Array.from(value.trim()).slice(0, 16).join('');
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -50,24 +82,30 @@ function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolveBody, rejectBody) => {
     const chunks: Buffer[] = [];
     let total = 0;
+    let tooLarge = false;
     req.on('data', (chunk: Buffer) => {
+      if (tooLarge) return;
       total += chunk.length;
       if (total > 64 * 1024) {
+        tooLarge = true;
+        chunks.length = 0;
         rejectBody(new AuthError(413, 'PAYLOAD_TOO_LARGE', '请求体过大'));
-        req.destroy();
         return;
       }
       chunks.push(chunk);
     });
     req.on('end', () => {
+      if (tooLarge) return;
       try {
         const raw = Buffer.concat(chunks).toString('utf8').trim();
-        resolveBody(raw ? (JSON.parse(raw) as Record<string, unknown>) : {});
+        const body: unknown = raw ? JSON.parse(raw) : {};
+        if (!isJsonObject(body)) throw new Error();
+        resolveBody(body);
       } catch {
-        rejectBody(new AuthError(400, 'INVALID_JSON', 'JSON 格式错误'));
+        rejectBody(new AuthError(400, 'INVALID_JSON', '请求体必须是 JSON 对象'));
       }
     });
-    req.on('error', (err) => rejectBody(err));
+    req.on('error', rejectBody);
   });
 }
 
@@ -97,7 +135,7 @@ export function createGameServer(
 ): RunningGameServer {
   const host = options.host ?? '0.0.0.0';
   const requestedPort = options.port ?? 3001;
-  const dbPath = options.dbPath ?? './apps/server/data/jinshan.db';
+  const dbPath = options.dbPath ?? DEFAULT_DB_PATH;
   const store = new HistoryStore(dbPath);
   const roomManager = new RoomManager({
     store,
@@ -114,6 +152,27 @@ export function createGameServer(
   const staticRoot = options.staticDir ? resolve(options.staticDir) : null;
 
   const contexts = new Map<WebSocket, ConnContext>();
+  const credentialAttempts = new Map<string, number>();
+  const authWindowMs = 60_000;
+  let authWindowEnd = 0;
+  let totalAuthAttempts = 0;
+
+  function checkCredentialBudget(req: IncomingMessage, res: ServerResponse): void {
+    const now = Date.now();
+    if (now >= authWindowEnd) {
+      authWindowEnd = now + authWindowMs;
+      credentialAttempts.clear();
+      totalAuthAttempts = 0;
+    }
+    const address = req.socket.remoteAddress ?? '';
+    const count = credentialAttempts.get(address) ?? 0;
+    if (count >= 20 || totalAuthAttempts >= 120) {
+      res.setHeader('Retry-After', Math.ceil((authWindowEnd - now) / 1000));
+      throw new AuthError(429, 'TOO_MANY_REQUESTS', '登录或注册过于频繁，请稍后再试');
+    }
+    credentialAttempts.set(address, count + 1);
+    totalAuthAttempts++;
+  }
 
   const handleHttp = async (req: IncomingMessage, res: ServerResponse) => {
     if (req.method === 'OPTIONS') {
@@ -123,6 +182,8 @@ export function createGameServer(
     }
 
     const url = new URL(req.url ?? '/', 'http://localhost');
+
+    if (url.pathname.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
 
     try {
       if (url.pathname === '/api/health' && req.method === 'GET') {
@@ -142,13 +203,16 @@ export function createGameServer(
         return;
       }
 
-      // Auth endpoints
+      // Bound synchronous password work per source and across the whole server.
+      if (req.method === 'POST' && ['/api/auth/register', '/api/auth/login'].includes(url.pathname)) {
+        checkCredentialBudget(req, res);
+      }
       if (url.pathname === '/api/auth/register' && req.method === 'POST') {
         const body = await readJsonBody(req);
         const username = typeof body.username === 'string' ? body.username : '';
         const password = typeof body.password === 'string' ? body.password : '';
         const nickname = typeof body.nickname === 'string' ? body.nickname : undefined;
-        const result = store.registerUser(username, password, nickname);
+        const result = store.registerUser(username, password, body.inviteCode, nickname);
         sendJson(res, 201, result);
         return;
       }
@@ -181,13 +245,13 @@ export function createGameServer(
       }
 
       if (url.pathname === '/api/auth/profile' && req.method === 'POST') {
+        const body = await readJsonBody(req);
         const token = extractBearerToken(req);
         const user = store.getUserByToken(token);
         if (!user) {
           sendJson(res, 401, { code: 'UNAUTHORIZED', error: '请先登录' });
           return;
         }
-        const body = await readJsonBody(req);
         const nickname = typeof body.nickname === 'string' ? body.nickname : '';
         const updated = store.updateNickname(user.id, nickname);
         sendJson(res, 200, { user: updated });
@@ -198,10 +262,8 @@ export function createGameServer(
         sendJson(res, err.status, { code: err.code, error: err.message });
         return;
       }
-      sendJson(res, 500, {
-        code: 'INTERNAL_ERROR',
-        error: err instanceof Error ? err.message : '服务端错误',
-      });
+      console.error('HTTP API error', err);
+      if (!res.destroyed) sendJson(res, 500, { code: 'INTERNAL_ERROR', error: '服务端错误' });
       return;
     }
 
@@ -230,160 +292,147 @@ export function createGameServer(
   const httpServer = createServer((req, res) => {
     void handleHttp(req, res);
   });
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws', maxPayload: 64 * 1024 });
+
+  function authenticate(token: unknown) {
+    if (token === undefined) return null; // Guests remain supported.
+    if (typeof token !== 'string') badRoomMessage();
+    const user = store.getUserByToken(token);
+    if (!user) throw new RoomMessageError('UNAUTHORIZED', '登录已失效，请重新登录');
+    return user;
+  }
 
   wss.on('connection', (ws) => {
-    contexts.set(ws, { roomId: null, playerId: null });
+    const ctx: ConnContext = { roomId: null, playerId: null };
+    contexts.set(ws, ctx);
+    ws.on('error', () => { /* ws closes invalid frames; clean up on close. */ });
 
     ws.on('message', (raw) => {
-      let msg: ClientMessage;
+      if (ws.readyState !== ws.OPEN) return;
+      let payload: unknown;
       try {
-        msg = JSON.parse(raw.toString()) as ClientMessage;
+        payload = JSON.parse(raw.toString());
       } catch {
-        sendWs(ws, {
-          type: 'ACTION_ERROR',
-          code: 'INVALID_JSON',
-          message: '消息格式错误',
-        });
+        sendWs(ws, { type: 'ACTION_ERROR', code: 'INVALID_JSON', message: '消息格式错误' });
         return;
       }
 
-      const ctx = contexts.get(ws)!;
-
       try {
+        if (!isJsonObject(payload) || typeof payload.type !== 'string') badRoomMessage();
+        // The protocol types describe trusted values; validate room fields before use.
+        const msg = payload as unknown as ClientMessage;
         if (msg.type === 'PING') {
+          if (!Number.isFinite(msg.ts)) badRoomMessage();
           sendWs(ws, { type: 'PONG', ts: msg.ts, serverTs: Date.now() });
           return;
         }
 
-        if (msg.type === 'CREATE_ROOM') {
-          if (ctx.roomId && ctx.playerId) {
-            roomManager.getRoom(ctx.roomId)?.handleDisconnect(ctx.playerId, ws);
-            roomManager.pruneIfEmpty(ctx.roomId);
-          }
-          const authUser = store.getUserByToken(msg.authToken);
-          const displayName = authUser ? authUser.nickname : msg.playerName;
-          const room = roomManager.createRoom({
-            mode: msg.mode ?? 'hongxin',
-            debugMode: msg.debugMode ?? false,
-          });
-          const joined = room.addHuman(displayName, ws, 0, authUser?.id ?? null);
-          if (msg.fillBots) {
-            room.fillEmptySeatsWithBots();
-            room.setRoomMode(joined.seat, room.mode);
-          }
-          ctx.roomId = room.roomId;
-          ctx.playerId = joined.playerId;
-          if (msg.autoStart && msg.fillBots) {
-            room.startGame(joined.seat);
-          }
+        const previousRoom = ctx.roomId ? roomManager.getRoom(ctx.roomId) : undefined;
+        const currentSeat = ctx.playerId ? previousRoom?.getSeatByPlayerId(ctx.playerId, ws) ?? null : null;
+        if (msg.type === 'LEAVE_ROOM') {
+          if (ctx.playerId && currentSeat !== null) previousRoom?.leave(ctx.playerId, ws);
+          ctx.roomId = null;
+          ctx.playerId = null;
+          sendWs(ws, { type: 'ROOM_LEFT' });
           return;
         }
 
-        if (msg.type === 'JOIN_ROOM') {
-          const room = roomManager.getRoom(msg.roomId);
-          if (!room) {
-            sendWs(ws, {
-              type: 'ACTION_ERROR',
-              code: 'ROOM_NOT_FOUND',
-              message: `房间 ${msg.roomId} 不存在`,
-            });
+        if (msg.type === 'CREATE_ROOM' || msg.type === 'JOIN_ROOM' || msg.type === 'RECONNECT') {
+          if (currentSeat !== null) {
+            throw new RoomMessageError('ALREADY_IN_ROOM', '请先退出当前房间');
+          }
+
+          if (msg.type === 'CREATE_ROOM') {
+            const mode = msg.mode === undefined ? 'hongxin' : msg.mode;
+            if (!isGameMode(mode)) badRoomMessage();
+            const debugMode = msg.debugMode === undefined ? false : requireBoolean(msg.debugMode);
+            const fillBots = msg.fillBots === undefined ? false : requireBoolean(msg.fillBots);
+            const autoStart = msg.autoStart === undefined ? false : requireBoolean(msg.autoStart);
+            if (autoStart && !fillBots) badRoomMessage();
+            const user = authenticate(msg.authToken);
+            const displayName = user?.nickname ?? playerName(msg.playerName);
+            const room = roomManager.createRoom({ mode, debugMode });
+            const joined = room.addHuman(displayName, ws, 0, user?.id ?? null);
+            if (fillBots) {
+              room.fillEmptySeatsWithBots();
+              room.setRoomMode(joined.seat, mode); // Publish the filled seats before starting.
+            }
+            ctx.roomId = room.roomId;
+            ctx.playerId = joined.playerId;
+            if (autoStart) room.startGame(joined.seat);
             return;
           }
-          if (msg.playerId) {
+
+          if (typeof msg.roomId !== 'string' || !/^\d{6}$/.test(msg.roomId)) badRoomMessage();
+          const room = roomManager.getRoom(msg.roomId);
+          if (!room) throw new RoomMessageError('ROOM_NOT_FOUND', '房间不存在或已关闭');
+          if (msg.type === 'RECONNECT' || msg.playerId !== undefined) {
+            if (typeof msg.playerId !== 'string' || !/^[0-9a-f-]{36}$/.test(msg.playerId)) badRoomMessage();
+            const ownerId = room.getSeatOwnerId(msg.playerId);
+            if (ownerId === undefined) throw new RoomMessageError('RECONNECT_EXPIRED', '原座位已失效，请重新加入');
+            if (ownerId !== null && authenticate(msg.authToken)?.id !== ownerId) {
+              throw new RoomMessageError('RECONNECT_AUTH_REQUIRED', '请使用原账号登录后重连');
+            }
             room.reconnect(msg.playerId, ws);
             ctx.roomId = room.roomId;
             ctx.playerId = msg.playerId;
             return;
           }
-          const authUser = store.getUserByToken(msg.authToken);
-          const displayName = authUser ? authUser.nickname : msg.playerName;
-          const joined = room.addHuman(
-            displayName,
-            ws,
-            msg.preferredSeat,
-            authUser?.id ?? null,
-          );
+
+          if (msg.preferredSeat !== undefined && !isSeat(msg.preferredSeat)) badRoomMessage();
+          const user = authenticate(msg.authToken);
+          const displayName = user?.nickname ?? playerName(msg.playerName);
+          const joined = room.addHuman(displayName, ws, msg.preferredSeat, user?.id ?? null);
           ctx.roomId = room.roomId;
           ctx.playerId = joined.playerId;
           return;
         }
 
-        if (msg.type === 'RECONNECT') {
-          const room = roomManager.getRoom(msg.roomId);
-          if (!room) {
-            sendWs(ws, {
-              type: 'ACTION_ERROR',
-              code: 'ROOM_NOT_FOUND',
-              message: `房间 ${msg.roomId} 不存在`,
-            });
-            return;
-          }
-          room.reconnect(msg.playerId, ws);
-          ctx.roomId = room.roomId;
-          ctx.playerId = msg.playerId;
-          return;
+        if (!previousRoom || currentSeat === null) {
+          throw new RoomMessageError('NOT_IN_ROOM', '请先创建或加入房间');
         }
-
-        if (!ctx.roomId || !ctx.playerId) {
-          sendWs(ws, {
-            type: 'ACTION_ERROR',
-            code: 'NOT_IN_ROOM',
-            message: '请先创建或加入房间',
-          });
-          return;
-        }
-        const room = roomManager.getRoom(ctx.roomId);
-        if (!room) {
-          sendWs(ws, {
-            type: 'ACTION_ERROR',
-            code: 'ROOM_NOT_FOUND',
-            message: '房间已关闭',
-          });
-          return;
-        }
-        const actorSeat = room.getSeatByPlayerId(ctx.playerId);
-        if (actorSeat === null) {
-          sendWs(ws, {
-            type: 'ACTION_ERROR',
-            code: 'SEAT_NOT_FOUND',
-            message: '玩家不在房间座位中',
-          });
-          return;
-        }
+        const room = previousRoom;
+        const actorSeat = currentSeat;
 
         switch (msg.type) {
           case 'SET_ROOM_MODE':
+            if (!isGameMode(msg.mode)) badRoomMessage();
             room.setRoomMode(actorSeat, msg.mode);
             break;
           case 'SET_SEAT_BOT':
-            room.setSeatBot(actorSeat, msg.seat, msg.isBot);
+            if (!isSeat(msg.seat)) badRoomMessage();
+            room.setSeatBot(actorSeat, msg.seat, requireBoolean(msg.isBot));
             break;
           case 'SWAP_SEAT':
+            if (!isSeat(msg.targetSeat)) badRoomMessage();
             room.swapSeat(actorSeat, msg.targetSeat);
             break;
           case 'SET_READY':
-            room.setReady(actorSeat, msg.ready);
+            room.setReady(actorSeat, requireBoolean(msg.ready));
             break;
           case 'START_GAME':
             room.startGame(actorSeat);
             break;
           case 'GAME_ACTION':
+            if (!isJsonObject(msg.action) || typeof msg.action.type !== 'string') badRoomMessage();
             room.handleGameAction(actorSeat, msg.action);
             break;
           case 'SET_AUTO_BOT':
-            room.setAutoBot(actorSeat, msg.enabled);
+            room.setAutoBot(actorSeat, requireBoolean(msg.enabled));
             break;
           case 'TOGGLE_DEBUG_OPEN_HANDS':
-            room.toggleDebugOpenHands(actorSeat, msg.enabled);
+            room.toggleDebugOpenHands(actorSeat, requireBoolean(msg.enabled));
             break;
+          default:
+            badRoomMessage();
         }
       } catch (err) {
-        sendWs(ws, {
-          type: 'ACTION_ERROR',
-          code: 'SERVER_ERROR',
-          message: err instanceof Error ? err.message : '操作失败',
-        });
+        if (err instanceof RoomMessageError || err instanceof RoomAdmissionError) {
+          sendWs(ws, { type: 'ACTION_ERROR', code: err.code, message: err.message });
+        } else {
+          console.error('WebSocket room error', err);
+          sendWs(ws, { type: 'ACTION_ERROR', code: 'SERVER_ERROR', message: '操作失败' });
+        }
       }
     });
 

@@ -13,7 +13,7 @@
     "build:apk": "npm run build && node apps/android/scripts/build-apk.mjs",
     "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo apps/*/dist apps/*/*.tsbuildinfo apps/android/build apps/android/dist",
     "start:server": "npm run build && node apps/server/dist/index.js",
-    "test": "tsc -b && node --test packages/game-core/dist/__tests__/*.test.js apps/server/dist/__tests__/*.test.js"
+    "test": "tsc -b && node --test packages/game-core/dist/__tests__/*.test.js apps/server/dist/__tests__/*.test.js apps/client/test/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",
