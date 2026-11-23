@@ -448,7 +448,7 @@ export function chooseBotDealingCallAction(
     state.mode !== 'hongxin' ||
     state.phase !== 'DEALING' ||
     state.callState.callerSeat !== null ||
-    state.dealtCount < 20
+    state.dealtCount < 24
   ) {
     return null;
   }
@@ -474,7 +474,7 @@ export function chooseBotDealingCallAction(
     }
     return null;
   }
-  if (state.dealtCount < 26) return null;
+  if (state.dealtCount < 31) return null;
   let bestSuit: StandardSuit | null = null;
   let bestScore = -1;
   for (const s of STANDARD_SUITS) {
@@ -487,7 +487,7 @@ export function chooseBotDealingCallAction(
       }
     }
   }
-  if (bestSuit && bestScore >= 100) {
+  if (bestSuit && bestScore >= 115) {
     return {
       type: 'CALL_TRUMP',
       seat,

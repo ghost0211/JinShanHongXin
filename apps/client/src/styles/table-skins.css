@@ -203,6 +203,10 @@
   background: linear-gradient(90deg, var(--skin-surface), var(--skin-line));
 }
 
+.table-root[data-table-skin]:not([data-table-skin="classic"]) .score-meter-escaped {
+  background: rgba(255, 255, 255, 0.16);
+}
+
 .table-root[data-table-skin]:not([data-table-skin="classic"]) .score-meter-hint {
   background: var(--skin-panel);
   border-color: var(--skin-line);
