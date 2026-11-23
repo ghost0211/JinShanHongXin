@@ -23,7 +23,7 @@ async function fixture(t: TestContext, disconnectGraceMs = 2_000) {
   async function register(username: string): Promise<string> {
     const res = await fetch(`${base}/api/auth/register`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password: 'suitable_test_password' }),
+      body: JSON.stringify({ username, password: 'suitable_test_password', inviteCode: server.store.createRegistrationInvite().code }),
     });
     assert.equal(res.status, 201);
     assert.equal(res.headers.get('Cache-Control'), 'no-store');

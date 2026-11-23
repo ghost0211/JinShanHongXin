@@ -62,6 +62,10 @@ function mapUserRow(row: UserRow): UserProfile {
   };
 }
 
+export const DEFAULT_DB_PATH = './apps/server/data/jinshan.db';
+export const DEFAULT_INVITE_TTL_HOURS = 24;
+export const MAX_INVITE_TTL_HOURS = 30 * 24;
+const INVITE_CODE_BYTES = 24;
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const DUMMY_PASSWORD_SALT = '00000000000000000000000000000000';
 const DUMMY_PASSWORD_HASH = Buffer.alloc(32);
@@ -84,8 +88,12 @@ function isSessionToken(token: unknown): token is string {
   return typeof token === 'string' && token.length === 64 && !/[^0-9a-f]/.test(token);
 }
 
-function hashSessionToken(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
+function secretDigest(secret: string): string {
+  return createHash('sha256').update(secret).digest('hex');
+}
+
+function invalidInvite(): AuthError {
+  return new AuthError(403, 'INVALID_INVITE', '邀请码无效、已使用或已过期，请向管理员索取新码');
 }
 
 export class AuthError extends Error {
@@ -108,6 +116,8 @@ export class HistoryStore {
     }
     this.db = new DatabaseSync(dbPath);
     try {
+      // Issuance may run in a separate process against a live server's database.
+      this.db.exec('PRAGMA busy_timeout = 1000');
       this.inTransaction(() => this.initSchema());
     } catch (err) {
       this.db.close();
@@ -146,6 +156,12 @@ export class HistoryStore {
         heixin_total_score INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+
+      CREATE TABLE IF NOT EXISTS registration_invites (
+        code_hash TEXT NOT NULL PRIMARY KEY,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS registration_invites_expires_at ON registration_invites(expires_at);
 
       CREATE TABLE IF NOT EXISTS matches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -190,11 +206,41 @@ export class HistoryStore {
     this.deleteExpiredSessions();
   }
 
+  createRegistrationInvite(ttlHours = DEFAULT_INVITE_TTL_HOURS): { code: string; expiresAt: string } {
+    if (!Number.isInteger(ttlHours) || ttlHours < 1 || ttlHours > MAX_INVITE_TTL_HOURS) {
+      throw new RangeError(`邀请码有效期须为 1~${MAX_INVITE_TTL_HOURS} 小时（整数）`);
+    }
+    const code = randomBytes(INVITE_CODE_BYTES).toString('base64url');
+    return this.inTransaction(() => {
+      this.db.prepare('DELETE FROM registration_invites WHERE expires_at <= unixepoch()').run();
+      const expiry = this.db.prepare(`
+        INSERT INTO registration_invites (code_hash, expires_at)
+        VALUES (?, unixepoch() + ?) RETURNING expires_at
+      `).get(secretDigest(code), ttlHours * 3600) as { expires_at: number };
+      return { code, expiresAt: new Date(expiry.expires_at * 1000).toISOString() };
+    });
+  }
+
   registerUser(
     rawUsername: string,
     password: string,
+    rawInviteCode: unknown,
     rawNickname?: string,
   ): { user: UserProfile; token: string } {
+    const code = typeof rawInviteCode === 'string' ? rawInviteCode.trim() : rawInviteCode;
+    if (code === undefined || code === '') {
+      throw new AuthError(403, 'INVITE_REQUIRED', '注册需要邀请码，请向管理员索取');
+    }
+    if (typeof code !== 'string' || !/^[A-Za-z0-9_-]{32}$/.test(code)) throw invalidInvite();
+
+    const inviteHash = secretDigest(code);
+    // Skip username lookup and password hashing for invalid codes. This read is
+    // only a precheck; the transaction below enforces expiry and single use.
+    const available = this.db.prepare(`
+      SELECT 1 FROM registration_invites WHERE code_hash = ? AND expires_at > unixepoch()
+    `).get(inviteHash);
+    if (!available) throw invalidInvite();
+
     const username = rawUsername.trim();
     const nickname = (rawNickname?.trim() || username).slice(0, 16);
 
@@ -219,6 +265,11 @@ export class HistoryStore {
     const hash = hashPassword(password, salt).toString('hex');
 
     return this.inTransaction(() => {
+      const used = this.db.prepare(`
+        DELETE FROM registration_invites WHERE code_hash = ? AND expires_at > unixepoch()
+      `).run(inviteHash);
+      if (used.changes !== 1) throw invalidInvite();
+
       const row = this.db
         .prepare(
           `INSERT INTO users (username, nickname, password_salt, password_hash)
@@ -270,7 +321,7 @@ export class HistoryStore {
         `INSERT INTO user_sessions (token_hash, user_id, expires_at)
          VALUES (?, ?, unixepoch() + ?)`,
       )
-      .run(hashSessionToken(token), userId, SESSION_TTL_SECONDS);
+      .run(secretDigest(token), userId, SESSION_TTL_SECONDS);
     return token;
   }
 
@@ -289,13 +340,13 @@ export class HistoryStore {
          JOIN users u ON u.id = s.user_id
          WHERE s.token_hash = ? AND s.expires_at > unixepoch()`,
       )
-      .get(hashSessionToken(token)) as UserRow | undefined;
+      .get(secretDigest(token)) as UserRow | undefined;
     return row ? mapUserRow(row) : null;
   }
 
   logoutToken(token: string): void {
     if (!isSessionToken(token)) return;
-    this.db.prepare('DELETE FROM user_sessions WHERE token_hash = ?').run(hashSessionToken(token));
+    this.db.prepare('DELETE FROM user_sessions WHERE token_hash = ?').run(secretDigest(token));
   }
 
   updateNickname(userId: number, rawNickname: string): UserProfile {

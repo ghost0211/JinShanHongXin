@@ -4,7 +4,7 @@ import { extname, join, resolve } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage } from '@jinshan/protocol';
-import { AuthError, HistoryStore } from './db.js';
+import { AuthError, DEFAULT_DB_PATH, HistoryStore } from './db.js';
 import { RoomAdmissionError, type RoomTimingOptions } from './room.js';
 import { RoomManager } from './roomManager.js';
 
@@ -135,7 +135,7 @@ export function createGameServer(
 ): RunningGameServer {
   const host = options.host ?? '0.0.0.0';
   const requestedPort = options.port ?? 3001;
-  const dbPath = options.dbPath ?? './apps/server/data/jinshan.db';
+  const dbPath = options.dbPath ?? DEFAULT_DB_PATH;
   const store = new HistoryStore(dbPath);
   const roomManager = new RoomManager({
     store,
@@ -212,7 +212,7 @@ export function createGameServer(
         const username = typeof body.username === 'string' ? body.username : '';
         const password = typeof body.password === 'string' ? body.password : '';
         const nickname = typeof body.nickname === 'string' ? body.nickname : undefined;
-        const result = store.registerUser(username, password, nickname);
+        const result = store.registerUser(username, password, body.inviteCode, nickname);
         sendJson(res, 201, result);
         return;
       }

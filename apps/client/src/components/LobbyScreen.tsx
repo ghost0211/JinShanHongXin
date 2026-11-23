@@ -23,6 +23,7 @@ interface LobbyScreenProps {
   onRegister: (
     username: string,
     password: string,
+    inviteCode: string,
     nickname?: string,
   ) => Promise<{ ok: boolean; error?: string }>;
   onUpdateNickname: (nickname: string) => Promise<{ ok: boolean; error?: string }>;

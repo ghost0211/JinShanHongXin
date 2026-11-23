@@ -23,6 +23,10 @@ function withStore<T>(path: string, run: (store: HistoryStore) => T): T {
   }
 }
 
+function registerFixture(store: HistoryStore, username: string, password: string, nickname?: string) {
+  return store.registerUser(username, password, store.createRegistrationInvite().code, nickname);
+}
+
 function withSqlite<T>(path: string, run: (db: DatabaseSync) => T): T {
   const db = new DatabaseSync(path);
   try {
@@ -72,7 +76,7 @@ test('signup and login preserve password boundaries, whitespace, and case-insens
   withStore(':memory:', (store) => {
     const password = ' x  ';
     const maxPassword = '🔒'.repeat(32); // 64 JS code units, consistent with the UI.
-    const signedUp = store.registerUser('  Player01  ', password, '  小明  ');
+    const signedUp = registerFixture(store, '  Player01  ', password, '  小明  ');
     assert.equal(signedUp.user.username, 'Player01');
     assert.equal(signedUp.user.nickname, '小明');
     assert.equal('password_hash' in signedUp.user, false);
@@ -80,14 +84,14 @@ test('signup and login preserve password boundaries, whitespace, and case-insens
     assert.deepEqual(store.loginUser('  pLayer01 ', password).user, signedUp.user);
     assert.throws(() => store.loginUser('Player01', 'x   '), invalidCredentials);
     assert.throws(() => store.loginUser('missing', password), invalidCredentials);
-    assert.throws(() => store.registerUser('PLAYER01', 'valid'), authError(409, 'USERNAME_TAKEN'));
+    assert.throws(() => registerFixture(store, 'PLAYER01', 'valid'), authError(409, 'USERNAME_TAKEN'));
 
-    const max = store.registerUser('Player02', maxPassword);
+    const max = registerFixture(store, 'Player02', maxPassword);
     assert.equal(max.user.nickname, 'Player02');
     assert.deepEqual(store.loginUser('Player02', maxPassword).user, max.user);
     for (const invalid of ['abc', `${maxPassword}x`, null]) {
       const input = invalid as string;
-      assert.throws(() => store.registerUser('Player03', input), authError(400, 'INVALID_PASSWORD'));
+      assert.throws(() => registerFixture(store, 'Player03', input), authError(400, 'INVALID_PASSWORD'));
       assert.throws(() => store.loginUser('Player02', input), invalidCredentials);
     }
     assert.equal(store.updateNickname(max.user.id, '  新名字  ').nickname, '新名字');
@@ -98,7 +102,7 @@ test('signup and login preserve password boundaries, whitespace, and case-insens
 test('sessions store only token digests, expire without sliding, and revoke individually across reopen', (t) => {
   const path = temporaryDb(t);
   const { user, first, second } = withStore(path, (store) => {
-    const result = store.registerUser('player', 'pass');
+    const result = registerFixture(store, 'player', 'pass');
     return { user: result.user, first: result.token, second: store.loginUser('player', 'pass').token };
   });
   assert.match(first, /^[0-9a-f]{64}$/);
@@ -149,7 +153,7 @@ test('upgrading the old plaintext schema revokes old sessions without changing c
   const legacyToken = 'ab'.repeat(32);
   let oldUser: UserProfile;
   const oldMatchId = withStore(path, (store) => {
-    const { user } = store.registerUser('old_user', 'oldpass', '老玩家');
+    const { user } = registerFixture(store, 'old_user', 'oldpass', '老玩家');
     const matchId = store.createMatch('000001', 'heixin');
     store.recordRound(matchId, settlement, [{ userId: user.id, mode: 'heixin', won: true, scoreDelta: 60 }]);
     oldUser = store.getUserById(user.id)!;
@@ -185,18 +189,19 @@ test('upgrading the old plaintext schema revokes old sessions without changing c
   withStore(path, (store) => assert.deepEqual(store.getUserByToken(newToken), oldUser));
 });
 
-test('a failed session write rolls back signup; a corrupt stored verifier cannot log in', (t) => {
+test('a failed session write rolls back signup and invite use; a corrupt stored verifier cannot log in', (t) => {
   const path = temporaryDb(t);
   withStore(path, (store) => {
+    const { code } = store.createRegistrationInvite();
     withSqlite(path, (db) => db.exec(`
       CREATE TRIGGER fail_session BEFORE INSERT ON user_sessions
       BEGIN SELECT RAISE(ABORT, 'session write failed'); END;
     `));
-    assert.throws(() => store.registerUser('player', 'pass'), /session write failed/);
+    assert.throws(() => store.registerUser('player', 'pass', code), /session write failed/);
     assert.deepEqual(store.getLeaderboard(), []);
 
     withSqlite(path, (db) => db.exec('DROP TRIGGER fail_session'));
-    store.registerUser('player', 'pass');
+    store.registerUser('player', 'pass', code);
     withSqlite(path, (db) => db.exec("UPDATE users SET password_hash = 'invalid hex'"));
     assert.throws(() => store.loginUser('player', 'pass'), invalidCredentials);
   });
@@ -205,8 +210,8 @@ test('a failed session write rolls back signup; a corrupt stored verifier cannot
 test('settlement commits round, both players’ stats, and match result together', (t) => {
   const path = temporaryDb(t);
   withStore(path, (store) => {
-    const loser = store.registerUser('loser', 'pass').user;
-    const winner = store.registerUser('winner', 'pass').user;
+    const loser = registerFixture(store, 'loser', 'pass').user;
+    const winner = registerFixture(store, 'winner', 'pass').user;
     const matchId = store.createMatch('000001', 'heixin');
     const updates: PlayerRoundStatUpdate[] = [
       { userId: winner.id, mode: 'heixin', won: true, scoreDelta: 60 },

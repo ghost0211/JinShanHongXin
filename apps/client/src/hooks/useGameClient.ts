@@ -15,6 +15,7 @@ import {
   saveServerUrl,
   type ConnectionStatus,
 } from '../net/wsClient.js';
+import { latestNewPlay, newRecentGameEvents } from '../utils/cardAudio.js';
 import { soundFX } from '../utils/sound.js';
 
 export interface SavedSession {
@@ -118,6 +119,7 @@ export function useGameClient() {
   const clientRef = useRef<ManagedWsClient | null>(null);
   const sessionRef = useRef<SavedSession | null>(null);
   const roomRef = useRef<RoomSummary | null>(null);
+  const viewRef = useRef<PlayerView | null>(null);
   const reconnectingRef = useRef(false);
   const leavingRef = useRef(false);
   const serverUrlRef = useRef(serverUrl);
@@ -147,6 +149,8 @@ export function useGameClient() {
   const clearActiveRoom = useCallback(() => {
     sessionRef.current = null;
     roomRef.current = null;
+    viewRef.current = null;
+    soundFX.stopCardSounds();
     setSession(null);
     setRoom(null);
     setView(null);
@@ -222,8 +226,13 @@ export function useGameClient() {
             playerId: msg.playerId,
             seat: msg.seat,
           };
+          const switchedRoom = roomRef.current?.roomId !== msg.roomId;
+          if (reconnectingRef.current || switchedRoom) {
+            viewRef.current = null;
+            soundFX.stopCardSounds();
+            if (switchedRoom) setView(null);
+          }
           reconnectingRef.current = false;
-          if (roomRef.current?.roomId !== msg.roomId) setView(null);
           sessionRef.current = nextSess;
           roomRef.current = msg.room;
           setSession(nextSess);
@@ -246,58 +255,32 @@ export function useGameClient() {
         }
         case 'GAME_STATE': {
           if (!sessionRef.current) break;
-          setView((prev) => {
-            if (
-              (msg.view.phase === 'ROUND_OVER' || msg.view.phase === 'MATCH_OVER') &&
-              prev?.phase !== msg.view.phase
-            ) {
-              void refreshMe();
-            }
-            if (
-              prev &&
-              msg.view.phase === 'DEALING' &&
-              msg.view.dealtCount > prev.dealtCount &&
-              msg.view.dealtCount % 2 === 1
-            ) {
-              soundFX.playTap();
-            }
-            if (prev && msg.view.events.length > prev.events.length) {
-              const newEvents = msg.view.events.slice(prev.events.length);
-              const lastEv = newEvents[newEvents.length - 1];
-              const hasCardPlayed = newEvents.some((e) => e.type === 'CARD_PLAYED');
-              if (lastEv?.type === 'SLING_FAILED') {
-                pushToast(lastEv.message, true);
-              } else if (lastEv?.type === 'COUNTER_FAILED') {
-                pushToast(lastEv.message, true);
-              } else if (
-                lastEv?.type === 'COUNTER_SUCCESS' ||
-                lastEv?.type === 'COUNTER_ACCEPTED'
-              ) {
-                soundFX.playSuccess();
-                pushToast(lastEv.message);
-              } else if (
-                lastEv?.type === 'TRUMP_CALLED' ||
-                lastEv?.type === 'COUNTER_PROPOSED'
-              ) {
-                soundFX.playSpecial();
-                pushToast(lastEv.message);
-              } else if (hasCardPlayed) {
-                const lastPlay =
-                  msg.view.currentTrick[msg.view.currentTrick.length - 1] ??
-                  msg.view.lastTrick?.plays[3];
-                if (
-                  lastPlay?.parsed.patternType === 'F510K' ||
-                  lastPlay?.parsed.patternType === 'TRACTOR' ||
-                  lastPlay?.parsed.patternType === 'TRIPLE_TRACTOR'
-                ) {
-                  soundFX.playSpecial();
-                } else {
-                  soundFX.playCards();
-                }
-              }
-            }
-            return msg.view;
-          });
+          // Handle each accepted snapshot once, outside a React state updater.
+          const prev = viewRef.current;
+          const next = msg.view;
+          viewRef.current = next;
+          setView(next);
+          if ((next.phase === 'ROUND_OVER' || next.phase === 'MATCH_OVER') && prev?.phase !== next.phase) {
+            void refreshMe();
+          }
+          if (!prev) break; // Do not replay the history bundled with a reconnect.
+          if (next.phase === 'DEALING' && next.dealtCount > prev.dealtCount && next.dealtCount % 2 === 1) {
+            soundFX.playTap();
+          }
+          const lastPlay = latestNewPlay(prev, next);
+          if (lastPlay) soundFX.playCards(lastPlay, next.viewerSeat);
+          const announcement = newRecentGameEvents(prev, next).findLast((event) =>
+            ['SLING_FAILED', 'COUNTER_FAILED', 'COUNTER_SUCCESS', 'COUNTER_ACCEPTED', 'TRUMP_CALLED', 'COUNTER_PROPOSED']
+              .includes(event.type));
+          if (announcement?.type === 'SLING_FAILED' || announcement?.type === 'COUNTER_FAILED') {
+            pushToast(announcement.message, true);
+          } else if (announcement?.type === 'COUNTER_SUCCESS' || announcement?.type === 'COUNTER_ACCEPTED') {
+            soundFX.playSuccess();
+            pushToast(announcement.message);
+          } else if (announcement) {
+            soundFX.playSpecial();
+            pushToast(announcement.message);
+          }
           break;
         }
         case 'ACTION_ERROR': {
@@ -323,7 +306,8 @@ export function useGameClient() {
   }, [serverUrl, pushToast, refreshMe, reconnectRoom, clearActiveRoom, forgetSavedRoom]);
 
   const submitCredentials = useCallback(async (
-    operation: 'register' | 'login', username: string, password: string, nickname?: string,
+    operation: 'register' | 'login',
+    credentials: { username: string; password: string; inviteCode?: string; nickname?: string },
   ): Promise<{ ok: boolean; error?: string }> => {
     const generation = ++authGeneration.current;
     const isCurrent = () => serverUrlRef.current === serverUrl && authGeneration.current === generation;
@@ -331,7 +315,7 @@ export function useGameClient() {
       const res = await fetch(`${resolveHttpBase(serverUrl)}/api/auth/${operation}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, nickname }),
+        body: JSON.stringify(credentials),
       });
       const data = (await res.json()) as { token?: string; user?: UserProfile; error?: string };
       if (!isCurrent()) return { ok: false, error: '登录状态已变化，请重试' };
@@ -348,10 +332,10 @@ export function useGameClient() {
     }
   }, [serverUrl, pushToast]);
 
-  const registerUser = useCallback((username: string, password: string, nickname?: string) =>
-    submitCredentials('register', username, password, nickname), [submitCredentials]);
+  const registerUser = useCallback((username: string, password: string, inviteCode: string, nickname?: string) =>
+    submitCredentials('register', { username, password, inviteCode, nickname }), [submitCredentials]);
   const loginUser = useCallback((username: string, password: string) =>
-    submitCredentials('login', username, password), [submitCredentials]);
+    submitCredentials('login', { username, password }), [submitCredentials]);
 
   const updateUserNickname = useCallback(
     async (nickname: string): Promise<{ ok: boolean; error?: string }> => {

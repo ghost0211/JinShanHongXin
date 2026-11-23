@@ -291,16 +291,18 @@ describe('WebSocket multiplayer server integration tests', () => {
     assert.ok(html.includes('金山打红心'));
   });
 
-  it('supports user registration, login, nickname update, logout, and per-user round stats/leaderboard', async () => {
-    const { baseUrl, wsUrl } = await startTestServer(2);
+  it('supports invited registration, login, nickname update, logout, and per-user round stats/leaderboard', async () => {
+    const { server, baseUrl, wsUrl } = await startTestServer(2);
 
     // 1. Register user
+    const inviteCode = server.store.createRegistrationInvite().code;
     const regRes = await fetch(`${baseUrl}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         username: 'jinshan_ace',
         password: 'secret123',
+        inviteCode,
         nickname: '金山牌王',
       }),
     });
@@ -312,13 +314,15 @@ describe('WebSocket multiplayer server integration tests', () => {
     assert.equal(regData.user.username, 'jinshan_ace');
     assert.equal(regData.user.nickname, '金山牌王');
 
-    // Duplicate registration rejected with 409
+    // Duplicate registration is still rejected with 409 when a valid invite is provided.
+    const duplicateInvite = server.store.createRegistrationInvite().code;
     const dupRes = await fetch(`${baseUrl}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'JINSHAN_ACE', password: 'otherpassword' }),
+      body: JSON.stringify({ username: 'JINSHAN_ACE', password: 'otherpassword', inviteCode: duplicateInvite }),
     });
     assert.equal(dupRes.status, 409);
+    assert.equal(((await dupRes.json()) as { code: string }).code, 'USERNAME_TAKEN');
 
     // Wrong password rejected with 401
     const badLogin = await fetch(`${baseUrl}/api/auth/login`, {

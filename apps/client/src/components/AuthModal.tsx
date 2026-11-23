@@ -7,6 +7,7 @@ interface AuthModalProps {
   onRegister: (
     username: string,
     password: string,
+    inviteCode: string,
     nickname?: string,
   ) => Promise<{ ok: boolean; error?: string }>;
   onUpdateNickname: (nickname: string) => Promise<{ ok: boolean; error?: string }>;
@@ -26,17 +27,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [nickname, setNickname] = useState(currentUser?.nickname ?? '');
+  const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmitAuth = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
+    const code = inviteCode.trim();
+    if (tab === 'register' && !code) {
+      setError('请输入管理员提供的注册邀请码');
+      return;
+    }
     setError('');
     setSubmitting(true);
     const res =
       tab === 'login'
         ? await onLogin(username, password)
-        : await onRegister(username, password, nickname);
+        : await onRegister(username, password, code, nickname);
     setSubmitting(false);
     if (!res.ok) {
       setError(res.error ?? '操作失败');
@@ -139,6 +147,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 className={`mode-card ${tab === 'login' ? 'is-active' : ''}`}
                 onClick={() => {
                   setTab('login');
+                  setInviteCode('');
                   setError('');
                 }}
               >
@@ -153,8 +162,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   setError('');
                 }}
               >
-                <h4>注册新号</h4>
-                <p>3 秒创建个人账号</p>
+                <h4>邀请码注册</h4>
+                <p>向管理员索取一次性邀请码</p>
               </button>
             </div>
 
@@ -178,13 +187,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               required
             />
             {tab === 'register' && (
-              <input
-                className="input-box"
-                value={nickname}
-                maxLength={16}
-                onChange={(e) => setNickname(e.target.value)}
-                placeholder="牌桌昵称（选填，默认同用户名）"
-              />
+              <>
+                <input
+                  className="input-box"
+                  type="password"
+                  value={inviteCode}
+                  autoComplete="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  aria-label="注册邀请码"
+                  onChange={(e) => setInviteCode(e.target.value)}
+                  placeholder="粘贴管理员提供的注册邀请码"
+                  required
+                />
+                <input
+                  className="input-box"
+                  value={nickname}
+                  maxLength={16}
+                  onChange={(e) => setNickname(e.target.value)}
+                  placeholder="牌桌昵称（选填，默认同用户名）"
+                />
+              </>
             )}
 
             {error && <div style={{ color: '#fda4af', fontSize: 12 }}>{error}</div>}
