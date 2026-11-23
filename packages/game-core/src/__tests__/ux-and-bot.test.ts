@@ -193,6 +193,126 @@ describe('Smart Bot AI tactical decisions', () => {
     }
   });
 
+  it('never dumps trump point cards (♣K ♣5 ♣5) into an enemy trump tractor while holding ♣8 and ♣9', () => {
+    resetCardIds();
+    // Exact reproduction of real-game bug: Banker (seat 2, Team A) leads ♣JJ ♣1010 trump tractor.
+    // Challenger (seat 3, Team B) holds 小王×2, ♣3, ♠3, ♣K, ♣9, ♣8, ♣7, ♣5, ♣5 plus off-suits.
+    const deck = createInitialMatchState({ mode: 'hongxin', seed: 1, withDealing: false });
+    const allCards = [
+      ...deck.hands[0],
+      ...deck.hands[1],
+      ...deck.hands[2],
+      ...deck.hands[3],
+      ...deck.bottomCards,
+    ];
+    const used = new Set<number>();
+    const take = (suit: Card['suit'], rank: Card['rank']): Card => {
+      const card = allCards.find((x) => !used.has(x.id) && x.suit === suit && x.rank === rank)!;
+      assert.ok(card, `missing ${suit}:${rank}`);
+      used.add(card.id);
+      return card;
+    };
+
+    const s3Hand: Card[] = [
+      take('J', 'SJ'),
+      take('J', 'SJ'),
+      take('S', '3'),
+      take('C', '3'),
+      take('C', 'K'),
+      take('C', '9'),
+      take('C', '8'),
+      take('C', '7'),
+      take('C', '5'),
+      take('C', '5'),
+      take('S', 'K'),
+      take('S', 'Q'),
+      take('S', 'J'),
+      take('S', '9'),
+      take('S', '9'),
+      take('S', '8'),
+      take('S', '7'),
+      take('S', '4'),
+      take('H', 'K'),
+      take('H', '9'),
+      take('H', '8'),
+      take('H', '8'),
+      take('H', '7'),
+      take('H', '7'),
+      take('H', '6'),
+      take('H', '4'),
+      take('H', '4'),
+      take('H', '3'),
+      take('D', 'K'),
+      take('D', 'K'),
+      take('D', 'K'),
+      take('D', 'J'),
+      take('D', '8'),
+      take('D', '7'),
+    ];
+    const lead = [take('C', 'J'), take('C', 'J'), take('C', '10'), take('C', '10')];
+    const prevCards = allCards.filter((x) => !used.has(x.id)).slice(0, 16);
+    for (const pc of prevCards) used.add(pc.id);
+    const rem = allCards.filter((x) => !used.has(x.id));
+
+    for (let roundNumber = 1; roundNumber <= 10; roundNumber++) {
+      const state: GameState = {
+        ...deck,
+        roundNumber,
+        phase: 'PLAYING',
+        dealer: 2,
+        bankerTeam: 'A',
+        trumpSuit: 'C',
+        levelRank: '2',
+        currentTurn: 3,
+        hands: {
+          0: rem.slice(0, 34),
+          1: rem.slice(34, 68),
+          2: rem.slice(68, 98),
+          3: s3Hand,
+        },
+        bottomCards: rem.slice(98, 108),
+        completedTricks: [
+          {
+            trickNumber: 1,
+            leadSeat: 2,
+            winnerSeat: 2,
+            points: 25,
+            killedByTrump: false,
+            plays: ([0, 1, 2, 3] as Seat[]).map((seat, i) => ({
+              seat,
+              cards: prevCards.slice(i * 4, i * 4 + 4),
+              parsed: parsePlay(prevCards.slice(i * 4, i * 4 + 4), 'C', '2') ?? {
+                patternType: 'SLING',
+                category: 'D',
+                cards: prevCards.slice(i * 4, i * 4 + 4),
+                components: [],
+              },
+            })),
+          },
+        ],
+        currentTrick: [
+          { seat: 2, cards: lead, parsed: parsePlay(lead, 'C', '2')! },
+        ],
+      };
+
+      const act = chooseBotAction(state, 3);
+      assert.equal(act.type, 'PLAY_CARDS');
+      if (act.type === 'PLAY_CARDS') {
+        const chosen = s3Hand.filter((card) => act.cardIds.includes(card.id));
+        const pts = chosen.reduce((sum, card) => sum + getCardPoints(card), 0);
+        assert.ok(
+          pts <= 5,
+          `round=${roundNumber}: bot dumped ${pts} pts (${chosen.map((x) => `${x.suit}:${x.rank}`).join(' ')}) into enemy trump tractor`,
+        );
+        assert.ok(
+          chosen.some((x) => x.suit === 'C' && x.rank === '8') &&
+            chosen.some((x) => x.suit === 'C' && x.rank === '9'),
+          'bot should shed low non-point trumps ♣8 and ♣9 before point trumps',
+        );
+      }
+    }
+  });
+
   it('completes multi-seed hongxin and heixin full rounds with 0 illegal moves and accurate point-card conservation', () => {
     for (const mode of ['hongxin', 'heixin'] as const) {
       for (const seed of [101, 202, 303]) {

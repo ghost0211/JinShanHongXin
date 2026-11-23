@@ -11,7 +11,14 @@
  * The bot never peeks at real hidden hands: worlds are drawn only from public information.
  */
 import type { Card, CardCategory, Seat } from '@jinshan/protocol';
-import { createThreeDecks, getCardCategory, getSeatTeam } from './cards.js';
+import {
+  createThreeDecks,
+  getCardCategory,
+  getCardKey,
+  getCardPoints,
+  getSeatTeam,
+  STANDARD_SUITS,
+} from './cards.js';
 import { applyAction } from './engine.js';
 import type { GameState } from './types.js';
 import {
@@ -153,15 +160,32 @@ function sampleWorld(
     .map((card) => ({ card, freedom: slotsFor(card) }))
     .sort((a, b) => a.freedom - b.freedom);
 
+  // Bayesian public-info slot weight: dealers almost never bury trumps or Aces,
+  // and the dealer / trump caller typically holds more trumps than non-callers.
+  const slotWeight = (card: Card, sl: number): number => {
+    const cat = getCardCategory(card, trumpSuit, levelRank);
+    if (sl === BOTTOM) {
+      if (cat === 'TRUMP') return 0.06;
+      if (card.rank === 'A') return 0.2;
+      if (getCardPoints(card) > 0) return 0.7;
+      return 1.35;
+    }
+    if (cat === 'TRUMP') {
+      if (sl === state.dealer || sl === state.callState.callerSeat) return 1.35;
+      return 1.0;
+    }
+    return 1.0;
+  };
+
   for (const { card } of order) {
     const options = [0, 1, 2, 3, BOTTOM].filter((sl) => eligible(card, sl));
     if (options.length === 0) return null;
     let total = 0;
-    for (const sl of options) total += cap[sl];
+    for (const sl of options) total += cap[sl] * slotWeight(card, sl);
     let r = rng() * total;
     let pick = options[options.length - 1];
     for (const sl of options) {
-      r -= cap[sl];
+      r -= cap[sl] * slotWeight(card, sl);
       if (r < 0) {
         pick = sl;
         break;
@@ -184,6 +208,51 @@ function isChallengerSide(state: GameState, seat: Seat): boolean {
   return state.mode === 'heixin' ? seat !== state.dealer : getSeatTeam(seat) !== state.bankerTeam;
 }
 
+function handResourceStrength(
+  hand: readonly Card[],
+  trumpSuit: GameState['trumpSuit'],
+  levelRank: GameState['levelRank'],
+): number {
+  let strength = 0;
+  const keyCounts = new Map<string, number>();
+  const keyHigh = new Map<string, boolean>();
+  let trumpCount = 0;
+  let suitMask = 0;
+
+  for (const c of hand) {
+    const cost = getCardValueCost(c, trumpSuit, levelRank);
+    strength += cost;
+    const cat = getCardCategory(c, trumpSuit, levelRank);
+    if (cat === 'TRUMP') {
+      trumpCount += 1;
+    } else {
+      const idx = STANDARD_SUITS.indexOf(cat);
+      if (idx >= 0) suitMask |= 1 << idx;
+    }
+    const k = getCardKey(c);
+    keyCounts.set(k, (keyCounts.get(k) ?? 0) + 1);
+    if (cost >= 16) keyHigh.set(k, true);
+  }
+
+  for (const [k, cnt] of keyCounts) {
+    const high = keyHigh.get(k) === true;
+    if (cnt === 3) strength += high ? 24 : 16;
+    else if (cnt === 2) strength += high ? 10 : 6;
+  }
+
+  if (trumpCount >= 2 && hand.length >= 4) {
+    for (let i = 0; i < STANDARD_SUITS.length; i++) {
+      const s = STANDARD_SUITS[i];
+      if (s === trumpSuit) continue;
+      if ((suitMask & (1 << i)) === 0) {
+        strength += 4;
+      }
+    }
+  }
+
+  return strength;
+}
+
 function evaluateOutcome(
   start: GameState,
   end: GameState,
@@ -200,8 +269,7 @@ function evaluateOutcome(
   if (end.phase === 'PLAYING') {
     const { trumpSuit, levelRank } = end;
     for (const s of SEATS) {
-      let strength = 0;
-      for (const c of end.hands[s]) strength += getCardValueCost(c, trumpSuit, levelRank);
+      const strength = handResourceStrength(end.hands[s], trumpSuit, levelRank);
       v += (isSameSide(start, seat, s) ? 1 : -1) * opts.alpha * strength;
     }
     if (end.currentTrick.length === 0 && end.currentTurn !== null) {
