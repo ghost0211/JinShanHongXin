@@ -10,8 +10,8 @@ import {
 } from '../index.js';
 import type { Card, GameState, Seat } from '../index.js';
 
-describe('金山打黑心 (heixin) mode: bidding, burying ban on 10, 1v3 scoring & simulation', () => {
-  it('supports bidding 100..300, immediate 300 win, all-pass fallback, and forbids burying 10', () => {
+describe('金山打黑心 (heixin) mode: bidding, unrestricted burying, 1v3 scoring & simulation', () => {
+  it('supports bidding 100..300, immediate 300 win, all-pass fallback, and allows burying any card including 10', () => {
     const s0 = createInitialMatchState({ seed: 202, mode: 'heixin' });
     assert.equal(s0.mode, 'heixin');
     assert.equal(s0.phase, 'BIDDING');
@@ -43,27 +43,19 @@ describe('金山打黑心 (heixin) mode: bidding, burying ban on 10, 1v3 scoring
     assert.equal(ch.state.trumpSuit, 'S');
     assert.equal(ch.state.hands[3].length, 48);
 
-    // Try burying a '10' -> must be REJECTED!
+    // Burying cards including a '10' must be ALLOWED in heixin
     const aTen = ch.state.hands[3].find((c) => c.rank === '10');
     const nonTens = ch.state.hands[3].filter((c) => c.rank !== '10');
     assert.ok(aTen);
-    const badBury = applyAction(ch.state, {
+    const buryWithTen = applyAction(ch.state, {
       type: 'BURY_BOTTOM',
       seat: 3,
       cardIds: [aTen.id, ...nonTens.slice(0, 9).map((c) => c.id)],
     });
-    assert.equal(badBury.ok, false);
-    if (!badBury.ok) assert.equal(badBury.code, 'FORBIDDEN_BURY_TEN');
-
-    // Bury 10 non-10 cards -> PLAYING
-    const goodBury = applyAction(ch.state, {
-      type: 'BURY_BOTTOM',
-      seat: 3,
-      cardIds: nonTens.slice(0, 10).map((c) => c.id),
-    });
-    assert.equal(goodBury.ok, true);
-    if (!goodBury.ok) return;
-    assert.equal(goodBury.state.phase, 'PLAYING');
+    assert.equal(buryWithTen.ok, true);
+    if (!buryWithTen.ok) return;
+    assert.equal(buryWithTen.state.phase, 'PLAYING');
+    assert.equal(buryWithTen.state.bottomCards.some((c) => c.id === aTen.id), true);
 
     // All-pass fallback -> startSeat becomes dealer at 100
     let passState = createInitialMatchState({ seed: 303, mode: 'heixin' });
@@ -154,7 +146,7 @@ describe('金山打黑心 (heixin) mode: bidding, burying ban on 10, 1v3 scoring
       }
 
       assert.equal(state.phase, 'ROUND_OVER');
-      assert.equal(state.bottomCards.some((c) => c.rank === '10'), false);
+      assert.equal(state.bottomCards.length, 10);
 
       const trickPoints = state.completedTricks.reduce((s, t) => s + t.points, 0);
       const bottomPoints = state.bottomCards.reduce((s, c) => s + getCardPoints(c), 0);

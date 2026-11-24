@@ -1262,13 +1262,6 @@ function handleBuryBottom(
     if (!card) {
       return { ok: false, code: 'CARD_NOT_IN_HAND', error: '埋底牌不在庄家手牌中' };
     }
-    if (state.mode === 'heixin' && card.rank === '10') {
-      return {
-        ok: false,
-        code: 'FORBIDDEN_BURY_TEN',
-        error: '打黑心模式不能将 10 埋入底牌',
-      };
-    }
     buried.push(card);
   }
 

@@ -508,9 +508,9 @@ export function suggestBuryCards(
   hand: readonly Card[],
   trumpSuit: StandardSuit | null,
   levelRank: LevelRank,
-  mode: GameMode,
+  _mode: GameMode,
 ): number[] {
-  const buryPool = mode === 'heixin' ? hand.filter((c) => c.rank !== '10') : hand;
+  const buryPool = hand;
 
   const trumps = hand.filter((c) => getCardCategory(c, trumpSuit, levelRank) === 'TRUMP');
   const highTrumps = trumps.filter((c) => {
@@ -560,8 +560,7 @@ export function suggestBuryCards(
   const offSuitsSorted = STANDARD_SUITS.filter((s) => s !== trumpSuit)
     .map((s) => {
       const cards = suitCards.get(s)!;
-      const eligibleCards = cards.filter((c) => mode !== 'heixin' || c.rank !== '10');
-      const canFullyVoid = eligibleCards.length === cards.length && cards.length > 0;
+      const canFullyVoid = cards.length > 0;
       const aces = cards.filter((c) => c.rank === 'A').length;
       const hasTriple = groupCardsByKey(cards, trumpSuit, levelRank).some(
         (g) => g.cards.length === 3,

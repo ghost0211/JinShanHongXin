@@ -56,8 +56,6 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({
   const red = isRedSuit(card.suit);
   const redFive = isRedFive(card);
   const roleBadge = getCardRoleBadge(card, trumpSuit, levelRank);
-  const forbiddenBury =
-    mode === 'heixin' && phase === 'BURYING' && card.rank === '10';
   const pts = getCardPoints(card);
   const stdSuit: StandardSuit | null = card.suit === 'J' ? null : card.suit;
 
@@ -71,7 +69,6 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({
     phase === 'DEALING' && interactive ? 'is-deal-in' : '',
     selected ? 'is-selected' : '',
     hinted ? 'is-hinted' : '',
-    forbiddenBury ? 'is-forbidden' : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -164,10 +161,7 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({
       {size !== 'xs' && renderCornerIndex('pcard-corner-br')}
 
       {/* Left-bottom role tag so it remains visible even when overlapped in hand */}
-      {size === 'md' && forbiddenBury && (
-        <span className="pcard-badge badge-ban">禁埋</span>
-      )}
-      {size === 'md' && showBadges && !forbiddenBury && roleBadge && (
+      {size === 'md' && showBadges && roleBadge && (
         <span
           className={`pcard-badge ${
             roleBadge.kind === 'red5' ? 'badge-red5' : ''
