@@ -7,8 +7,11 @@ import {
 } from '../utils/settings.js';
 import { soundFX } from '../utils/sound.js';
 
+import type { PlayMode } from '../hooks/useGameClient.js';
+
 interface SettingsModalProps {
   settings: AppSettings;
+  playMode?: PlayMode;
   serverUrl: string;
   connStatus: ConnectionStatus;
   inGame?: boolean;
@@ -21,6 +24,7 @@ interface SettingsModalProps {
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   settings,
+  playMode = 'online',
   serverUrl,
   connStatus,
   inGame = false,
@@ -262,12 +266,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <section className="settings-section">
             <div className="settings-section-head">
               <h4 className="settings-section-title" style={{ margin: 0 }}>
-                联机服务器
+                在线联机服务器
               </h4>
-              <span className={`pill ${statusMeta.cls}`}>{statusMeta.text}</span>
+              <span className={`pill ${playMode === 'offline' ? 'pill-green' : statusMeta.cls}`}>
+                {playMode === 'offline'
+                  ? '当前：纯离线模式'
+                  : playMode === 'lan'
+                    ? '当前：局域网模式'
+                    : statusMeta.text}
+              </span>
             </div>
             <p className="settings-row-desc" style={{ margin: '0 0 6px' }}>
-              留空默认连接同源服务器；安卓 APK 或局域网跨设备联机时可填写主机地址（如{' '}
+              仅「在线联机」模式使用；单机人机与局域网面联完全离线、无需填写。在线跨设备联机时可填写主机地址（如{' '}
               <code>http://192.168.2.192:3001</code>）
             </p>
             <div className="field-row" style={{ marginBottom: 4 }}>

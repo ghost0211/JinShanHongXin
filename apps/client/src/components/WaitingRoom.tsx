@@ -1,9 +1,19 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import type { GameMode, RoomSummary, Seat } from '@jinshan/protocol';
+import {
+  buildLanJoinUrl,
+  type LanHostStartResult,
+} from '../net/androidLan.js';
+import type { PlayMode } from '../hooks/useGameClient.js';
+import { QrCodeSvg } from './QrCodeSvg.js';
 
 interface WaitingRoomProps {
   room: RoomSummary;
   mySeat: Seat;
+  playMode?: PlayMode;
+  lanHostInfo?: LanHostStartResult | null;
+  lanGuestCount?: number;
+  onRefreshLanHost?: () => void;
   onSetMode: (mode: GameMode) => void;
   onSetSeatBot: (seat: Seat, isBot: boolean) => void;
   onSwapSeat: (targetSeat: Seat) => void;
@@ -11,11 +21,16 @@ interface WaitingRoomProps {
   onStartGame: () => void;
   onLeave: () => void;
   onCopyRoomId: (roomId: string) => void;
+  onCopyText?: (text: string, label?: string) => void;
 }
 
 export const WaitingRoom: React.FC<WaitingRoomProps> = ({
   room,
   mySeat,
+  playMode = 'online',
+  lanHostInfo = null,
+  lanGuestCount = 0,
+  onRefreshLanHost,
   onSetMode,
   onSetSeatBot,
   onSwapSeat,
@@ -23,6 +38,7 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
   onStartGame,
   onLeave,
   onCopyRoomId,
+  onCopyText,
 }) => {
   const isHost = mySeat === room.hostSeat;
   const me = room.seats[mySeat];
@@ -31,6 +47,27 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
   const allReady = room.seats.every(
     (s) => s.occupied && (s.isBot || s.seat === room.hostSeat || s.ready),
   );
+
+  const [selectedIp, setSelectedIp] = useState<string>('');
+  const activeIp = useMemo(() => {
+    if (!lanHostInfo) return '';
+    if (selectedIp && lanHostInfo.ips.includes(selectedIp)) return selectedIp;
+    return lanHostInfo.primaryIp || lanHostInfo.ips[0] || '';
+  }, [lanHostInfo, selectedIp]);
+
+  const lanJoinUrl = useMemo(() => {
+    if (!lanHostInfo || !activeIp) return '';
+    return buildLanJoinUrl(activeIp, lanHostInfo.port, room.roomId);
+  }, [lanHostInfo, activeIp, room.roomId]);
+
+  const modeBadgeLabel =
+    playMode === 'offline'
+      ? '单机离线'
+      : playMode === 'lan'
+        ? lanHostInfo
+          ? '局域网房主'
+          : '局域网面联'
+        : null;
 
   return (
     <div className="waiting-wrap">
@@ -51,16 +88,19 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
           <strong style={{ fontSize: 16, color: 'var(--gold-strong)' }}>
             房号：{room.roomId}
           </strong>
-          <button
-            type="button"
-            className="btn btn-xs"
-            onClick={() => onCopyRoomId(room.roomId)}
-          >
-            复制房号
-          </button>
+          {playMode !== 'offline' && (
+            <button
+              type="button"
+              className="btn btn-xs"
+              onClick={() => onCopyRoomId(room.roomId)}
+            >
+              复制房号
+            </button>
+          )}
           <span className="pill pill-gold">
             {room.mode === 'hongxin' ? '金山打红心 (2v2)' : '金山打黑心 (1v3)'}
           </span>
+          {modeBadgeLabel && <span className="pill pill-green">{modeBadgeLabel}</span>}
           {room.debugMode && <span className="pill pill-green">调试模式</span>}
         </div>
 
@@ -84,10 +124,87 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
             </>
           )}
           <button type="button" className="btn btn-xs btn-crimson" onClick={onLeave}>
-            离开房间
+            {lanHostInfo ? '关闭房间' : '离开房间'}
           </button>
         </div>
       </div>
+
+      {lanHostInfo && isHost && (
+        <div className="card-panel lan-invite-card">
+          <div className="lan-qr-box">
+            {lanJoinUrl ? (
+              <QrCodeSvg value={lanJoinUrl} size={114} />
+            ) : (
+              <div className="lan-qr-placeholder">未检测到局域网 IP</div>
+            )}
+          </div>
+          <div className="lan-invite-info">
+            <div className="lan-invite-head">
+              <strong>📡 局域网面联邀请</strong>
+              <span className="pill pill-green">UDP 自动广播中</span>
+              <span className="pill">已连客机 {lanGuestCount} 台</span>
+            </div>
+            {lanJoinUrl ? (
+              <div className="lan-url-row">
+                <code className="lan-url-code">{lanJoinUrl}</code>
+                <button
+                  type="button"
+                  className="btn btn-xs btn-gold"
+                  onClick={() =>
+                    onCopyText
+                      ? onCopyText(lanJoinUrl, '局域网直连地址')
+                      : onCopyRoomId(lanJoinUrl)
+                  }
+                >
+                  复制链接
+                </button>
+                {onRefreshLanHost && (
+                  <button
+                    type="button"
+                    className="btn btn-xs"
+                    onClick={onRefreshLanHost}
+                  >
+                    ↻ 刷新IP
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="lan-url-row">
+                <span className="lan-warn-text">
+                  未检测到 Wi-Fi 或手机热点 IP，请先连接同一 Wi-Fi 或开启热点
+                </span>
+                {onRefreshLanHost && (
+                  <button
+                    type="button"
+                    className="btn btn-xs btn-gold"
+                    onClick={onRefreshLanHost}
+                  >
+                    ↻ 刷新IP
+                  </button>
+                )}
+              </div>
+            )}
+            {lanHostInfo.ips.length > 1 && (
+              <div className="lan-ip-chips">
+                <span className="lan-ip-label">切换网卡 IP：</span>
+                {lanHostInfo.ips.map((ip) => (
+                  <button
+                    key={ip}
+                    type="button"
+                    className={`btn btn-xs ${ip === activeIp ? 'btn-gold' : ''}`}
+                    onClick={() => setSelectedIp(ip)}
+                  >
+                    {ip}
+                  </button>
+                ))}
+              </div>
+            )}
+            <p className="lan-invite-tip">
+              同 Wi-Fi / 连本机热点即可加入：安卓端打开「局域网面联」自动发现一键入座，iPhone / 电脑浏览器直接扫左侧二维码免装包进房；请保持房主在前台。
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="waiting-seats">
         {room.seats.map((slot) => {

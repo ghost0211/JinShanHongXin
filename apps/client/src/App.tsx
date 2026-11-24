@@ -42,13 +42,17 @@ export const App: React.FC = () => {
     }
   }, [settings.soundEnabled, settings.soundVolume, settings.hapticsEnabled]);
 
-  const handleCopyRoomId = async (roomId: string) => {
+  const handleCopyText = async (text: string, label = '内容') => {
     try {
-      await navigator.clipboard.writeText(roomId);
-      client.pushToast(`房号 ${roomId} 已复制`);
+      await navigator.clipboard.writeText(text);
+      client.pushToast(`${label}已复制`);
     } catch {
-      client.pushToast(`房号：${roomId}`);
+      client.pushToast(`${label}：${text}`);
     }
+  };
+
+  const handleCopyRoomId = (roomId: string) => {
+    void handleCopyText(roomId, `房号 ${roomId}`);
   };
 
   return (
@@ -86,6 +90,13 @@ export const App: React.FC = () => {
 
       {!client.room && (
         <LobbyScreen
+          playMode={client.playMode}
+          lanRole={client.lanRole}
+          lanHostSupported={client.lanHostSupported}
+          lanTargetUrl={client.lanTargetUrl}
+          discoveredLanHosts={client.discoveredLanHosts}
+          localHistory={client.localHistory}
+          localStats={client.localStats}
           connStatus={client.connStatus}
           serverUrl={client.serverUrl}
           playerName={client.playerName}
@@ -95,6 +106,12 @@ export const App: React.FC = () => {
           historyList={client.historyList}
           leaderboard={client.leaderboard}
           tableSkin={settings.tableSkin}
+          onSetPlayMode={client.setPlayMode}
+          onStartLanHost={client.startLanHostRoom}
+          onJoinDiscoveredLanHost={client.joinDiscoveredLanHost}
+          onConnectLanManual={client.connectLanManual}
+          onDisconnectLanGuest={client.disconnectLanGuest}
+          onClearLocalStats={client.clearLocalStats}
           onSetPlayerName={client.setPlayerName}
           onLogin={client.loginUser}
           onRegister={client.registerUser}
@@ -115,6 +132,10 @@ export const App: React.FC = () => {
         <WaitingRoom
           room={client.room}
           mySeat={client.session.seat}
+          playMode={client.playMode}
+          lanHostInfo={client.lanRole === 'host' ? client.lanHostInfo : null}
+          lanGuestCount={client.lanBridgeStatus.peerCount}
+          onRefreshLanHost={client.refreshLanHostInfo}
           onSetMode={client.setRoomMode}
           onSetSeatBot={client.setSeatBot}
           onSwapSeat={client.swapSeat}
@@ -122,6 +143,7 @@ export const App: React.FC = () => {
           onStartGame={client.startGame}
           onLeave={client.leaveRoom}
           onCopyRoomId={handleCopyRoomId}
+          onCopyText={handleCopyText}
         />
       )}
 
@@ -130,6 +152,7 @@ export const App: React.FC = () => {
           room={client.room}
           view={client.view}
           settings={settings}
+          playMode={client.playMode}
           onOpenSettings={() => setShowSettings(true)}
           onSendAction={client.sendAction}
           onSetAutoBot={client.setAutoBot}
@@ -141,6 +164,7 @@ export const App: React.FC = () => {
       {showSettings && (
         <SettingsModal
           settings={settings}
+          playMode={client.playMode}
           serverUrl={client.serverUrl}
           connStatus={client.connStatus}
           inGame={Boolean(client.room)}

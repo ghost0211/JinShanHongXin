@@ -34,12 +34,14 @@ import { LastTrickModal } from './LastTrickModal.js';
 import { ScoreDetailModal } from './ScoreDetailModal.js';
 import { DebugDrawer } from './DebugDrawer.js';
 import type { AppSettings } from '../utils/settings.js';
+import type { PlayMode } from '../hooks/useGameClient.js';
 import '../styles/table-skins.css';
 
 interface GameTableProps {
   room: RoomSummary;
   view: PlayerView;
   settings: AppSettings;
+  playMode?: PlayMode;
   onOpenSettings: () => void;
   onSendAction: (action: GameAction) => void;
   onSetAutoBot: (enabled: boolean) => void;
@@ -51,6 +53,7 @@ export const GameTable: React.FC<GameTableProps> = ({
   room,
   view,
   settings,
+  playMode = 'online',
   onOpenSettings,
   onSendAction,
   onSetAutoBot,
@@ -493,6 +496,11 @@ export const GameTable: React.FC<GameTableProps> = ({
       <div className="table-hud-shell is-unified">
         <div className="table-hud">
           <div className="hud-group hud-match">
+            {playMode !== 'online' && (
+              <span className="pill pill-green">
+                {playMode === 'offline' ? '单机' : '局域网'}
+              </span>
+            )}
             <span className="pill pill-gold">
               {view.mode === 'hongxin' ? '打红心' : '打黑心'} · 第{view.roundNumber}局
             </span>
