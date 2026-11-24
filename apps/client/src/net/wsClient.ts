@@ -2,6 +2,14 @@ import type { ClientMessage, ServerMessage } from '@jinshan/protocol';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 
+export interface GameTransport {
+  connect(): void;
+  send(msg: ClientMessage): boolean;
+  onMessage(cb: (msg: ServerMessage) => void): () => void;
+  onStatus(cb: (status: ConnectionStatus) => void): () => void;
+  dispose(): void;
+}
+
 const SERVER_URL_KEY = 'jinshan_server_url';
 const APK_VIRTUAL_HOST = 'appassets.jinshan.local';
 
@@ -73,7 +81,7 @@ export function resolveWsUrl(customUrl: string): string {
   return 'ws://127.0.0.1:3001/ws';
 }
 
-export class ManagedWsClient {
+export class ManagedWsClient implements GameTransport {
   private ws: WebSocket | null = null;
   private wsUrl: string;
   private status: ConnectionStatus = 'disconnected';
