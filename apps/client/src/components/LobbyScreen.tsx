@@ -106,6 +106,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   onOpenRules,
 }) => {
   const [mode, setMode] = useState<GameMode>('hongxin');
+  const [offlineDebugMode, setOfflineDebugMode] = useState(true);
   const [joinCode, setJoinCode] = useState('');
   const [lanIpInput, setLanIpInput] = useState(() =>
     lanTargetUrl.replace(/^https?:\/\//i, ''),
@@ -310,191 +311,293 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           <div className="lobby-grid">
           {/* Left Hero Column: Mode Picker & Launch Controls */}
           <section className="card-panel lobby-hero-panel">
-            {playMode === 'online' &&
-              isRunningInAndroidApk() &&
-              connStatus !== 'connected' && (
-                <div className="lobby-alert is-danger">
+            <div className="lobby-hero-top">
+              {playMode === 'offline' && (
+                <div className="lobby-mode-banner is-offline">
+                  <div className="lobby-mode-banner-text">
+                    <strong>单机人机模式 · 纯离线运行</strong>
+                    <span>本地 Web Worker + 蒙特卡洛高智商 AI，无网或飞行模式秒开畅玩</span>
+                  </div>
+                  <span className="pill pill-green">0 延迟</span>
+                </div>
+              )}
+
+              {playMode === 'lan' && (
+                <div className="lobby-mode-banner is-lan">
+                  <div className="lobby-mode-banner-text">
+                    <strong>局域网面联 · 同 Wi-Fi / 热点直连</strong>
+                    <span>房主开房自动生成离线二维码与 UDP 广播，好友扫码免装包入座</span>
+                  </div>
+                  <span className="pill pill-gold">免服务器</span>
+                </div>
+              )}
+
+              {playMode === 'online' &&
+                isRunningInAndroidApk() &&
+                connStatus !== 'connected' && (
+                  <div className="lobby-alert is-danger">
+                    <span>
+                      未连上在线服务器（{serverUrl || '127.0.0.1:3001'}），可切至「单机人机 / 局域网」直接玩，或在设置中配置主机地址
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-gold btn-xs"
+                      onClick={onOpenSettings}
+                    >
+                      去设置
+                    </button>
+                  </div>
+                )}
+
+              {playMode === 'online' && connStatus === 'connected' && !savedSession && (
+                <div className="lobby-mode-banner is-online">
+                  <div className="lobby-mode-banner-text">
+                    <strong>在线联机大厅 · 服务器已连接</strong>
+                    <span>支持注册账号累计战绩、排行榜比拼与 6 位房号跨网邀友</span>
+                  </div>
+                  <span className="pill pill-green">在线</span>
+                </div>
+              )}
+
+              {playMode === 'online' && savedSession && (
+                <div className="lobby-alert is-gold">
                   <span>
-                    未连上在线服务器（{serverUrl || '127.0.0.1:3001'}），可切至「单机人机 / 局域网面联」直接玩，或在设置中配置主机地址
+                    检测到未结束牌局（房号 <strong>{savedSession.roomId}</strong>），可随时回到牌桌
                   </span>
                   <button
                     type="button"
                     className="btn btn-gold btn-xs"
-                    onClick={onOpenSettings}
+                    onClick={onReconnectSaved}
+                    disabled={connStatus !== 'connected'}
                   >
-                    去设置
+                    断线重连
                   </button>
                 </div>
               )}
 
-            {playMode === 'online' && savedSession && (
-              <div className="lobby-alert is-gold">
-                <span>
-                  检测到未结束牌局（房号 <strong>{savedSession.roomId}</strong>），可随时回到牌桌
-                </span>
+              <div className="lobby-section-label">
+                <span>选择玩法规则</span>
+                <span className="lobby-section-hint">三副牌 162 张 · 完整 510K 规则</span>
+              </div>
+
+              <div className="mode-tabs">
                 <button
                   type="button"
-                  className="btn btn-gold btn-xs"
-                  onClick={onReconnectSaved}
-                  disabled={connStatus !== 'connected'}
+                  className={`mode-card is-hongxin ${mode === 'hongxin' ? 'is-active' : ''}`}
+                  onClick={() => setMode('hongxin')}
                 >
-                  断线重连
+                  <div className="mode-card-emblem is-red">
+                    <span className="mode-card-rank">5</span>
+                    <SuitGlyph suit="H" className="mode-card-suit" />
+                  </div>
+                  <div className="mode-card-body">
+                    <div className="mode-card-head">
+                      <h4>金山打红心</h4>
+                      <span className="pill pill-red">2 打 2</span>
+                    </div>
+                    <p>2→A 升级 · 21 张比牌反主 · 120 及格 · 40/60 跳级</p>
+                  </div>
+                  {mode === 'hongxin' && <span className="mode-card-check">✓</span>}
+                </button>
+
+                <button
+                  type="button"
+                  className={`mode-card is-heixin ${mode === 'heixin' ? 'is-active' : ''}`}
+                  onClick={() => setMode('heixin')}
+                >
+                  <div className="mode-card-emblem is-black">
+                    <span className="mode-card-rank is-ten">10</span>
+                    <SuitGlyph suit="S" className="mode-card-suit" />
+                  </div>
+                  <div className="mode-card-body">
+                    <div className="mode-card-head">
+                      <h4>金山打黑心</h4>
+                      <span className="pill pill-gold">1 打 3</span>
+                    </div>
+                    <p>固定打 10 · 100~300 叫分抢庄 · 禁埋 10 · 零和积分</p>
+                  </div>
+                  {mode === 'heixin' && <span className="mode-card-check">✓</span>}
                 </button>
               </div>
-            )}
 
-            <div className="lobby-section-label">
-              <span>选择玩法规则</span>
-              <span className="lobby-section-hint">三副牌 162 张 · 完整 510K 规则</span>
+              {(playMode !== 'online' || !currentUser) && (
+                <div className="lobby-guest-row">
+                  <label className="lobby-guest-label" htmlFor="guest-name-input">
+                    {playMode === 'online' ? '游客昵称' : '本机昵称'}
+                  </label>
+                  <input
+                    id="guest-name-input"
+                    className="input-box"
+                    value={playerName}
+                    maxLength={12}
+                    onChange={(e) => onSetPlayerName(e.target.value)}
+                    placeholder="输入牌桌显示昵称"
+                  />
+                </div>
+              )}
             </div>
 
-            <div className="mode-tabs">
-              <button
-                type="button"
-                className={`mode-card is-hongxin ${mode === 'hongxin' ? 'is-active' : ''}`}
-                onClick={() => setMode('hongxin')}
-              >
-                <div className="mode-card-emblem is-red">
-                  <span className="mode-card-rank">5</span>
-                  <SuitGlyph suit="H" className="mode-card-suit" />
-                </div>
-                <div className="mode-card-body">
-                  <div className="mode-card-head">
-                    <h4>金山打红心</h4>
-                    <span className="pill pill-red">2 打 2</span>
+            {/* Bottom-anchored Mode-specific Actions */}
+            <div className="lobby-hero-bottom">
+              {playMode === 'offline' && (
+                <>
+                  <div className="offline-quick-opts">
+                    <label className="offline-opt-toggle">
+                      <input
+                        type="checkbox"
+                        checked={offlineDebugMode}
+                        onChange={(e) => setOfflineDebugMode(e.target.checked)}
+                      />
+                      <span>允许对局中开启「上帝视角」看各家手牌</span>
+                    </label>
+                    <span className="pill">自动记录本机战绩</span>
                   </div>
-                  <p>2→A 升级 · 21 张比牌反主 · 120 及格 · 40/60 跳级</p>
-                </div>
-                {mode === 'hongxin' && <span className="mode-card-check">✓</span>}
-              </button>
 
-              <button
-                type="button"
-                className={`mode-card is-heixin ${mode === 'heixin' ? 'is-active' : ''}`}
-                onClick={() => setMode('heixin')}
-              >
-                <div className="mode-card-emblem is-black">
-                  <span className="mode-card-rank is-ten">10</span>
-                  <SuitGlyph suit="S" className="mode-card-suit" />
-                </div>
-                <div className="mode-card-body">
-                  <div className="mode-card-head">
-                    <h4>金山打黑心</h4>
-                    <span className="pill pill-gold">1 打 3</span>
-                  </div>
-                  <p>固定打 10 · 100~300 叫分抢庄 · 禁埋 10 · 零和积分</p>
-                </div>
-                {mode === 'heixin' && <span className="mode-card-check">✓</span>}
-              </button>
-            </div>
-
-            {(playMode !== 'online' || !currentUser) && (
-              <div className="lobby-guest-row">
-                <label className="lobby-guest-label" htmlFor="guest-name-input">
-                  {playMode === 'online' ? '游客昵称' : '本机昵称'}
-                </label>
-                <input
-                  id="guest-name-input"
-                  className="input-box"
-                  value={playerName}
-                  maxLength={12}
-                  onChange={(e) => onSetPlayerName(e.target.value)}
-                  placeholder="输入牌桌显示昵称"
-                />
-              </div>
-            )}
-
-            {/* Mode-specific Primary CTAs */}
-            {playMode === 'offline' && (
-              <div className="lobby-cta-grid">
-                <button
-                  type="button"
-                  className="btn btn-gold btn-lg lobby-cta-primary"
-                  disabled={connStatus !== 'connected'}
-                  onClick={() =>
-                    onCreateRoom({
-                      mode,
-                      debugMode: true,
-                      fillBots: true,
-                      autoStart: true,
-                    })
-                  }
-                >
-                  <span className="cta-main">✦ 立即单机开局</span>
-                  <span className="cta-sub">3 名高智商本地 AI · 飞行模式畅玩 · 支持上帝视角</span>
-                </button>
-
-                <button
-                  type="button"
-                  className="btn btn-emerald btn-lg lobby-cta-secondary"
-                  disabled={connStatus !== 'connected'}
-                  onClick={() =>
-                    onCreateRoom({
-                      mode,
-                      debugMode: true,
-                      fillBots: true,
-                      autoStart: false,
-                    })
-                  }
-                >
-                  <span className="cta-main">进入候客室选座</span>
-                  <span className="cta-sub">自由换座或调整红心/黑心规则后开局</span>
-                </button>
-              </div>
-            )}
-
-            {playMode === 'lan' && (
-              <>
-                <div className="lobby-cta-grid">
-                  {lanHostSupported ? (
+                  <div className="lobby-cta-grid">
                     <button
                       type="button"
                       className="btn btn-gold btn-lg lobby-cta-primary"
-                      onClick={() => onStartLanHost({ mode, debugMode: false })}
+                      disabled={connStatus !== 'connected'}
+                      onClick={() =>
+                        onCreateRoom({
+                          mode,
+                          debugMode: offlineDebugMode,
+                          fillBots: true,
+                          autoStart: true,
+                        })
+                      }
                     >
-                      <span className="cta-main">📡 创建局域网房间（我当房主）</span>
-                      <span className="cta-sub">
-                        生成二维码 + UDP 自动广播 · 支持 iPhone/安卓扫码免装包加入
-                      </span>
+                      <span className="cta-main">✦ 立即单机开局</span>
+                      <span className="cta-sub">配 3 名本地智能 AI · 秒开一局</span>
                     </button>
-                  ) : (
-                    <div className="lan-browser-hint">
-                      <strong>浏览器端可作为客机加入局域网牌桌</strong>
-                      <span>
-                        受浏览器安全限制，仅安卓 APK 可作为局域网房主；请在下方输入安卓房主屏幕显示的 IP 地址，或直接扫码加入。
-                      </span>
+
+                    <button
+                      type="button"
+                      className="btn btn-emerald btn-lg lobby-cta-secondary"
+                      disabled={connStatus !== 'connected'}
+                      onClick={() =>
+                        onCreateRoom({
+                          mode,
+                          debugMode: offlineDebugMode,
+                          fillBots: true,
+                          autoStart: false,
+                        })
+                      }
+                    >
+                      <span className="cta-main">进入候客室选座</span>
+                      <span className="cta-sub">拟真牌桌自由换座后再开局</span>
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {playMode === 'lan' && (
+                <>
+                  <div className="lobby-cta-grid lobby-cta-single">
+                    {lanHostSupported ? (
+                      <button
+                        type="button"
+                        className="btn btn-gold btn-lg lobby-cta-primary lobby-cta-full"
+                        onClick={() => onStartLanHost({ mode, debugMode: false })}
+                      >
+                        <span className="cta-main">📡 创建局域网房间（我当房主）</span>
+                        <span className="cta-sub">
+                          生成离线二维码 + UDP 自动广播 · 支持 iPhone/安卓扫码免装包加入 · 缺人随时补机器人
+                        </span>
+                      </button>
+                    ) : (
+                      <div className="lan-browser-hint">
+                        <strong>浏览器端可作为客机加入局域网牌桌</strong>
+                        <span>
+                          受浏览器安全限制，仅安卓 APK 可作为局域网房主；请在下方输入安卓房主屏幕显示的 IP 地址，或直接扫码加入。
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="lobby-join-bar">
+                    <input
+                      className="input-box lobby-join-input"
+                      value={lanIpInput}
+                      onChange={(e) => setLanIpInput(e.target.value)}
+                      placeholder="手动输入房主 IP（如 192.168.43.1:3001）..."
+                    />
+                    {lanRole === 'guest' ? (
+                      <button
+                        type="button"
+                        className="btn btn-crimson"
+                        onClick={onDisconnectLanGuest}
+                      >
+                        断开主机
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn btn-emerald"
+                        disabled={!lanIpInput.trim()}
+                        onClick={() => onConnectLanManual(lanIpInput)}
+                      >
+                        连接主机
+                      </button>
+                    )}
+                  </div>
+
+                  {lanRole === 'guest' && connStatus === 'connected' && (
+                    <div className="lobby-join-bar">
+                      <input
+                        className="input-box lobby-join-input"
+                        value={joinCode}
+                        maxLength={6}
+                        inputMode="numeric"
+                        onChange={(e) => setJoinCode(e.target.value.replace(/\D/g, ''))}
+                        placeholder="或输入 6 位房号直接入座..."
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-gold"
+                        disabled={joinCode.length !== 6}
+                        onClick={() => onJoinRoom(joinCode)}
+                      >
+                        加入房间
+                      </button>
                     </div>
                   )}
-                </div>
+                </>
+              )}
 
-                <div className="lobby-join-bar">
-                  <input
-                    className="input-box lobby-join-input"
-                    value={lanIpInput}
-                    onChange={(e) => setLanIpInput(e.target.value)}
-                    placeholder="输入房主 IP（如 192.168.43.1:3001）..."
-                  />
-                  {lanRole === 'guest' ? (
+              {playMode === 'online' && (
+                <>
+                  <div className="lobby-cta-grid">
                     <button
                       type="button"
-                      className="btn btn-crimson"
-                      onClick={onDisconnectLanGuest}
+                      className="btn btn-gold btn-lg lobby-cta-primary"
+                      disabled={connStatus !== 'connected'}
+                      onClick={() =>
+                        onCreateRoom({
+                          mode,
+                          debugMode: true,
+                          fillBots: true,
+                          autoStart: true,
+                        })
+                      }
                     >
-                      断开主机
+                      <span className="cta-main">✦ 快速单人开局</span>
+                      <span className="cta-sub">配 3 名智能机器人 · 支持上帝视角</span>
                     </button>
-                  ) : (
+
                     <button
                       type="button"
-                      className="btn btn-emerald"
-                      disabled={!lanIpInput.trim()}
-                      onClick={() => onConnectLanManual(lanIpInput)}
+                      className="btn btn-emerald btn-lg lobby-cta-secondary"
+                      disabled={connStatus !== 'connected'}
+                      onClick={() =>
+                        onCreateRoom({ mode, debugMode: false, fillBots: false })
+                      }
                     >
-                      连接主机
+                      <span className="cta-main">创建好友房</span>
+                      <span className="cta-sub">生成 6 位房号 · 邀请牌友联机</span>
                     </button>
-                  )}
-                </div>
+                  </div>
 
-                {lanRole === 'guest' && connStatus === 'connected' && (
                   <div className="lobby-join-bar">
                     <input
                       className="input-box lobby-join-input"
@@ -502,74 +605,20 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                       maxLength={6}
                       inputMode="numeric"
                       onChange={(e) => setJoinCode(e.target.value.replace(/\D/g, ''))}
-                      placeholder="或输入 6 位房号直接入座..."
+                      placeholder="输入 6 位房间号直接加入..."
                     />
                     <button
                       type="button"
                       className="btn btn-gold"
-                      disabled={joinCode.length !== 6}
+                      disabled={connStatus !== 'connected' || joinCode.length !== 6}
                       onClick={() => onJoinRoom(joinCode)}
                     >
                       加入房间
                     </button>
                   </div>
-                )}
-              </>
-            )}
-
-            {playMode === 'online' && (
-              <>
-                <div className="lobby-cta-grid">
-                  <button
-                    type="button"
-                    className="btn btn-gold btn-lg lobby-cta-primary"
-                    disabled={connStatus !== 'connected'}
-                    onClick={() =>
-                      onCreateRoom({
-                        mode,
-                        debugMode: true,
-                        fillBots: true,
-                        autoStart: true,
-                      })
-                    }
-                  >
-                    <span className="cta-main">✦ 快速单人开局</span>
-                    <span className="cta-sub">配 3 名智能机器人 · 支持上帝视角</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className="btn btn-emerald btn-lg lobby-cta-secondary"
-                    disabled={connStatus !== 'connected'}
-                    onClick={() =>
-                      onCreateRoom({ mode, debugMode: false, fillBots: false })
-                    }
-                  >
-                    <span className="cta-main">创建好友房</span>
-                    <span className="cta-sub">生成 6 位房号 · 邀请牌友联机</span>
-                  </button>
-                </div>
-
-                <div className="lobby-join-bar">
-                  <input
-                    className="input-box lobby-join-input"
-                    value={joinCode}
-                    maxLength={6}
-                    inputMode="numeric"
-                    onChange={(e) => setJoinCode(e.target.value.replace(/\D/g, ''))}
-                    placeholder="输入 6 位房间号直接加入..."
-                  />
-                  <button
-                    type="button"
-                    className="btn btn-gold"
-                    disabled={connStatus !== 'connected' || joinCode.length !== 6}
-                    onClick={() => onJoinRoom(joinCode)}
-                  >
-                    加入房间
-                  </button>
-                </div>
-              </>
-            )}
+                </>
+              )}
+            </div>
           </section>
 
           {/* Right Column: Mode-Specific Parlor Panel */}
