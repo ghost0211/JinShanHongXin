@@ -11,6 +11,8 @@ class SoundController {
   private readonly cardSamples: Record<CardStroke['kind'], AudioBuffer[]> = { slide: [], land: [] };
   private sampleIndex = 0;
   private muted: boolean;
+  private volume = 0.82;
+  private hapticsEnabled = true;
 
   constructor() {
     try {
@@ -24,9 +26,29 @@ class SoundController {
     return this.muted;
   }
 
+  getVolume(): number {
+    return Math.round(this.volume * 100);
+  }
+
+  setVolume(percent: number): void {
+    const clamped = Math.max(0, Math.min(100, percent));
+    this.volume = clamped / 100;
+    if (this.output && !this.muted) {
+      this.output.gain.value = this.volume;
+    }
+  }
+
+  isHapticsEnabled(): boolean {
+    return this.hapticsEnabled;
+  }
+
+  setHapticsEnabled(enabled: boolean): void {
+    this.hapticsEnabled = enabled;
+  }
+
   setMuted(muted: boolean): void {
     this.muted = muted;
-    if (this.output) this.output.gain.value = muted ? 0 : 0.82;
+    if (this.output) this.output.gain.value = muted ? 0 : this.volume;
     if (muted) this.stopCardSounds();
     else this.unlock();
     try {
@@ -51,7 +73,7 @@ class SoundController {
     limiter.attack.value = 0.003;
     limiter.release.value = 0.12;
     this.output = ctx.createGain();
-    this.output.gain.value = 0.82;
+    this.output.gain.value = this.volume;
     this.output.connect(limiter).connect(ctx.destination);
     this.ctx = ctx;
     return ctx;
@@ -102,6 +124,7 @@ class SoundController {
 
   playTap(): void {
     this.tone(540, 0.045, 'sine', 0.05);
+    if (!this.hapticsEnabled) return;
     try {
       (
         window as unknown as {

@@ -1,19 +1,41 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0e4a37" />
-      <stop offset="100%" stop-color="#061d16" />
-    </linearGradient>
+    <radialGradient id="bg" cx="50%" cy="46%" r="62%">
+      <stop offset="0%" stop-color="#146349" />
+      <stop offset="65%" stop-color="#093023" />
+      <stop offset="100%" stop-color="#041610" />
+    </radialGradient>
     <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#ffd875" />
-      <stop offset="100%" stop-color="#d49324" />
+      <stop offset="0%" stop-color="#ffe89e" />
+      <stop offset="50%" stop-color="#e3ad44" />
+      <stop offset="100%" stop-color="#a86d16" />
+    </linearGradient>
+    <linearGradient id="ruby" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ff4d5c" />
+      <stop offset="50%" stop-color="#cf182b" />
+      <stop offset="100%" stop-color="#870a18" />
+    </linearGradient>
+    <linearGradient id="ivory" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0%" stop-color="#fffef9" />
+      <stop offset="100%" stop-color="#f3e9d2" />
     </linearGradient>
   </defs>
   <rect width="128" height="128" rx="28" fill="url(#bg)" />
-  <rect x="22" y="14" width="84" height="100" rx="12" fill="#fcfaf2" stroke="url(#gold)" stroke-width="4" />
-  <path
-    d="M64 89 C64 89 35 70 35 50 C35 39 44 32 53 32 C59 32 62 36 64 40 C66 36 69 32 75 32 C84 32 93 39 93 50 C93 70 64 89 64 89 Z"
-    fill="#cf2330"
-  />
-  <text x="64" y="69" text-anchor="middle" font-size="30" font-weight="900" font-family="sans-serif" fill="#ffe799">5</text>
+  <circle cx="64" cy="64" r="50" fill="none" stroke="url(#gold)" stroke-opacity="0.35" stroke-width="1.5" />
+  <circle cx="64" cy="64" r="44" fill="none" stroke="url(#gold)" stroke-opacity="0.22" stroke-width="1" />
+  <!-- Back obsidian spade card -->
+  <g transform="rotate(-14 54 66)">
+    <rect x="26" y="30" width="46" height="68" rx="7" fill="#182028" stroke="url(#gold)" stroke-width="2.2" />
+    <path d="M49 52 C43 60 36 64 36 70 C36 74 39 76 43 76 C45.5 76 47.5 74.8 48.5 73 L46.5 80 L51.5 80 L49.5 73 C50.5 74.8 52.5 76 55 76 C59 76 62 74 62 70 C62 64 55 60 49 52 Z" fill="url(#gold)" />
+  </g>
+  <!-- Front ivory Red Five card -->
+  <g transform="rotate(6 72 64)">
+    <rect x="46" y="25" width="52" height="76" rx="8" fill="url(#ivory)" stroke="url(#gold)" stroke-width="2.6" />
+    <text x="54" y="42" font-size="16" font-weight="900" font-family="Georgia, serif" fill="#c8192a">5</text>
+    <path d="M58 51 C58 51 53.5 48 53.5 45.4 C53.5 44 54.6 43 55.8 43 C56.7 43 57.5 43.5 58 44.3 C58.5 43.5 59.3 43 60.2 43 C61.4 43 62.5 44 62.5 45.4 C62.5 48 58 51 58 51 Z" fill="#c8192a" />
+    <!-- Crown above heart -->
+    <path d="M64 51 L66.5 45 L72 48.5 L77.5 45 L80 51 Z" fill="url(#gold)" />
+    <!-- Ruby heart -->
+    <path d="M72 84 C72 84 55 72.5 55 61.5 C55 55.5 59.8 52 64.5 52 C68 52 70.5 54 72 56.8 C73.5 54 76 52 79.5 52 C84.2 52 89 55.5 89 61.5 C89 72.5 72 84 72 84 Z" fill="url(#ruby)" stroke="url(#gold)" stroke-width="1.2" />
+  </g>
 </svg>
