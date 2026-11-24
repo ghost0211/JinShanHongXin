@@ -5,8 +5,9 @@ import {
   type ConnectionStatus,
 } from '../net/wsClient.js';
 import type { MatchHistoryRow, SavedSession } from '../hooks/useGameClient.js';
-import { RulesModal } from './RulesModal.js';
+import { TABLE_SKIN_OPTIONS, type TableSkin } from '../utils/settings.js';
 import { AuthModal } from './AuthModal.js';
+import { SuitGlyph } from './CardArt.js';
 
 interface LobbyScreenProps {
   connStatus: ConnectionStatus;
@@ -17,8 +18,8 @@ interface LobbyScreenProps {
   roomsList: RoomSummary[];
   historyList: MatchHistoryRow[];
   leaderboard: UserProfile[];
+  tableSkin: TableSkin;
   onSetPlayerName: (name: string) => void;
-  onUpdateServerUrl: (url: string) => void;
   onLogin: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   onRegister: (
     username: string,
@@ -39,6 +40,8 @@ interface LobbyScreenProps {
   onFetchRooms: () => void;
   onFetchHistory: () => void;
   onFetchLeaderboard: () => void;
+  onOpenSettings: () => void;
+  onOpenRules: () => void;
 }
 
 export const LobbyScreen: React.FC<LobbyScreenProps> = ({
@@ -50,8 +53,8 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   roomsList,
   historyList,
   leaderboard,
+  tableSkin,
   onSetPlayerName,
-  onUpdateServerUrl,
   onLogin,
   onRegister,
   onUpdateNickname,
@@ -62,19 +65,14 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   onFetchRooms,
   onFetchHistory,
   onFetchLeaderboard,
+  onOpenSettings,
+  onOpenRules,
 }) => {
   const [mode, setMode] = useState<GameMode>('hongxin');
   const [joinCode, setJoinCode] = useState('');
-  const [showRules, setShowRules] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const [showServerModal, setShowServerModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showLeaderboardModal, setShowLeaderboardModal] = useState(false);
-  const [serverInput, setServerInput] = useState(serverUrl);
-
-  useEffect(() => {
-    setServerInput(serverUrl);
-  }, [serverUrl]);
 
   useEffect(() => {
     if (connStatus === 'connected') {
@@ -82,280 +80,319 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
     }
   }, [connStatus, onFetchRooms]);
 
-  const statusBadge =
+  const statusMeta =
     connStatus === 'connected'
-      ? { text: '已连接', cls: 'pill-green' }
+      ? { text: '在线', dot: 'is-online', cls: 'pill-green' }
       : connStatus === 'connecting'
-        ? { text: '连接中...', cls: 'pill-gold' }
-        : { text: '未连接', cls: 'pill-red' };
+        ? { text: '连接中', dot: 'is-connecting', cls: 'pill-gold' }
+        : { text: '未连接', dot: 'is-offline', cls: 'pill-red' };
+
+  const skinLabel =
+    TABLE_SKIN_OPTIONS.find((s) => s.id === tableSkin)?.label ?? '经典翡翠';
+
+  const avatarChar = (currentUser?.nickname || playerName || '牌').trim().slice(0, 1);
 
   return (
-    <div className="lobby-wrap">
-      <div className="lobby-grid">
-        <div className="card-panel">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h1 className="lobby-title">金山打红心 · 打黑心</h1>
-            <span className={`pill ${statusBadge.cls}`}>{statusBadge.text}</span>
-          </div>
-          <p className="lobby-subtitle">
-            三副牌 162 张 · 手机/平板双排手牌 · 支持局域网联机与单人机器人调试
-          </p>
+    <div className="lobby-shell">
+      <div className="lobby-bg-ornament" aria-hidden="true" />
 
-          {/* User Account Bar */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 8,
-              padding: '7px 10px',
-              marginBottom: 10,
-              borderRadius: 10,
-              background: currentUser
-                ? 'rgba(39, 164, 116, 0.16)'
-                : 'rgba(255, 255, 255, 0.06)',
-              border: currentUser
-                ? '1px solid rgba(111, 227, 181, 0.45)'
-                : '1px solid rgba(255, 255, 255, 0.14)',
-              fontSize: 12,
-            }}
+      {/* Top Brand & Navigation Bar */}
+      <header className="lobby-topbar">
+        <div className="lobby-brand">
+          <img
+            src="./icon-192.png"
+            alt="金山打红心"
+            className="lobby-brand-icon"
+          />
+          <div className="lobby-brand-text">
+            <div className="lobby-brand-title-row">
+              <h1 className="lobby-title">金山打红心</h1>
+              <span className={`pill lobby-conn-pill ${statusMeta.cls}`}>
+                <span className={`conn-dot ${statusMeta.dot}`} />
+                {statusMeta.text}
+              </span>
+            </div>
+            <span className="lobby-brand-sub">
+              海派三副牌 · 红心升级 &amp; 黑心叫分 · {skinLabel}
+            </span>
+          </div>
+        </div>
+
+        <div className="lobby-topbar-right">
+          <button
+            type="button"
+            className={`lobby-user-chip ${currentUser ? 'is-authed' : ''}`}
+            onClick={() => setShowAuthModal(true)}
+            title={currentUser ? '点击管理账号或修改昵称' : '点击登录或邀请码注册'}
           >
-            {currentUser ? (
-              <div style={{ minWidth: 0 }}>
-                <strong style={{ color: '#a9f5d7' }}>{currentUser.nickname}</strong>{' '}
-                <span style={{ color: 'var(--text-muted)' }}>
-                  (@{currentUser.username}) · 红心 {currentUser.hongxinWins}/{currentUser.hongxinGames} · 黑心 {currentUser.heixinTotalScore}分
+            <span className="lobby-avatar">{avatarChar}</span>
+            <span className="lobby-user-meta">
+              <strong>{currentUser ? currentUser.nickname : playerName || '游客'}</strong>
+              <small>
+                {currentUser
+                  ? `红心 ${currentUser.hongxinWins}/${currentUser.hongxinGames} · 黑心 ${currentUser.heixinTotalScore}分`
+                  : '游客 · 点击登录'}
+              </small>
+            </span>
+          </button>
+
+          <nav className="lobby-nav-actions" aria-label="大厅功能">
+            <button
+              type="button"
+              className="btn btn-xs lobby-nav-btn"
+              onClick={() => {
+                onFetchLeaderboard();
+                setShowLeaderboardModal(true);
+              }}
+            >
+              排行榜
+            </button>
+            <button
+              type="button"
+              className="btn btn-xs lobby-nav-btn"
+              onClick={() => {
+                onFetchHistory();
+                setShowHistoryModal(true);
+              }}
+            >
+              战绩
+            </button>
+            <button
+              type="button"
+              className="btn btn-xs lobby-nav-btn"
+              onClick={onOpenRules}
+            >
+              规则
+            </button>
+            <button
+              type="button"
+              className="btn btn-xs btn-gold lobby-nav-btn"
+              onClick={onOpenSettings}
+            >
+              ⚙ 设置
+            </button>
+          </nav>
+        </div>
+      </header>
+
+      {/* Main Responsive Parlor Stage */}
+      <main className="lobby-wrap">
+        <div className="lobby-grid">
+          {/* Left Hero Column: Mode Picker & Launch Controls */}
+          <section className="card-panel lobby-hero-panel">
+            {isRunningInAndroidApk() && connStatus !== 'connected' && (
+              <div className="lobby-alert is-danger">
+                <span>
+                  未连上联机服务器（当前：{serverUrl || '127.0.0.1:3001'}），请前往设置填写主机地址
                 </span>
+                <button
+                  type="button"
+                  className="btn btn-gold btn-xs"
+                  onClick={onOpenSettings}
+                >
+                  去设置
+                </button>
               </div>
-            ) : (
-              <span style={{ color: 'var(--text-muted)' }}>
-                游客身份（登录账号可自动保存个人战绩与排名）
-              </span>
             )}
-            <button
-              type="button"
-              className={`btn btn-xs ${currentUser ? '' : 'btn-gold'}`}
-              onClick={() => setShowAuthModal(true)}
-            >
-              {currentUser ? '账号 / 改名' : '登录 / 注册'}
-            </button>
-          </div>
 
-          {isRunningInAndroidApk() && connStatus !== 'connected' && (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 8,
-                padding: '8px 10px',
-                marginBottom: 10,
-                borderRadius: 10,
-                background: 'rgba(211, 40, 54, 0.2)',
-                border: '1px solid rgba(255, 118, 130, 0.5)',
-                fontSize: 12,
-              }}
-            >
-              <span>
-                安卓客户端未连上服务器（当前：{serverUrl || '127.0.0.1:3001'}），请填写局域网服务端 IP
-              </span>
-              <button
-                type="button"
-                className="btn btn-gold btn-xs"
-                onClick={() => setShowServerModal(true)}
-              >
-                配置服务器
-              </button>
-            </div>
-          )}
-
-          {savedSession && (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 8,
-                padding: '8px 10px',
-                marginBottom: 10,
-                borderRadius: 10,
-                background: 'rgba(244, 201, 107, 0.16)',
-                border: '1px solid var(--gold)',
-                fontSize: 12,
-              }}
-            >
-              <span>检测到未结束对局（房号 {savedSession.roomId}）</span>
-              <button
-                type="button"
-                className="btn btn-gold btn-xs"
-                onClick={onReconnectSaved}
-                disabled={connStatus !== 'connected'}
-              >
-                断线重连
-              </button>
-            </div>
-          )}
-
-          <div className="mode-tabs">
-            <button
-              type="button"
-              className={`mode-card ${mode === 'hongxin' ? 'is-active' : ''}`}
-              onClick={() => setMode('hongxin')}
-            >
-              <h4>金山打红心（2打2）</h4>
-              <p>2→A 升级 · 21张比牌反主 · 120及格 · 40/60跳级</p>
-            </button>
-            <button
-              type="button"
-              className={`mode-card ${mode === 'heixin' ? 'is-active' : ''}`}
-              onClick={() => setMode('heixin')}
-            >
-              <h4>金山打黑心（1打3）</h4>
-              <p>固定打10 · 100~300叫分 · 禁埋10 · 零和计分</p>
-            </button>
-          </div>
-
-          {!currentUser && (
-            <div className="field-row">
-              <span style={{ fontSize: 13, color: 'var(--text-muted)', flexShrink: 0 }}>
-                游客昵称
-              </span>
-              <input
-                className="input-box"
-                value={playerName}
-                maxLength={12}
-                onChange={(e) => onSetPlayerName(e.target.value)}
-                placeholder="输入昵称"
-              />
-            </div>
-          )}
-
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-            <button
-              type="button"
-              className="btn btn-gold btn-lg"
-              style={{ flex: 1 }}
-              disabled={connStatus !== 'connected'}
-              onClick={() =>
-                onCreateRoom({ mode, debugMode: false, fillBots: false })
-              }
-            >
-              创建好友房
-            </button>
-            <button
-              type="button"
-              className="btn btn-emerald btn-lg"
-              style={{ flex: 1 }}
-              disabled={connStatus !== 'connected'}
-              onClick={() =>
-                onCreateRoom({
-                  mode,
-                  debugMode: true,
-                  fillBots: true,
-                  autoStart: true,
-                })
-              }
-            >
-              单人调试开局 (+3机器人)
-            </button>
-          </div>
-
-          <div className="field-row" style={{ marginBottom: 0 }}>
-            <input
-              className="input-box"
-              value={joinCode}
-              maxLength={6}
-              inputMode="numeric"
-              onChange={(e) => setJoinCode(e.target.value.replace(/\D/g, ''))}
-              placeholder="输入 6 位房间号加入"
-            />
-            <button
-              type="button"
-              className="btn btn-lg"
-              disabled={connStatus !== 'connected' || joinCode.length !== 6}
-              onClick={() => onJoinRoom(joinCode)}
-            >
-              加入房间
-            </button>
-          </div>
-        </div>
-
-        <div className="card-panel" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-            <strong style={{ color: 'var(--gold-strong)', fontSize: 15 }}>
-              在线房间列表
-            </strong>
-            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-              <button type="button" className="btn btn-xs" onClick={onFetchRooms}>
-                刷新
-              </button>
-              <button
-                type="button"
-                className="btn btn-xs"
-                onClick={() => {
-                  onFetchLeaderboard();
-                  setShowLeaderboardModal(true);
-                }}
-              >
-                排行榜
-              </button>
-              <button
-                type="button"
-                className="btn btn-xs"
-                onClick={() => {
-                  onFetchHistory();
-                  setShowHistoryModal(true);
-                }}
-              >
-                战绩
-              </button>
-              <button type="button" className="btn btn-xs" onClick={() => setShowRules(true)}>
-                规则
-              </button>
-              <button type="button" className="btn btn-xs" onClick={() => setShowServerModal(true)}>
-                服务器
-              </button>
-            </div>
-          </div>
-
-          <div className="room-list">
-            {roomsList.length === 0 ? (
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '16px 6px', textAlign: 'center' }}>
-                当前暂无等待中的房间，点击左侧“创建好友房”或“单人调试开局”。
+            {savedSession && (
+              <div className="lobby-alert is-gold">
+                <span>
+                  检测到未结束牌局（房号 <strong>{savedSession.roomId}</strong>），可随时回到牌桌
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-gold btn-xs"
+                  onClick={onReconnectSaved}
+                  disabled={connStatus !== 'connected'}
+                >
+                  断线重连
+                </button>
               </div>
-            ) : (
-              roomsList.map((r) => {
-                const occupiedCount = r.seats.filter((s) => s.occupied).length;
-                return (
-                  <div key={r.roomId} className="room-list-item">
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 700 }}>
-                        房号 {r.roomId}{' '}
-                        <span className="pill pill-gold">
-                          {r.mode === 'hongxin' ? '打红心' : '打黑心'}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                        {r.status === 'WAITING' ? '等待开局' : r.status === 'IN_GAME' ? '对局中' : '已结束'} · {occupiedCount}/4 座
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      className="btn btn-xs btn-gold"
-                      disabled={r.status !== 'WAITING' || connStatus !== 'connected'}
-                      onClick={() => onJoinRoom(r.roomId)}
-                    >
-                      加入
-                    </button>
+            )}
+
+            <div className="lobby-section-label">
+              <span>选择玩法模式</span>
+              <span className="lobby-section-hint">三副牌 162 张 · 完整 510K 规则</span>
+            </div>
+
+            <div className="mode-tabs">
+              <button
+                type="button"
+                className={`mode-card is-hongxin ${mode === 'hongxin' ? 'is-active' : ''}`}
+                onClick={() => setMode('hongxin')}
+              >
+                <div className="mode-card-emblem is-red">
+                  <span className="mode-card-rank">5</span>
+                  <SuitGlyph suit="H" className="mode-card-suit" />
+                </div>
+                <div className="mode-card-body">
+                  <div className="mode-card-head">
+                    <h4>金山打红心</h4>
+                    <span className="pill pill-red">2 打 2</span>
                   </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-      </div>
+                  <p>2→A 升级 · 21 张比牌反主 · 120 及格 · 40/60 跳级</p>
+                </div>
+                {mode === 'hongxin' && <span className="mode-card-check">✓</span>}
+              </button>
 
-      {showRules && <RulesModal onClose={() => setShowRules(false)} />}
+              <button
+                type="button"
+                className={`mode-card is-heixin ${mode === 'heixin' ? 'is-active' : ''}`}
+                onClick={() => setMode('heixin')}
+              >
+                <div className="mode-card-emblem is-black">
+                  <span className="mode-card-rank is-ten">10</span>
+                  <SuitGlyph suit="S" className="mode-card-suit" />
+                </div>
+                <div className="mode-card-body">
+                  <div className="mode-card-head">
+                    <h4>金山打黑心</h4>
+                    <span className="pill pill-gold">1 打 3</span>
+                  </div>
+                  <p>固定打 10 · 100~300 叫分抢庄 · 禁埋 10 · 零和积分</p>
+                </div>
+                {mode === 'heixin' && <span className="mode-card-check">✓</span>}
+              </button>
+            </div>
+
+            {!currentUser && (
+              <div className="lobby-guest-row">
+                <label className="lobby-guest-label" htmlFor="guest-name-input">
+                  游客昵称
+                </label>
+                <input
+                  id="guest-name-input"
+                  className="input-box"
+                  value={playerName}
+                  maxLength={12}
+                  onChange={(e) => onSetPlayerName(e.target.value)}
+                  placeholder="输入牌桌显示昵称"
+                />
+              </div>
+            )}
+
+            <div className="lobby-cta-grid">
+              <button
+                type="button"
+                className="btn btn-gold btn-lg lobby-cta-primary"
+                disabled={connStatus !== 'connected'}
+                onClick={() =>
+                  onCreateRoom({
+                    mode,
+                    debugMode: true,
+                    fillBots: true,
+                    autoStart: true,
+                  })
+                }
+              >
+                <span className="cta-main">✦ 快速单人开局</span>
+                <span className="cta-sub">配 3 名智能机器人 · 支持上帝视角</span>
+              </button>
+
+              <button
+                type="button"
+                className="btn btn-emerald btn-lg lobby-cta-secondary"
+                disabled={connStatus !== 'connected'}
+                onClick={() =>
+                  onCreateRoom({ mode, debugMode: false, fillBots: false })
+                }
+              >
+                <span className="cta-main">创建好友房</span>
+                <span className="cta-sub">生成 6 位房号 · 邀请牌友联机</span>
+              </button>
+            </div>
+
+            <div className="lobby-join-bar">
+              <input
+                className="input-box lobby-join-input"
+                value={joinCode}
+                maxLength={6}
+                inputMode="numeric"
+                onChange={(e) => setJoinCode(e.target.value.replace(/\D/g, ''))}
+                placeholder="输入 6 位房间号直接加入..."
+              />
+              <button
+                type="button"
+                className="btn btn-gold"
+                disabled={connStatus !== 'connected' || joinCode.length !== 6}
+                onClick={() => onJoinRoom(joinCode)}
+              >
+                加入房间
+              </button>
+            </div>
+          </section>
+
+          {/* Right Column: Live Rooms Parlor */}
+          <section className="card-panel lobby-rooms-panel">
+            <div className="lobby-rooms-head">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <strong className="lobby-panel-title">在线牌桌</strong>
+                <span className="pill">{roomsList.length} 桌</span>
+              </div>
+              <button type="button" className="btn btn-xs" onClick={onFetchRooms}>
+                ↻ 刷新
+              </button>
+            </div>
+
+            <div className="room-list">
+              {roomsList.length === 0 ? (
+                <div className="lobby-rooms-empty">
+                  <div className="empty-cards-icon" aria-hidden="true">
+                    <span className="empty-card c1">♠</span>
+                    <span className="empty-card c2">♥</span>
+                    <span className="empty-card c3">♦</span>
+                  </div>
+                  <strong>当前暂无等待中的牌桌</strong>
+                  <p>点左侧「快速单人开局」随时练手，或「创建好友房」邀牌友同桌。</p>
+                </div>
+              ) : (
+                roomsList.map((r) => {
+                  const occupiedCount = r.seats.filter((s) => s.occupied).length;
+                  const canJoin = r.status === 'WAITING' && connStatus === 'connected';
+                  return (
+                    <div key={r.roomId} className="room-list-item">
+                      <div className="room-item-main">
+                        <div className="room-item-title">
+                          <span className="room-code-tag">#{r.roomId}</span>
+                          <span className={`pill ${r.mode === 'hongxin' ? 'pill-red' : 'pill-gold'}`}>
+                            {r.mode === 'hongxin' ? '打红心' : '打黑心'}
+                          </span>
+                          <span className="room-status-text">
+                            {r.status === 'WAITING'
+                              ? '等待开局'
+                              : r.status === 'IN_GAME'
+                                ? '对局中'
+                                : '已结束'}
+                          </span>
+                        </div>
+                        <div className="room-seat-dots">
+                          {r.seats.map((s) => (
+                            <span
+                              key={s.seat}
+                              className={`seat-dot ${s.occupied ? (s.isBot ? 'is-bot' : 'is-human') : ''}`}
+                              title={s.occupied ? s.name : '空位'}
+                            />
+                          ))}
+                          <span className="room-seat-count">{occupiedCount}/4 座</span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-gold"
+                        disabled={!canJoin}
+                        onClick={() => onJoinRoom(r.roomId)}
+                      >
+                        {r.status === 'WAITING' ? '入座' : '进行中'}
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
+        </div>
+      </main>
 
       {showAuthModal && (
         <AuthModal
@@ -366,41 +403,6 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           onLogout={onLogout}
           onClose={() => setShowAuthModal(false)}
         />
-      )}
-
-      {showServerModal && (
-        <div className="modal-backdrop" onClick={() => setShowServerModal(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>服务器地址设置</h3>
-              <button type="button" className="btn btn-xs" onClick={() => setShowServerModal(false)}>
-                关闭
-              </button>
-            </div>
-            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 0 }}>
-              留空则自动连接当前网页同源服务器；安卓 APK 或跨设备连接局域网主机时，填写例如{' '}
-              <code>http://192.168.1.88:3001</code>
-            </p>
-            <div className="field-row">
-              <input
-                className="input-box"
-                value={serverInput}
-                onChange={(e) => setServerInput(e.target.value)}
-                placeholder="例如 http://192.168.1.88:3001（留空默认同源）"
-              />
-              <button
-                type="button"
-                className="btn btn-gold"
-                onClick={() => {
-                  onUpdateServerUrl(serverInput);
-                  setShowServerModal(false);
-                }}
-              >
-                保存并重连
-              </button>
-            </div>
-          </div>
-        </div>
       )}
 
       {showLeaderboardModal && (
@@ -448,7 +450,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         <div className="modal-backdrop" onClick={() => setShowHistoryModal(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3>近期历史战绩（SQLite）</h3>
+              <h3>近期历史战绩</h3>
               <button type="button" className="btn btn-xs" onClick={() => setShowHistoryModal(false)}>
                 关闭
               </button>

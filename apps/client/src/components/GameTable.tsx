@@ -30,18 +30,17 @@ import { HandArea } from './HandArea.js';
 import { BottomDeckStack, OpponentHandFan } from './OpponentHandFan.js';
 import { PlayingCard } from './PlayingCard.js';
 import { SettlementModal } from './SettlementModal.js';
-import { RulesModal } from './RulesModal.js';
 import { LastTrickModal } from './LastTrickModal.js';
 import { ScoreDetailModal } from './ScoreDetailModal.js';
 import { DebugDrawer } from './DebugDrawer.js';
-import { readTableSkin, saveTableSkin, TableSkinPicker } from './TableSkinPicker.js';
+import type { AppSettings } from '../utils/settings.js';
 import '../styles/table-skins.css';
 
 interface GameTableProps {
   room: RoomSummary;
   view: PlayerView;
-  muted: boolean;
-  onToggleMute: () => void;
+  settings: AppSettings;
+  onOpenSettings: () => void;
   onSendAction: (action: GameAction) => void;
   onSetAutoBot: (enabled: boolean) => void;
   onToggleDebugOpenHands: (enabled: boolean) => void;
@@ -51,18 +50,16 @@ interface GameTableProps {
 export const GameTable: React.FC<GameTableProps> = ({
   room,
   view,
-  muted,
-  onToggleMute,
+  settings,
+  onOpenSettings,
   onSendAction,
   onSetAutoBot,
   onToggleDebugOpenHands,
   onLeaveRoom,
 }) => {
-  const [tableSkin, setTableSkin] = useState(readTableSkin);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [hintedIds, setHintedIds] = useState<number[]>([]);
   const [hintIdx, setHintIdx] = useState(0);
-  const [showRules, setShowRules] = useState(false);
   const [showLastTrick, setShowLastTrick] = useState(false);
   const [showScoreDetail, setShowScoreDetail] = useState(false);
   const [showBottomModal, setShowBottomModal] = useState(false);
@@ -132,7 +129,7 @@ export const GameTable: React.FC<GameTableProps> = ({
       : null;
 
   useEffect(() => {
-    if (!turnAutoKey) {
+    if (!turnAutoKey || !settings.autoSelectMandatory) {
       lastAutoSelectKeyRef.current = null;
       setAutoSelectNote(null);
       return;
@@ -149,7 +146,7 @@ export const GameTable: React.FC<GameTableProps> = ({
     } else {
       setAutoSelectNote(null);
     }
-  }, [turnAutoKey, view]);
+  }, [turnAutoKey, view, settings.autoSelectMandatory]);
 
   const handleApplySelection = (ids: number[], mode: 'select' | 'deselect') => {
     setAutoSelectNote(null);
@@ -491,9 +488,9 @@ export const GameTable: React.FC<GameTableProps> = ({
   );
 
   return (
-    <div className="table-root" data-table-skin={tableSkin}>
+    <div className="table-root" data-table-skin={settings.tableSkin}>
       {/* Top HUD */}
-      <div className="table-hud-shell">
+      <div className="table-hud-shell is-unified">
         <div className="table-hud">
           <div className="hud-group hud-match">
             <span className="pill pill-gold">
@@ -578,9 +575,6 @@ export const GameTable: React.FC<GameTableProps> = ({
             >
               {meRoomSeat.autoBot ? '取消托管' : '托管'}
             </button>
-            <button type="button" className="btn btn-xs" onClick={onToggleMute}>
-              {muted ? '静音' : '音效'}
-            </button>
             {room.debugMode && (
               <button
                 type="button"
@@ -594,21 +588,14 @@ export const GameTable: React.FC<GameTableProps> = ({
                 上帝视角
               </button>
             )}
-            <button type="button" className="btn btn-xs" onClick={() => setShowRules(true)}>
-              规则
+            <button type="button" className="btn btn-xs" onClick={onOpenSettings}>
+              设置
             </button>
             <button type="button" className="btn btn-xs btn-crimson" onClick={onLeaveRoom}>
               退出
             </button>
           </div>
         </div>
-        <TableSkinPicker
-          value={tableSkin}
-          onChange={(next) => {
-            setTableSkin(next);
-            saveTableSkin(next);
-          }}
-        />
       </div>
 
       {/* Arena: 3 Opponents (with card backs) + Center Trick Mat */}
@@ -1024,6 +1011,9 @@ export const GameTable: React.FC<GameTableProps> = ({
         phase={view.phase}
         selectedIds={selectedIds}
         hintedIds={hintedIds}
+        defaultLayout={settings.handLayout}
+        showCardBadges={settings.showCardBadges}
+        showPointPips={settings.showPointPips}
         onApplySelection={handleApplySelection}
       />
 
@@ -1035,7 +1025,6 @@ export const GameTable: React.FC<GameTableProps> = ({
         />
       )}
 
-      {showRules && <RulesModal onClose={() => setShowRules(false)} />}
       {showScoreDetail && (
         <ScoreDetailModal view={view} onClose={() => setShowScoreDetail(false)} />
       )}

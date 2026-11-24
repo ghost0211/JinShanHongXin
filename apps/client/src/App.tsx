@@ -1,12 +1,46 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useGameClient } from './hooks/useGameClient.js';
 import { LobbyScreen } from './components/LobbyScreen.js';
 import { WaitingRoom } from './components/WaitingRoom.js';
 import { GameTable } from './components/GameTable.js';
+import { SplashIntro } from './components/SplashIntro.js';
+import { SettingsModal } from './components/SettingsModal.js';
+import { RulesModal } from './components/RulesModal.js';
+import {
+  loadAppSettings,
+  saveAppSettings,
+  type AppSettings,
+} from './utils/settings.js';
+import { soundFX } from './utils/sound.js';
 
 export const App: React.FC = () => {
   const client = useGameClient();
-  const [hidePortraitBanner, setHidePortraitBanner] = useState(false);
+  const [settings, setSettings] = useState<AppSettings>(() => {
+    const initial = loadAppSettings();
+    soundFX.setVolume(initial.soundVolume);
+    soundFX.setHapticsEnabled(initial.hapticsEnabled);
+    soundFX.setMuted(!initial.soundEnabled);
+    return initial;
+  });
+  const [showSplash, setShowSplash] = useState<boolean>(() => settings.splashEnabled);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showRules, setShowRules] = useState(false);
+
+  const updateSettings = useCallback((patch: Partial<AppSettings>) => {
+    setSettings((prev) => {
+      const next: AppSettings = { ...prev, ...patch };
+      saveAppSettings(next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    soundFX.setVolume(settings.soundVolume);
+    soundFX.setHapticsEnabled(settings.hapticsEnabled);
+    if (soundFX.isMuted() === settings.soundEnabled) {
+      soundFX.setMuted(!settings.soundEnabled);
+    }
+  }, [settings.soundEnabled, settings.soundVolume, settings.hapticsEnabled]);
 
   const handleCopyRoomId = async (roomId: string) => {
     try {
@@ -18,14 +52,21 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="app-shell">
-      {!hidePortraitBanner && (
+    <div className="app-shell" data-table-skin={settings.tableSkin}>
+      {showSplash && (
+        <SplashIntro
+          skin={settings.tableSkin}
+          onFinish={() => setShowSplash(false)}
+        />
+      )}
+
+      {!settings.hidePortraitBanner && (
         <div className="portrait-banner">
           <span>建议横屏游玩，38~48 张手牌体验最佳</span>
           <button
             type="button"
             className="btn btn-xs"
-            onClick={() => setHidePortraitBanner(true)}
+            onClick={() => updateSettings({ hidePortraitBanner: true })}
           >
             知道了
           </button>
@@ -53,8 +94,8 @@ export const App: React.FC = () => {
           roomsList={client.roomsList}
           historyList={client.historyList}
           leaderboard={client.leaderboard}
+          tableSkin={settings.tableSkin}
           onSetPlayerName={client.setPlayerName}
-          onUpdateServerUrl={client.updateServerUrl}
           onLogin={client.loginUser}
           onRegister={client.registerUser}
           onUpdateNickname={client.updateUserNickname}
@@ -65,6 +106,8 @@ export const App: React.FC = () => {
           onFetchRooms={client.fetchRooms}
           onFetchHistory={client.fetchHistory}
           onFetchLeaderboard={client.fetchLeaderboard}
+          onOpenSettings={() => setShowSettings(true)}
+          onOpenRules={() => setShowRules(true)}
         />
       )}
 
@@ -86,14 +129,30 @@ export const App: React.FC = () => {
         <GameTable
           room={client.room}
           view={client.view}
-          muted={client.muted}
-          onToggleMute={client.toggleMute}
+          settings={settings}
+          onOpenSettings={() => setShowSettings(true)}
           onSendAction={client.sendAction}
           onSetAutoBot={client.setAutoBot}
           onToggleDebugOpenHands={client.toggleDebugOpenHands}
           onLeaveRoom={client.leaveRoom}
         />
       )}
+
+      {showSettings && (
+        <SettingsModal
+          settings={settings}
+          serverUrl={client.serverUrl}
+          connStatus={client.connStatus}
+          inGame={Boolean(client.room)}
+          onUpdateSettings={updateSettings}
+          onUpdateServerUrl={client.updateServerUrl}
+          onReplaySplash={() => setShowSplash(true)}
+          onOpenRules={() => setShowRules(true)}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
+
+      {showRules && <RulesModal onClose={() => setShowRules(false)} />}
     </div>
   );
 };

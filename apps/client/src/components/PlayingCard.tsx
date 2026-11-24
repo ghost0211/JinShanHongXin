@@ -27,6 +27,8 @@ export interface PlayingCardProps {
   selected?: boolean;
   hinted?: boolean;
   interactive?: boolean;
+  showBadges?: boolean;
+  showPointPip?: boolean;
   style?: React.CSSProperties;
   onClick?: () => void;
 }
@@ -43,6 +45,8 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({
   selected = false,
   hinted = false,
   interactive = false,
+  showBadges = true,
+  showPointPip = true,
   style,
   onClick,
 }) => {
@@ -149,7 +153,7 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({
       {renderCornerIndex('pcard-corner-tl')}
 
       {/* Point indicator placed in the always-visible left strip under corner suit */}
-      {pts > 0 && (
+      {showPointPip && pts > 0 && (
         <span className="pcard-pts-pip" title={`${pts}分`} />
       )}
 
@@ -163,7 +167,7 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({
       {size === 'md' && forbiddenBury && (
         <span className="pcard-badge badge-ban">禁埋</span>
       )}
-      {size === 'md' && !forbiddenBury && roleBadge && (
+      {size === 'md' && showBadges && !forbiddenBury && roleBadge && (
         <span
           className={`pcard-badge ${
             roleBadge.kind === 'red5' ? 'badge-red5' : ''

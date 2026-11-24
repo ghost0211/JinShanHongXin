@@ -18,6 +18,11 @@
   border-bottom: 1px solid var(--skin-line);
 }
 
+.table-root .table-hud-shell.is-unified {
+  grid-template-columns: minmax(0, 1fr);
+  padding: 0;
+}
+
 .table-root .table-hud-shell > .table-hud {
   background: transparent;
   border: 0;
@@ -67,17 +72,19 @@
   outline-offset: 1px;
 }
 
-/* Shared skin bindings: no card geometry, order, hit targets or state changes. */
-.table-root[data-table-skin="night-blue"],
-.table-root[data-table-skin="cinnabar"] {
+/* Shared skin bindings across whole app shell, splash, lobby, waiting room, and table. */
+:is(.app-shell, .table-root, .splash-overlay)[data-table-skin="night-blue"],
+:is(.app-shell, .table-root, .splash-overlay)[data-table-skin="cinnabar"] {
   color: var(--text-light);
   background: radial-gradient(ellipse at 50% 35%, var(--felt-center), var(--felt-mid) 56%, var(--felt-edge) 100%);
 }
 
-.table-root[data-table-skin="night-blue"] {
+:is(.app-shell, .table-root, .splash-overlay)[data-table-skin="night-blue"] {
   --felt-center: #193d61;
   --felt-mid: #10243f;
   --felt-edge: #080f24;
+  --panel-bg: rgba(14, 29, 53, 0.86);
+  --panel-border: rgba(145, 222, 244, 0.3);
   --skin-hud: #0c172d;
   --skin-surface: #1b3553;
   --skin-line: #526f91;
@@ -103,10 +110,12 @@
   --gold-strong: #caf5ff;
 }
 
-.table-root[data-table-skin="cinnabar"] {
+:is(.app-shell, .table-root, .splash-overlay)[data-table-skin="cinnabar"] {
   --felt-center: #652d30;
   --felt-mid: #421b26;
   --felt-edge: #210e17;
+  --panel-bg: rgba(46, 18, 28, 0.88);
+  --panel-border: rgba(240, 197, 122, 0.34);
   --skin-hud: #2a111b;
   --skin-surface: #4e2530;
   --skin-line: #98614e;
@@ -130,6 +139,15 @@
   --text-muted: #f1cdbd;
   --gold: #f0c57a;
   --gold-strong: #ffe4a5;
+}
+
+.app-shell[data-table-skin]:not([data-table-skin="classic"]) :is(.lobby-topbar, .modal-card) {
+  background: var(--skin-panel);
+  border-color: var(--skin-line);
+}
+
+.app-shell[data-table-skin]:not([data-table-skin="classic"]) .lobby-topbar {
+  background: var(--skin-hud);
 }
 
 .table-root[data-table-skin]:not([data-table-skin="classic"]) .table-arena {
