@@ -37,7 +37,7 @@ export const RulesModal: React.FC<RulesModalProps> = ({ onClose }) => {
           <div>
             <strong>3. 金山打黑心（1 打 3 · 叫分）</strong>
             <ul style={{ margin: '4px 0', paddingLeft: 18 }}>
-              <li>固定打 10 不升级，副参谋与打红心一致（同色 3），100~300 叫分抢庄，最高者坐庄并自选主花色，<strong>严禁把 10 埋入底牌</strong>。</li>
+              <li>固定打 10 不升级，副参谋与打红心一致（同色 3），100~300 叫分抢庄，最高者坐庄并自选主花色，<strong>不限制埋底牌型（允许埋任意牌）</strong>。</li>
               <li>庄家抓分，末轮闲家赢墩触发抠底（仅算底牌 5/10/K ×2），庄家最终得分满叫分即庄家获胜，否则闲家获胜。</li>
             </ul>
           </div>

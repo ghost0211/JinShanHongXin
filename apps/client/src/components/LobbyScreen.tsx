@@ -386,16 +386,19 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                   className={`mode-card is-hongxin ${mode === 'hongxin' ? 'is-active' : ''}`}
                   onClick={() => setMode('hongxin')}
                 >
-                  <div className="mode-card-emblem is-red">
-                    <span className="mode-card-rank">5</span>
-                    <SuitGlyph suit="H" className="mode-card-suit" />
+                  <span className="mode-card-watermark is-red" aria-hidden="true">
+                    <SuitGlyph suit="H" className="mode-card-watermark-svg" />
+                  </span>
+                  <div className="mode-card-fan" aria-hidden="true">
+                    <span className="mode-card-fan-back is-red" />
+                    <div className="mode-card-emblem is-red">
+                      <span className="mode-card-rank">5</span>
+                      <SuitGlyph suit="H" className="mode-card-suit" />
+                    </div>
                   </div>
                   <div className="mode-card-body">
-                    <div className="mode-card-head">
-                      <h4>金山打红心</h4>
-                      <span className="pill pill-red">2 打 2</span>
-                    </div>
-                    <p>2→A 升级 · 21 张比牌反主 · 120 及格 · 40/60 跳级</p>
+                    <h4>金山打红心</h4>
+                    <span className="mode-vs-badge is-hongxin">2V2</span>
                   </div>
                   {mode === 'hongxin' && <span className="mode-card-check">✓</span>}
                 </button>
@@ -405,16 +408,19 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                   className={`mode-card is-heixin ${mode === 'heixin' ? 'is-active' : ''}`}
                   onClick={() => setMode('heixin')}
                 >
-                  <div className="mode-card-emblem is-black">
-                    <span className="mode-card-rank is-ten">10</span>
-                    <SuitGlyph suit="S" className="mode-card-suit" />
+                  <span className="mode-card-watermark is-black" aria-hidden="true">
+                    <SuitGlyph suit="S" className="mode-card-watermark-svg" />
+                  </span>
+                  <div className="mode-card-fan" aria-hidden="true">
+                    <span className="mode-card-fan-back is-black" />
+                    <div className="mode-card-emblem is-black">
+                      <span className="mode-card-rank is-ten">10</span>
+                      <SuitGlyph suit="S" className="mode-card-suit" />
+                    </div>
                   </div>
                   <div className="mode-card-body">
-                    <div className="mode-card-head">
-                      <h4>金山打黑心</h4>
-                      <span className="pill pill-gold">1 打 3</span>
-                    </div>
-                    <p>固定打 10 · 100~300 叫分抢庄 · 禁埋 10 · 零和积分</p>
+                    <h4>金山打黑心</h4>
+                    <span className="mode-vs-badge is-heixin">1V3</span>
                   </div>
                   {mode === 'heixin' && <span className="mode-card-check">✓</span>}
                 </button>

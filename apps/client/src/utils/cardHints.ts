@@ -254,11 +254,6 @@ export function previewSelection(
   selectedIds: readonly number[],
 ): SelectionPreview {
   if (view.phase === 'BURYING') {
-    const selectedSet = new Set(selectedIds);
-    const chosen = view.myHand.filter((c) => selectedSet.has(c.id));
-    if (view.mode === 'heixin' && chosen.some((c) => c.rank === '10')) {
-      return { valid: false, error: '打黑心不可将 10 埋入底牌' };
-    }
     if (selectedIds.length !== 10) {
       return {
         valid: false,
