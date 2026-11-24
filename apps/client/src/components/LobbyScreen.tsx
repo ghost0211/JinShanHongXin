@@ -261,52 +261,53 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
 
       {/* Main Responsive Parlor Stage */}
       <main className="lobby-wrap">
-        {/* 3-Way Play Mode Switcher */}
-        <div className="play-mode-bar" role="tablist" aria-label="联网模式切换">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={playMode === 'offline'}
-            className={`play-mode-tab ${playMode === 'offline' ? 'is-active' : ''}`}
-            onClick={() => switchPlayMode('offline')}
-          >
-            <span className="play-mode-icon">🤖</span>
-            <span className="play-mode-copy">
-              <strong>单机人机</strong>
-              <small>纯离线 · 无需网络</small>
-            </span>
-          </button>
+        <div className="lobby-stage">
+          {/* Left Vertical Play-Mode Tab Rail */}
+          <aside className="play-mode-rail" role="tablist" aria-label="联网模式切换">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={playMode === 'offline'}
+              className={`play-mode-tab ${playMode === 'offline' ? 'is-active' : ''}`}
+              onClick={() => switchPlayMode('offline')}
+            >
+              <span className="play-mode-icon">🤖</span>
+              <span className="play-mode-copy">
+                <strong>单机人机</strong>
+                <small>纯离线</small>
+              </span>
+            </button>
 
-          <button
-            type="button"
-            role="tab"
-            aria-selected={playMode === 'lan'}
-            className={`play-mode-tab ${playMode === 'lan' ? 'is-active' : ''}`}
-            onClick={() => switchPlayMode('lan')}
-          >
-            <span className="play-mode-icon">📡</span>
-            <span className="play-mode-copy">
-              <strong>局域网面联</strong>
-              <small>同 Wi-Fi / 热点直连</small>
-            </span>
-          </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={playMode === 'lan'}
+              className={`play-mode-tab ${playMode === 'lan' ? 'is-active' : ''}`}
+              onClick={() => switchPlayMode('lan')}
+            >
+              <span className="play-mode-icon">📡</span>
+              <span className="play-mode-copy">
+                <strong>局域网</strong>
+                <small>同网直连</small>
+              </span>
+            </button>
 
-          <button
-            type="button"
-            role="tab"
-            aria-selected={playMode === 'online'}
-            className={`play-mode-tab ${playMode === 'online' ? 'is-active' : ''}`}
-            onClick={() => switchPlayMode('online')}
-          >
-            <span className="play-mode-icon">🌐</span>
-            <span className="play-mode-copy">
-              <strong>在线联机</strong>
-              <small>服务器房间与排行</small>
-            </span>
-          </button>
-        </div>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={playMode === 'online'}
+              className={`play-mode-tab ${playMode === 'online' ? 'is-active' : ''}`}
+              onClick={() => switchPlayMode('online')}
+            >
+              <span className="play-mode-icon">🌐</span>
+              <span className="play-mode-copy">
+                <strong>在线联机</strong>
+                <small>服务器</small>
+              </span>
+            </button>
+          </aside>
 
-        <div className="lobby-grid">
+          <div className="lobby-grid">
           {/* Left Hero Column: Mode Picker & Launch Controls */}
           <section className="card-panel lobby-hero-panel">
             {playMode === 'online' &&
@@ -852,6 +853,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
               </div>
             </section>
           )}
+          </div>
         </div>
       </main>
 
