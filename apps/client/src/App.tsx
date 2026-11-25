@@ -39,27 +39,12 @@ export const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [showRules, setShowRules] = useState(false);
 
-  const updateSettings = useCallback(
-    (patch: Partial<AppSettings>) => {
-      const next: AppSettings = { ...settingsRef.current, ...patch };
-      settingsRef.current = next;
-      setSettings(next);
-      saveAppSettings(next);
-      const isHost = Boolean(
-        client.room && client.session && client.room.hostSeat === client.session.seat,
-      );
-      if (
-        isHost &&
-        (patch.allyBotDifficulty !== undefined || patch.opponentBotDifficulty !== undefined)
-      ) {
-        client.setBotDifficulty(next.allyBotDifficulty, next.opponentBotDifficulty);
-      }
-      if (isHost && patch.dealSpeed !== undefined) {
-        client.setDealSpeed(next.dealSpeed);
-      }
-    },
-    [client.room, client.session, client.setBotDifficulty, client.setDealSpeed],
-  );
+  const updateSettings = useCallback((patch: Partial<AppSettings>) => {
+    const next: AppSettings = { ...settingsRef.current, ...patch };
+    settingsRef.current = next;
+    setSettings(next);
+    saveAppSettings(next);
+  }, []);
 
   useEffect(() => {
     soundFX.setVolume(settings.soundVolume);
@@ -141,6 +126,12 @@ export const App: React.FC = () => {
           historyList={client.historyList}
           leaderboard={client.leaderboard}
           tableSkin={settings.tableSkin}
+          defaultMatchSetup={{
+            dealSpeed: settings.dealSpeed,
+            allyBotDifficulty: settings.allyBotDifficulty,
+            opponentBotDifficulty: settings.opponentBotDifficulty,
+          }}
+          onSaveMatchSetupDefaults={(patch) => updateSettings(patch)}
           onSetPlayMode={client.setPlayMode}
           onStartLanHost={client.startLanHostRoom}
           onJoinDiscoveredLanHost={client.joinDiscoveredLanHost}
@@ -172,6 +163,9 @@ export const App: React.FC = () => {
           lanGuestCount={client.lanBridgeStatus.peerCount}
           onRefreshLanHost={client.refreshLanHostInfo}
           onSetMode={client.setRoomMode}
+          onSetDealSpeed={client.setDealSpeed}
+          onSetBotDifficulty={client.setBotDifficulty}
+          onSaveMatchSetupDefaults={(patch) => updateSettings(patch)}
           onSetSeatBot={client.setSeatBot}
           onSwapSeat={client.swapSeat}
           onSetReady={client.setReady}

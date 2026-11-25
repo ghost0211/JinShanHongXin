@@ -2,14 +2,10 @@ import React, { useEffect, useState } from 'react';
 import type { ConnectionStatus } from '../net/wsClient.js';
 import {
   BGM_TRACK_OPTIONS,
-  BOT_DIFFICULTY_OPTIONS,
-  DEAL_SPEED_OPTIONS,
   DEFAULT_APP_SETTINGS,
   TABLE_SKIN_OPTIONS,
   type AppSettings,
   type BgmTrackId,
-  type BotDifficulty,
-  type DealSpeed,
   type TableSkin,
 } from '../utils/settings.js';
 import { bgmPlayer } from '../utils/bgm.js';
@@ -60,8 +56,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const activeBgmTrack =
     BGM_TRACK_OPTIONS.find((t) => t.id === settings.bgmTrack) ?? BGM_TRACK_OPTIONS[0];
-  const activeDealSpeed =
-    DEAL_SPEED_OPTIONS.find((d) => d.id === settings.dealSpeed) ?? DEAL_SPEED_OPTIONS[4];
 
   const handleSelectSkin = (skin: TableSkin) => {
     soundFX.playTap();
@@ -344,38 +338,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </section>
 
-          {/* 出牌与发牌 */}
+          {/* 出牌辅助 */}
           <section className="set-group">
-            <h4 className="section-title">出牌与发牌</h4>
+            <h4 className="section-title">出牌辅助</h4>
             <div className="set-rows">
-              <div className="set-row is-stacked">
-                <span className="set-row-info">
-                  <span className="set-row-title">
-                    发牌速度
-                    <span className="set-row-value">{activeDealSpeed.label}</span>
-                  </span>
-                  <span className="set-row-desc">
-                    {activeDealSpeed.desc}（房主修改即时生效）
-                  </span>
-                </span>
-                <div className="segmented-control is-five" role="radiogroup" aria-label="发牌速度">
-                  {DEAL_SPEED_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      role="radio"
-                      aria-checked={settings.dealSpeed === opt.id}
-                      className={settings.dealSpeed === opt.id ? 'is-active' : ''}
-                      onClick={() => {
-                        soundFX.playTap();
-                        onUpdateSettings({ dealSpeed: opt.id as DealSpeed });
-                      }}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
               {renderToggleRow(
                 '必出牌自动预选',
                 '同门不足或跟主牌 510K 必出大主时自动帮你选中',
@@ -388,59 +354,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 settings.hidePortraitBanner,
                 (v) => onUpdateSettings({ hidePortraitBanner: v }),
               )}
-            </div>
-          </section>
-
-          {/* 机器人难度 */}
-          <section className="set-group is-wide">
-            <div className="set-group-head">
-              <h4 className="section-title">机器人难度</h4>
-              <span className="pill">低 · 中 · 强 可独立设置</span>
-            </div>
-            <div className="set-rows">
-              <div className="set-row">
-                <span className="set-row-info">
-                  <span className="set-row-title">队友机器人</span>
-                  <span className="set-row-desc">与你同队（含打黑心同阵营闲家）的机器人强度</span>
-                </span>
-                <div className="segmented-control">
-                  {BOT_DIFFICULTY_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      className={settings.allyBotDifficulty === opt.id ? 'is-active' : ''}
-                      onClick={() => {
-                        soundFX.playTap();
-                        onUpdateSettings({ allyBotDifficulty: opt.id as BotDifficulty });
-                      }}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="set-row">
-                <span className="set-row-info">
-                  <span className="set-row-title">对手机器人</span>
-                  <span className="set-row-desc">敌方阵营机器人强度（房主修改后对局内即时生效）</span>
-                </span>
-                <div className="segmented-control">
-                  {BOT_DIFFICULTY_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      className={settings.opponentBotDifficulty === opt.id ? 'is-active' : ''}
-                      onClick={() => {
-                        soundFX.playTap();
-                        onUpdateSettings({ opponentBotDifficulty: opt.id as BotDifficulty });
-                      }}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
             </div>
           </section>
 

@@ -1,11 +1,20 @@
 import React, { useMemo, useState } from 'react';
-import type { GameMode, RoomSeatInfo, RoomSummary, Seat } from '@jinshan/protocol';
+import type {
+  BotDifficulty,
+  DealSpeed,
+  GameMode,
+  RoomSeatInfo,
+  RoomSummary,
+  Seat,
+} from '@jinshan/protocol';
 import {
   buildLanJoinUrl,
   type LanHostStartResult,
 } from '../net/androidLan.js';
 import type { PlayMode } from '../hooks/useGameClient.js';
+import { BOT_DIFFICULTY_OPTIONS, DEAL_SPEED_OPTIONS } from '../utils/settings.js';
 import { Icon } from './Icons.js';
+import { MatchSetupModal } from './MatchSetupModal.js';
 import { QrCodeSvg } from './QrCodeSvg.js';
 
 interface WaitingRoomProps {
@@ -16,6 +25,13 @@ interface WaitingRoomProps {
   lanGuestCount?: number;
   onRefreshLanHost?: () => void;
   onSetMode: (mode: GameMode) => void;
+  onSetDealSpeed: (dealSpeed: DealSpeed) => void;
+  onSetBotDifficulty: (allyDifficulty: BotDifficulty, opponentDifficulty: BotDifficulty) => void;
+  onSaveMatchSetupDefaults?: (patch: {
+    dealSpeed: DealSpeed;
+    allyBotDifficulty: BotDifficulty;
+    opponentBotDifficulty: BotDifficulty;
+  }) => void;
   onSetSeatBot: (seat: Seat, isBot: boolean) => void;
   onSwapSeat: (targetSeat: Seat) => void;
   onSetReady: (ready: boolean) => void;
@@ -35,6 +51,9 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
   lanGuestCount = 0,
   onRefreshLanHost,
   onSetMode,
+  onSetDealSpeed,
+  onSetBotDifficulty,
+  onSaveMatchSetupDefaults,
   onSetSeatBot,
   onSwapSeat,
   onSetReady,
@@ -60,6 +79,14 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
   const leftSeat = ((mySeat + 3) % 4) as Seat;
 
   const [selectedIp, setSelectedIp] = useState<string>('');
+  const [showSetupModal, setShowSetupModal] = useState(false);
+
+  const dealSpeedLabel =
+    DEAL_SPEED_OPTIONS.find((d) => d.id === room.dealSpeed)?.label ?? '极速';
+  const allyDiffLabel =
+    BOT_DIFFICULTY_OPTIONS.find((d) => d.id === room.allyBotDifficulty)?.label ?? '强';
+  const oppDiffLabel =
+    BOT_DIFFICULTY_OPTIONS.find((d) => d.id === room.opponentBotDifficulty)?.label ?? '强';
   const activeIp = useMemo(() => {
     if (!lanHostInfo) return '';
     if (selectedIp && lanHostInfo.ips.includes(selectedIp)) return selectedIp;
@@ -236,26 +263,36 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
 
         <div className="waiting-header-right">
           {isHost && (
-            <div className="segmented-control waiting-mode-switch" role="radiogroup" aria-label="玩法">
+            <>
+              <div className="segmented-control waiting-mode-switch" role="radiogroup" aria-label="玩法">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={isHongxin}
+                  className={isHongxin ? 'is-active' : ''}
+                  onClick={() => onSetMode('hongxin')}
+                >
+                  打红心
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={!isHongxin}
+                  className={!isHongxin ? 'is-active' : ''}
+                  onClick={() => onSetMode('heixin')}
+                >
+                  打黑心
+                </button>
+              </div>
               <button
                 type="button"
-                role="radio"
-                aria-checked={isHongxin}
-                className={isHongxin ? 'is-active' : ''}
-                onClick={() => onSetMode('hongxin')}
+                className="btn btn-xs btn-ghost"
+                onClick={() => setShowSetupModal(true)}
               >
-                打红心
+                <Icon name="gear" />
+                本局参数
               </button>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={!isHongxin}
-                className={!isHongxin ? 'is-active' : ''}
-                onClick={() => onSetMode('heixin')}
-              >
-                打黑心
-              </button>
-            </div>
+            </>
           )}
           <button type="button" className="btn btn-xs btn-crimson" onClick={onLeave}>
             <Icon name="exit" />
@@ -288,6 +325,13 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
                   <span>各自抢庄，庄家独抗三家</span>
                 </>
               )}
+              <div className="waiting-rules-strip" title="本房间共享参数">
+                <span>发牌 {dealSpeedLabel}</span>
+                <i>·</i>
+                <span>队友AI {allyDiffLabel}</span>
+                <i>·</i>
+                <span>对手AI {oppDiffLabel}</span>
+              </div>
             </div>
 
             <div className="waiting-center-actions">
@@ -420,6 +464,40 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
           </aside>
         )}
       </div>
+
+      {showSetupModal && isHost && (
+        <MatchSetupModal
+          title="调整本局参数"
+          subtitle="修改后立即同步给房间内所有玩家"
+          confirmLabel="保存本局参数"
+          initialValues={{
+            mode: room.mode,
+            dealSpeed: room.dealSpeed,
+            allyBotDifficulty: room.allyBotDifficulty,
+            opponentBotDifficulty: room.opponentBotDifficulty,
+            debugMode: room.debugMode,
+          }}
+          showModePicker={true}
+          showDebugToggle={false}
+          onConfirm={(vals) => {
+            if (vals.mode !== room.mode) onSetMode(vals.mode);
+            if (vals.dealSpeed !== room.dealSpeed) onSetDealSpeed(vals.dealSpeed);
+            if (
+              vals.allyBotDifficulty !== room.allyBotDifficulty ||
+              vals.opponentBotDifficulty !== room.opponentBotDifficulty
+            ) {
+              onSetBotDifficulty(vals.allyBotDifficulty, vals.opponentBotDifficulty);
+            }
+            onSaveMatchSetupDefaults?.({
+              dealSpeed: vals.dealSpeed,
+              allyBotDifficulty: vals.allyBotDifficulty,
+              opponentBotDifficulty: vals.opponentBotDifficulty,
+            });
+            setShowSetupModal(false);
+          }}
+          onClose={() => setShowSetupModal(false)}
+        />
+      )}
     </div>
   );
 };

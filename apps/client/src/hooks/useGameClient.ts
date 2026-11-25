@@ -279,6 +279,9 @@ export function useGameClient(options?: {
     debugMode: boolean;
     fillBots: boolean;
     autoStart?: boolean;
+    allyBotDifficulty?: BotDifficulty;
+    opponentBotDifficulty?: BotDifficulty;
+    dealSpeed?: DealSpeed;
   } | null>(null);
   const pendingLanAutoJoinRef = useRef<string | null>(initialIntent.autoJoinRoomId);
 
@@ -521,9 +524,10 @@ export function useGameClient(options?: {
               debugMode: pending.debugMode,
               fillBots: pending.fillBots,
               autoStart: pending.autoStart,
-              allyBotDifficulty: allyBotDifficultyRef.current,
-              opponentBotDifficulty: opponentBotDifficultyRef.current,
-              dealSpeed: dealSpeedRef.current,
+              allyBotDifficulty: pending.allyBotDifficulty ?? allyBotDifficultyRef.current,
+              opponentBotDifficulty:
+                pending.opponentBotDifficulty ?? opponentBotDifficultyRef.current,
+              dealSpeed: pending.dealSpeed ?? dealSpeedRef.current,
             });
           }
         } else if (mode === 'lan' && role === 'guest') {
@@ -707,7 +711,13 @@ export function useGameClient(options?: {
   );
 
   const startLanHostRoom = useCallback(
-    (opts: { mode: GameMode; debugMode?: boolean }) => {
+    (opts: {
+      mode: GameMode;
+      debugMode?: boolean;
+      allyBotDifficulty?: BotDifficulty;
+      opponentBotDifficulty?: BotDifficulty;
+      dealSpeed?: DealSpeed;
+    }) => {
       const displayName = playerNameRef.current.trim() || '金山房主';
       const result = startNativeLanHost(3001, displayName);
       if (!result.ok) {
@@ -720,6 +730,9 @@ export function useGameClient(options?: {
         debugMode: opts.debugMode ?? false,
         fillBots: false,
         autoStart: false,
+        allyBotDifficulty: opts.allyBotDifficulty ?? allyBotDifficultyRef.current,
+        opponentBotDifficulty: opts.opponentBotDifficulty ?? opponentBotDifficultyRef.current,
+        dealSpeed: opts.dealSpeed ?? dealSpeedRef.current,
       };
       setPlayModeState('lan');
       setLanHostInfo(result);
