@@ -162,14 +162,14 @@ export const HandArea: React.FC<HandAreaProps> = ({
     >
       {cards.length > 18 && (
         <div className="hand-meta-bar">
-          <span>手牌 {cards.length} 张（可左右滑动连续选牌）</span>
+          <span className="hand-count">{cards.length} 张 · 可滑动连选</span>
           <button
             type="button"
             className="btn btn-xs btn-ghost"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={() => setForceSingleRow((v) => !v)}
           >
-            {forceSingleRow ? '切为双排(主/副)' : '切为单排'}
+            {forceSingleRow ? '双排' : '单排'}
           </button>
         </div>
       )}

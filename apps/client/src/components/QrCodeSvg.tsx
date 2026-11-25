@@ -23,17 +23,8 @@ export const QrCodeSvg: React.FC<QrCodeSvgProps> = ({
   if (!qr) {
     return (
       <div
-        className={className}
-        style={{
-          width: size,
-          height: size,
-          display: 'grid',
-          placeItems: 'center',
-          fontSize: 11,
-          color: '#333',
-          background: '#fff',
-          borderRadius: 10,
-        }}
+        className={`qr-fallback ${className ?? ''}`}
+        style={{ width: size, height: size }}
       >
         二维码生成失败
       </div>

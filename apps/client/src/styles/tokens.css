@@ -1,0 +1,206 @@
+/* ==========================================================================
+   金山打红心 · 设计令牌（新中式 · 海派）
+   墨 (ink) / 朱砂 (cinnabar) / 鎏金 (gilt) / 宣纸 (rice paper)
+   Every skin only overrides custom properties; components never hardcode
+   skin colours.
+   ========================================================================== */
+
+:root,
+[data-table-skin='ink'] {
+  /* Surfaces */
+  --bg-0: #0d0c0b;            /* outer ink */
+  --bg-1: #171513;            /* panels */
+  --bg-2: #221f1b;            /* raised */
+  --bg-3: #2e2a24;            /* hover / inputs */
+  --scrim: rgba(8, 7, 6, 0.72);
+  --glass: rgba(18, 16, 14, 0.78);
+  --glass-strong: rgba(14, 12, 11, 0.92);
+
+  /* Table surface (lacquer tray) */
+  --felt-hi: #2b4a44;
+  --felt-mid: #1a312d;
+  --felt-lo: #0e1c1a;
+  --felt-rim: #070d0c;
+  --felt-pattern: rgba(216, 180, 106, 0.07);
+
+  /* Brand accents */
+  --accent: #c43c2c;          /* 朱砂 */
+  --accent-hi: #e2563f;
+  --accent-lo: #8e2418;
+  --accent-soft: rgba(196, 60, 44, 0.16);
+  --gold: #d6b26a;            /* 鎏金 */
+  --gold-hi: #f2d898;
+  --gold-lo: #9a7738;
+  --gold-soft: rgba(214, 178, 106, 0.14);
+  --jade: #5fae8f;            /* 青玉 – success / ally */
+  --jade-lo: #2d6b57;
+  --jade-soft: rgba(95, 174, 143, 0.16);
+  --azure: #7fb3d6;           /* info */
+  --azure-soft: rgba(127, 179, 214, 0.16);
+  --warn: #e7a93b;
+
+  /* Text */
+  --text: #f3ead8;
+  --text-2: #c7bba2;
+  --text-3: #8e8471;
+  --text-on-gold: #2a1d0a;
+  --text-on-accent: #fff4e6;
+
+  /* Lines */
+  --line: rgba(214, 178, 106, 0.16);
+  --line-2: rgba(214, 178, 106, 0.3);
+  --line-3: rgba(214, 178, 106, 0.55);
+  --line-neutral: rgba(255, 255, 255, 0.08);
+
+  /* Card paper & back */
+  --paper: #fbf6ea;
+  --paper-2: #efe5cf;
+  --paper-edge: #cbbd9c;
+  --card-red: #c2312a;
+  --card-black: #1c1d22;
+  --back-1: #9c2a1f;
+  --back-2: #6a170f;
+  --back-ink: rgba(242, 216, 152, 0.55);
+  --back-frame: #e8cf91;
+
+  /* Legacy aliases (kept so inline styles in older components still work) */
+  --text-light: var(--text);
+  --text-muted: var(--text-2);
+  --gold-strong: var(--gold-hi);
+  --panel-bg: var(--glass);
+  --panel-border: var(--line-2);
+  --felt-center: var(--felt-hi);
+  --felt-edge: var(--felt-lo);
+  --crimson: var(--accent);
+  --ink: var(--card-black);
+
+  --skin-swatch: linear-gradient(135deg, #2b4a44, #0e1c1a);
+}
+
+[data-table-skin='cinnabar'] {
+  --bg-0: #0f0908;
+  --bg-1: #1a100e;
+  --bg-2: #261714;
+  --bg-3: #34201b;
+  --glass: rgba(26, 14, 12, 0.8);
+  --glass-strong: rgba(20, 10, 9, 0.93);
+
+  --felt-hi: #6a2420;
+  --felt-mid: #461512;
+  --felt-lo: #250a09;
+  --felt-rim: #120504;
+  --felt-pattern: rgba(242, 216, 152, 0.08);
+
+  --accent: #d6492f;
+  --accent-hi: #ef6a4b;
+  --accent-lo: #9a2a17;
+  --jade: #6fb796;
+
+  --text: #fbefdc;
+  --text-2: #dcc3a6;
+  --text-3: #a08670;
+
+  --back-1: #1f1a17;
+  --back-2: #0b0908;
+  --back-ink: rgba(214, 178, 106, 0.6);
+  --back-frame: #d6b26a;
+
+  --skin-swatch: linear-gradient(135deg, #8a2d27, #250a09);
+}
+
+[data-table-skin='night-blue'] {
+  --bg-0: #080b14;
+  --bg-1: #0f1422;
+  --bg-2: #18203a;
+  --bg-3: #222c4a;
+  --glass: rgba(13, 18, 33, 0.8);
+  --glass-strong: rgba(10, 14, 26, 0.93);
+
+  --felt-hi: #24407a;
+  --felt-mid: #172a55;
+  --felt-lo: #0b1530;
+  --felt-rim: #050a18;
+  --felt-pattern: rgba(196, 220, 255, 0.07);
+
+  --gold: #d9c08a;
+  --gold-hi: #f4e6c0;
+  --gold-lo: #9c8656;
+  --gold-soft: rgba(217, 192, 138, 0.14);
+  --azure: #9cc7ee;
+
+  --text: #eef2fb;
+  --text-2: #b8c3dc;
+  --text-3: #7c88a6;
+
+  --line: rgba(186, 208, 245, 0.16);
+  --line-2: rgba(186, 208, 245, 0.28);
+  --line-3: rgba(217, 192, 138, 0.55);
+
+  --paper: #fbfcff;
+  --paper-2: #e9eef8;
+  --paper-edge: #b5c0d6;
+
+  --back-1: #f4f6fb;
+  --back-2: #dfe6f3;
+  --back-ink: rgba(31, 66, 140, 0.55);
+  --back-frame: #2a4f9c;
+
+  --skin-swatch: linear-gradient(135deg, #2f5aa8, #0b1530);
+}
+
+/* Shared non-colour tokens */
+:root {
+  --font-serif: 'Noto Serif SC', 'Noto Serif CJK SC', 'Source Han Serif SC', 'Songti SC', 'STSong', serif;
+  --font-sans: 'Noto Sans SC', 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  --font-num: 'Noto Serif', 'Georgia', 'Times New Roman', serif;
+
+  --r-xs: 3px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 6px 18px rgba(0, 0, 0, 0.42);
+  --shadow-3: 0 18px 48px rgba(0, 0, 0, 0.55);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --card-w: 62px;
+  --card-h: 88px;
+  --card-sm-w: 46px;
+  --card-sm-h: 65px;
+  --card-xs-w: 34px;
+  --card-xs-h: 48px;
+
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+
+  /* Textures (SVG data URIs) */
+  --tex-paper: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .2 -.06'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --tex-fret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='12' viewBox='0 0 24 12'%3E%3Cpath d='M0 11h5V3h8v6H8V6h2' fill='none' stroke='%23d6b26a' stroke-width='1.1'/%3E%3Cpath d='M13 11h11' fill='none' stroke='%23d6b26a' stroke-width='1.1'/%3E%3C/svg%3E");
+  --tex-wave: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='20' viewBox='0 0 40 20'%3E%3Cg fill='none' stroke='%23d6b26a' stroke-width='1'%3E%3Cpath d='M0 20a10 10 0 0 1 20 0a10 10 0 0 1 20 0'/%3E%3Cpath d='M4 20a6 6 0 0 1 12 0M24 20a6 6 0 0 1 12 0'/%3E%3Cpath d='M8 20a2 2 0 0 1 4 0M28 20a2 2 0 0 1 4 0'/%3E%3Cpath d='M-10 10a10 10 0 0 1 20 0a10 10 0 0 1 20 0a10 10 0 0 1 20 0'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+@media (min-width: 920px) and (min-height: 540px) {
+  :root {
+    --card-w: 76px;
+    --card-h: 108px;
+    --card-sm-w: 56px;
+    --card-sm-h: 79px;
+    --card-xs-w: 42px;
+    --card-xs-h: 59px;
+  }
+}
+
+@media (max-height: 450px) {
+  :root {
+    --card-w: 52px;
+    --card-h: 74px;
+    --card-sm-w: 40px;
+    --card-sm-h: 56px;
+    --card-xs-w: 30px;
+    --card-xs-h: 42px;
+  }
+}

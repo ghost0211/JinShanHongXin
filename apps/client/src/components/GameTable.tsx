@@ -33,9 +33,13 @@ import { SettlementModal } from './SettlementModal.js';
 import { LastTrickModal } from './LastTrickModal.js';
 import { ScoreDetailModal } from './ScoreDetailModal.js';
 import { DebugDrawer } from './DebugDrawer.js';
+import { Icon } from './Icons.js';
 import type { AppSettings } from '../utils/settings.js';
 import type { PlayMode } from '../hooks/useGameClient.js';
-import '../styles/table-skins.css';
+
+function avatarChar(name: string): string {
+  return (name || '').trim().slice(0, 1) || '牌';
+}
 
 interface GameTableProps {
   room: RoomSummary;
@@ -293,53 +297,52 @@ export const GameTable: React.FC<GameTableProps> = ({
     const isTrumpCaller =
       view.callState.callerSeat === seat && view.trumpSuit !== null;
 
+    const relLabel =
+      side === 'top' ? '对家' : side === 'left' ? '上家' : '下家';
+
     const badgeEl = (
-      <div className={`seat-badge ${isTurn ? 'is-turn' : ''}`}>
-        <div className="seat-badge-row">
-          <strong className={`seat-name ${isTurn ? 'is-turn' : ''}`}>
-            {info.name}
-          </strong>
-          {isDealer && <span className="pill pill-red">庄</span>}
-          {!isDealer && isTeammate && <span className="pill pill-green">友</span>}
-          {isTrumpCaller && view.trumpSuit && (
-            <span className="pill pill-gold" title="本局定主玩家">
-              主{getSuitSymbol(view.trumpSuit)}
-            </span>
-          )}
-        </div>
-        <div className="seat-badge-sub">
-          <span>余 {handCount} 张</span>
-          {view.mode === 'heixin' ? (
-            <span>{view.playerScores[seat]} 分</span>
-          ) : (
-            <span>{getSeatTeam(seat)}队</span>
-          )}
-        </div>
-        {info.autoBot && !info.isBot && (
-          <span className="pill pill-gold" style={{ alignSelf: 'flex-start' }}>
-            托管中
+      <div
+        className={`seat-badge ${isTurn ? 'is-turn' : ''} ${
+          isTeammate ? 'is-teammate' : view.mode === 'hongxin' ? 'is-opponent' : ''
+        }`}
+      >
+        <div className="seat-avatar-wrap">
+          <span className={`seat-avatar ${info.isBot ? 'is-bot' : ''}`}>
+            {info.isBot ? <Icon name="robot" className="seat-avatar-icon" /> : avatarChar(info.name)}
           </span>
-        )}
+          {isDealer && <span className="seal seat-seal">庄</span>}
+        </div>
+        <div className="seat-plate">
+          <div className="seat-badge-row">
+            <strong className={`seat-name ${isTurn ? 'is-turn' : ''}`}>{info.name}</strong>
+            {isTrumpCaller && view.trumpSuit && (
+              <span
+                className={`seat-tag is-trump ${isRedSuit(view.trumpSuit) ? 'is-red-suit' : ''}`}
+                title="本局定主玩家"
+              >
+                主{getSuitSymbol(view.trumpSuit)}
+              </span>
+            )}
+            {info.autoBot && !info.isBot && <span className="seat-tag">托管</span>}
+            {!info.connected && !info.isBot && <span className="seat-tag is-off">离线</span>}
+          </div>
+          <div className="seat-badge-sub">
+            <span className="seat-rel">
+              {isTeammate ? '队友' : relLabel}
+              {view.mode === 'hongxin' ? ` · ${getSeatTeam(seat)}队` : ''}
+            </span>
+            {view.mode === 'heixin' && (
+              <span className="seat-score">{view.playerScores[seat]}分</span>
+            )}
+          </div>
+        </div>
       </div>
     );
 
-    const fanEl = (
-      <OpponentHandFan count={handCount} side={side} isTurn={isTurn} />
-    );
-
     return (
-      <div className={`seat-zone seat-${side}`}>
-        {side === 'right' ? (
-          <>
-            {fanEl}
-            {badgeEl}
-          </>
-        ) : (
-          <>
-            {badgeEl}
-            {fanEl}
-          </>
-        )}
+      <div className={`seat-zone seat-${side} ${isTurn ? 'is-turn' : ''}`}>
+        {badgeEl}
+        <OpponentHandFan count={handCount} side={side} isTurn={isTurn} />
       </div>
     );
   };
@@ -490,136 +493,204 @@ export const GameTable: React.FC<GameTableProps> = ({
     Math.round((escapedPoints / 300) * 100),
   );
 
+  const currentTurnName =
+    view.currentTurn !== null && view.currentTurn !== undefined
+      ? room.seats[view.currentTurn]?.name ?? `座位 ${view.currentTurn + 1}`
+      : '';
+  const isMyActionNow =
+    isMyTurn || canCounterNow || isMyCounterResponse || (canCallNow && callOptions.length > 0);
+  const isCallPhase =
+    view.phase === 'DEALING' ||
+    view.phase === 'CALLING' ||
+    view.phase === 'COUNTER_BIDDING' ||
+    view.phase === 'COUNTER_RESPONSE' ||
+    view.phase === 'BURYING' ||
+    view.phase === 'BIDDING' ||
+    view.phase === 'CHOOSE_TRUMP';
+  const trumpRed = view.trumpSuit ? isRedSuit(view.trumpSuit) : false;
+  const meTeammateLabel =
+    view.mode === 'hongxin' ? `${getSeatTeam(meSeat)}队` : view.dealer === meSeat ? '庄家' : '闲家';
+
+  const statusText = (() => {
+    if (view.phase === 'DEALING' && !(canCallNow && callOptions.length > 0)) {
+      if (view.mode === 'heixin') return `正在发牌 ${view.dealtCount}/38`;
+      return view.callState.callerSeat !== null
+        ? `已有人叫主，发完牌进入反主 ${view.dealtCount}/38`
+        : `发牌中 ${view.dealtCount}/38 · 拿到箭牌可随时亮主`;
+    }
+    if (view.phase === 'CALLING' && !canCallNow) return '已选择不叫，等待其他玩家叫主…';
+    if (view.phase === 'COUNTER_BIDDING' && !canCounterNow) {
+      return view.callState.counterAttempts === 0
+        ? '等待敌方决定是否反主（先点先得）…'
+        : '等待败方队友决定是否再反主…';
+    }
+    if (view.phase === 'COUNTER_RESPONSE' && view.callState.pendingCounter && !isMyCounterResponse) {
+      return `等待 ${room.seats[view.callState.callerSeat ?? 0].name} 决定让反或比牌…`;
+    }
+    if (
+      !isMyTurn &&
+      view.phase !== 'DEALING' &&
+      view.phase !== 'CALLING' &&
+      view.phase !== 'COUNTER_BIDDING' &&
+      view.phase !== 'COUNTER_RESPONSE' &&
+      view.phase !== 'ROUND_OVER' &&
+      view.phase !== 'MATCH_OVER'
+    ) {
+      return `等待 ${currentTurnName} ${view.phase === 'PLAYING' ? '出牌' : '操作'}…`;
+    }
+    return null;
+  })();
+
   return (
-    <div className="table-root" data-table-skin={settings.tableSkin}>
+    <div
+      className={`table-root mode-${view.mode} ${isMyActionNow ? 'is-my-action' : ''}`}
+      data-table-skin={settings.tableSkin}
+    >
       {/* Top HUD */}
-      <div className="table-hud-shell is-unified">
-        <div className="table-hud">
-          <div className="hud-group hud-match">
-            {playMode !== 'online' && (
-              <span className="pill pill-green">
-                {playMode === 'offline' ? '单机' : '局域网'}
-              </span>
-            )}
-            <span className="pill pill-gold">
-              {view.mode === 'hongxin' ? '打红心' : '打黑心'} · 第{view.roundNumber}局
+      <header className="table-hud">
+        <div className="hud-group hud-match">
+          <span className={`hud-mode ${view.mode === 'hongxin' ? 'is-hongxin' : 'is-heixin'}`}>
+            <span className="hud-mode-suit">{view.mode === 'hongxin' ? '♥' : '♠'}</span>
+            <span className="hud-mode-text">
+              <strong>{view.mode === 'hongxin' ? '打红心' : '打黑心'}</strong>
+              <small>
+                第{view.roundNumber}局{playMode !== 'online' ? ` · ${playMode === 'offline' ? '单机' : '局域网'}` : ''}
+              </small>
             </span>
-            <span className="pill">
-              打 <strong>{view.levelRank}</strong>
-            </span>
-            <span className="pill pill-red">
-              主：{view.trumpSuit ? `${getSuitSymbol(view.trumpSuit)}${getSuitName(view.trumpSuit)}` : '无主'}
-            </span>
-            <span className="pill">{getPhaseLabel(view.phase, view.mode)}</span>
-          </div>
-
-          <div className="hud-group hud-score">
-            {view.mode === 'hongxin' ? (
-              <>
-                <span className="pill pill-green">
-                  A:{view.teams.A.levelRank}
-                  {view.teams.A.penaltyCount > 0 ? `(罚${view.teams.A.penaltyCount})` : ''}
-                </span>
-                <span className="pill">
-                  B:{view.teams.B.levelRank}
-                  {view.teams.B.penaltyCount > 0 ? `(罚${view.teams.B.penaltyCount})` : ''}
-                </span>
-              </>
+          </span>
+          <span className="hud-chip" title="本局级牌">
+            <small>级</small>
+            <strong className="hud-chip-num">{view.levelRank}</strong>
+          </span>
+          <span className={`hud-chip hud-trump ${trumpRed ? 'is-red-suit' : ''}`} title="本局主花色">
+            <small>主</small>
+            {view.trumpSuit ? (
+              <strong className="hud-trump-suit">
+                {getSuitSymbol(view.trumpSuit)}
+                <span className="hud-trump-name">{getSuitName(view.trumpSuit)}</span>
+              </strong>
             ) : (
-              <span className="pill pill-gold">
-                叫分:{view.bidState?.highestBid || '-'} · 我的分:{view.playerScores[meSeat]}
-              </span>
+              <strong className="hud-trump-none">无</strong>
             )}
+          </span>
+          <span className="hud-phase">
+            {getPhaseLabel(view.phase, view.mode)}
+            {view.phase === 'PLAYING' ? ` · 第${view.trickNumber}墩` : ''}
+          </span>
+        </div>
 
-            <button
-              type="button"
-              className="score-meter is-clickable"
-              onClick={() => setShowScoreDetail(true)}
-              title={
-                view.mode === 'hongxin'
-                  ? `闲家已拿 ${capturedPoints} 分（及格 120），庄家已跑 ${escapedPoints} 分，点击查看详情`
-                  : `庄家已拿 ${capturedPoints} 分（目标 ${heixinBidTarget || '-'}），闲家已跑 ${escapedPoints} 分，点击查看详情`
-              }
-            >
-              <div className="score-meter-fill" style={{ width: `${scorePct}%` }} />
+        <div className="hud-group hud-score">
+          {view.mode === 'hongxin' ? (
+            <span className="hud-levels" title="两队当前级别">
+              <span className={getSeatTeam(meSeat) === 'A' ? 'is-mine' : ''}>
+                A<b>{view.teams.A.levelRank}</b>
+                {view.teams.A.penaltyCount > 0 && <i>罚{view.teams.A.penaltyCount}</i>}
+              </span>
+              <span className={getSeatTeam(meSeat) === 'B' ? 'is-mine' : ''}>
+                B<b>{view.teams.B.levelRank}</b>
+                {view.teams.B.penaltyCount > 0 && <i>罚{view.teams.B.penaltyCount}</i>}
+              </span>
+            </span>
+          ) : (
+            <span className="hud-levels" title="叫分 / 我的总分">
+              <span>
+                叫<b>{view.bidState?.highestBid || '-'}</b>
+              </span>
+              <span className="is-mine">
+                我<b>{view.playerScores[meSeat]}</b>
+              </span>
+            </span>
+          )}
+
+          <button
+            type="button"
+            className="score-meter is-clickable"
+            onClick={() => setShowScoreDetail(true)}
+            title={
+              view.mode === 'hongxin'
+                ? `闲家已拿 ${capturedPoints} 分（及格 120），庄家已跑 ${escapedPoints} 分，点击查看详情`
+                : `庄家已拿 ${capturedPoints} 分（目标 ${heixinBidTarget || '-'}），闲家已跑 ${escapedPoints} 分，点击查看详情`
+            }
+          >
+            <span className="score-meter-track">
+              <span className="score-meter-fill" style={{ width: `${scorePct}%` }} />
               {escapedPct > 0 && (
-                <div
-                  className="score-meter-escaped"
-                  style={{ width: `${escapedPct}%` }}
-                />
+                <span className="score-meter-escaped" style={{ width: `${escapedPct}%` }} />
               )}
               {view.mode === 'hongxin' && (
                 <>
-                  <div className="score-meter-tick" style={{ left: '13.3%' }} />
-                  <div className="score-meter-tick" style={{ left: '40%' }} />
-                  <div className="score-meter-tick" style={{ left: '60%' }} />
-                  <div className="score-meter-tick" style={{ left: '80%' }} />
+                  <span className="score-meter-tick" style={{ left: '13.3%' }} />
+                  <span className="score-meter-tick is-pass" style={{ left: '40%' }} />
+                  <span className="score-meter-tick" style={{ left: '60%' }} />
+                  <span className="score-meter-tick" style={{ left: '80%' }} />
                 </>
               )}
-              <div className="score-meter-label">
-                <span>
-                  {view.mode === 'hongxin'
-                    ? `拿 ${capturedPoints}/120 · 跑 ${escapedPoints}`
-                    : `拿 ${capturedPoints}/${heixinBidTarget || '-'} · 跑 ${escapedPoints}`}
-                </span>
-                <span className="score-meter-hint">查分</span>
-              </div>
-            </button>
-          </div>
-
-          <div className="hud-group hud-tools">
-            <button
-              type="button"
-              className="btn btn-xs"
-              onClick={() => setShowLastTrick(true)}
-              disabled={!view.lastTrick}
-            >
-              上一轮
-            </button>
-            <button
-              type="button"
-              className={`btn btn-xs ${meRoomSeat.autoBot ? 'btn-gold' : ''}`}
-              onClick={() => onSetAutoBot(!meRoomSeat.autoBot)}
-            >
-              {meRoomSeat.autoBot ? '取消托管' : '托管'}
-            </button>
-            {room.debugMode && (
-              <button
-                type="button"
-                className={`btn btn-xs ${room.debugOpenHands ? 'btn-emerald' : ''}`}
-                onClick={() => {
-                  const next = !room.debugOpenHands;
-                  onToggleDebugOpenHands(next);
-                  setShowDebugDrawer(next);
-                }}
-              >
-                上帝视角
-              </button>
-            )}
-            <button type="button" className="btn btn-xs" onClick={onOpenSettings}>
-              设置
-            </button>
-            <button type="button" className="btn btn-xs btn-crimson" onClick={onLeaveRoom}>
-              退出
-            </button>
-          </div>
+            </span>
+            <span className="score-meter-label">
+              <span className="score-meter-main">
+                {view.mode === 'hongxin' ? '闲' : '庄'}
+                <b>{capturedPoints}</b>/{view.mode === 'hongxin' ? 120 : heixinBidTarget || '-'}
+              </span>
+              <span className="score-meter-sub">跑 {escapedPoints}</span>
+              <span className="score-meter-hint">查分</span>
+            </span>
+          </button>
         </div>
-      </div>
 
-      {/* Arena: 3 Opponents (with card backs) + Center Trick Mat */}
+        <div className="hud-group hud-tools">
+          <button
+            type="button"
+            className="hud-btn"
+            onClick={() => setShowLastTrick(true)}
+            disabled={!view.lastTrick}
+          >
+            <Icon name="history" />
+            <span>上一轮</span>
+          </button>
+          <button
+            type="button"
+            className={`hud-btn ${meRoomSeat.autoBot ? 'is-on' : ''}`}
+            onClick={() => onSetAutoBot(!meRoomSeat.autoBot)}
+          >
+            <Icon name="robot" />
+            <span>{meRoomSeat.autoBot ? '取消托管' : '托管'}</span>
+          </button>
+          {room.debugMode && (
+            <button
+              type="button"
+              className={`hud-btn ${room.debugOpenHands ? 'is-on' : ''}`}
+              onClick={() => {
+                const next = !room.debugOpenHands;
+                onToggleDebugOpenHands(next);
+                setShowDebugDrawer(next);
+              }}
+            >
+              <Icon name="eye" />
+              <span>上帝视角</span>
+            </button>
+          )}
+          <button type="button" className="hud-btn is-icon-only" onClick={onOpenSettings} aria-label="设置">
+            <Icon name="gear" />
+            <span>设置</span>
+          </button>
+          <button type="button" className="hud-btn is-icon-only is-danger" onClick={onLeaveRoom} aria-label="退出">
+            <Icon name="exit" />
+            <span>退出</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Arena: 3 opponents + centre trick mat */}
       <div className="table-arena">
+        <div className="table-mat" aria-hidden="true">
+          <span className="table-mat-emblem" />
+        </div>
         {renderOpponentSeat(topSeat, 'top')}
         {renderOpponentSeat(leftSeat, 'left')}
         {renderOpponentSeat(rightSeat, 'right')}
 
         <div className="trick-center">
-          {view.phase === 'DEALING' ||
-          view.phase === 'CALLING' ||
-          view.phase === 'COUNTER_BIDDING' ||
-          view.phase === 'COUNTER_RESPONSE' ||
-          view.phase === 'BURYING' ||
-          view.phase === 'BIDDING' ||
-          view.phase === 'CHOOSE_TRUMP' ? (
+          {isCallPhase ? (
             <div className="call-stage-grid">
               {renderCallDisplaySlot(topSeat, 'call-slot-top')}
               {renderCallDisplaySlot(leftSeat, 'call-slot-left')}
@@ -634,8 +705,9 @@ export const GameTable: React.FC<GameTableProps> = ({
                 ) : view.phase === 'COUNTER_RESPONSE' && view.callState.pendingCounter ? (
                   <div className="counter-response-banner">
                     <div className="counter-response-title">
-                      {room.seats[view.callState.pendingCounter.seat].name} 发起反主：
-                      <strong>
+                      <span className="seal">反</span>
+                      {room.seats[view.callState.pendingCounter.seat].name} 发起反主
+                      <strong className={isRedSuit(view.callState.pendingCounter.suit) ? 'is-red-suit' : ''}>
                         {getSuitSymbol(view.callState.pendingCounter.suit)}
                         {getSuitName(view.callState.pendingCounter.suit)}
                       </strong>
@@ -646,9 +718,10 @@ export const GameTable: React.FC<GameTableProps> = ({
                     </div>
                   </div>
                 ) : view.phase === 'BURYING' ? (
-                  <span className="pill pill-gold">
-                    {room.seats[view.dealer ?? 0].name} 正在埋底...
-                  </span>
+                  <div className="center-notice">
+                    <span className="seal">庄</span>
+                    {room.seats[view.dealer ?? 0].name} 正在埋底…
+                  </div>
                 ) : view.bottomCount > 0 ? (
                   <BottomDeckStack count={view.bottomCount} />
                 ) : null}
@@ -664,35 +737,36 @@ export const GameTable: React.FC<GameTableProps> = ({
               {renderTrickSlot(meSeat, 'trick-slot-bottom', 'bottom')}
             </div>
           )}
-          {latestEvent && <div className="event-ribbon">{latestEvent}</div>}
+          {latestEvent && (
+            <div className="event-ribbon" key={latestEvent}>
+              {latestEvent}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Phase Contextual Action Bar */}
+      <div className="table-dock">
+      {/* Phase contextual action bar */}
       <div className="action-bar">
-        <div className="action-bar-group">
-          <span
-            className={`pill ${
-              isMyTurn || canCounterNow || isMyCounterResponse || (canCallNow && callOptions.length > 0)
-                ? 'pill-gold'
-                : ''
-            }`}
-          >
-            我·座{meSeat + 1}
-            {view.dealer === meSeat ? '【庄】' : ''}
-            {view.callState.callerSeat === meSeat && view.trumpSuit
-              ? `·主${getSuitSymbol(view.trumpSuit)}`
-              : ''}
-            {isMyTurn || isMyCounterResponse ? '（轮到你）' : ''}
+        <div className="action-bar-group action-status">
+          <span className={`me-chip ${isMyActionNow ? 'is-turn' : ''}`}>
+            <span className="me-chip-avatar">{avatarChar(meRoomSeat.name || '我')}</span>
+            <span className="me-chip-text">
+              <strong>{isMyTurn || isMyCounterResponse ? '轮到你' : '我'}</strong>
+              <small>{meTeammateLabel}</small>
+            </span>
+            {view.dealer === meSeat && <span className="seal">庄</span>}
+            {view.callState.callerSeat === meSeat && view.trumpSuit && (
+              <span className={`seat-tag is-trump ${trumpRed ? 'is-red-suit' : ''}`}>
+                主{getSuitSymbol(view.trumpSuit)}
+              </span>
+            )}
           </span>
 
           {meRoomSeat.autoBot && (
-            <button
-              type="button"
-              className="btn btn-xs btn-gold"
-              onClick={() => onSetAutoBot(false)}
-            >
-              ⚠ 托管代打中（点此取消）
+            <button type="button" className="autobot-banner" onClick={() => onSetAutoBot(false)}>
+              <Icon name="robot" />
+              托管代打中 · 点此取消
             </button>
           )}
 
@@ -700,152 +774,125 @@ export const GameTable: React.FC<GameTableProps> = ({
             (view.phase === 'CALLING' ||
               view.phase === 'COUNTER_BIDDING' ||
               view.phase === 'COUNTER_RESPONSE') && (
-              <span className="pill countdown-pill">
-                ⏱ {countdownSec}s
+              <span className={`countdown-pill ${countdownSec <= 3 ? 'is-urgent' : ''}`}>
+                <Icon name="clock" />
+                {countdownSec}s
               </span>
             )}
 
-          {view.phase === 'DEALING' && (
+          {(view.phase === 'COUNTER_BIDDING' ||
+            (view.phase === 'COUNTER_RESPONSE' && view.callState.pendingCounter)) && (
+            <span className="pill pill-gold">21张比牌 {myBipaiCount}</span>
+          )}
+
+          {view.phase === 'BURYING' && isMyTurn && (
+            <span className={`pill ${preview.valid ? 'pill-green' : 'pill-red'}`}>
+              {preview.valid ? preview.label : preview.error}
+            </span>
+          )}
+
+          {view.phase === 'PLAYING' && isMyTurn && autoSelectNote && (
+            <span className="pill pill-blue auto-select-pill">{autoSelectNote}</span>
+          )}
+          {view.phase === 'PLAYING' && isMyTurn && selectedIds.length > 0 && (
+            <span className={`pill ${preview.valid ? 'pill-green' : 'pill-red'}`}>
+              {preview.valid ? preview.label : preview.error}
+            </span>
+          )}
+
+          {statusText && <span className="action-hint">{statusText}</span>}
+        </div>
+
+        <div className="action-bar-group action-buttons">
+          {view.phase === 'PLAYING' &&
+            view.dealer === meSeat &&
+            view.revealedBottom &&
+            view.revealedBottom.length > 0 && (
+              <button
+                type="button"
+                className="btn btn-xs btn-ghost"
+                onClick={() => setShowBottomModal(true)}
+              >
+                <Icon name="layers" />
+                看底牌
+              </button>
+            )}
+
+          {(view.phase === 'DEALING' || view.phase === 'CALLING') &&
+            canCallNow &&
+            callOptions.map((opt, idx) => (
+              <button
+                key={`${opt.suit}-${opt.count}-${idx}`}
+                type="button"
+                className="btn btn-gold"
+                onClick={() =>
+                  onSendAction({
+                    type: 'CALL_TRUMP',
+                    seat: meSeat,
+                    suit: opt.suit,
+                    cardIds: opt.cardIds,
+                  })
+                }
+              >
+                {opt.label}
+              </button>
+            ))}
+          {view.phase === 'CALLING' && canCallNow && (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => onSendAction({ type: 'PASS_CALL', seat: meSeat })}
+            >
+              不叫
+            </button>
+          )}
+
+          {view.phase === 'COUNTER_BIDDING' && canCounterNow && (
             <>
-              {canCallNow && callOptions.length > 0 ? (
-                callOptions.map((opt, idx) => (
-                  <button
-                    key={`${opt.suit}-${opt.count}-${idx}`}
-                    type="button"
-                    className="btn btn-gold"
-                    onClick={() =>
-                      onSendAction({
-                        type: 'CALL_TRUMP',
-                        seat: meSeat,
-                        suit: opt.suit,
-                        cardIds: opt.cardIds,
-                      })
-                    }
-                  >
-                    {opt.label}
-                  </button>
-                ))
-              ) : (
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                  {view.mode === 'heixin'
-                    ? `正在发牌 (${view.dealtCount}/38)...`
-                    : view.callState.callerSeat !== null
-                      ? `已有人叫主，发完 38 张牌后进入反主阶段 (${view.dealtCount}/38)...`
-                      : `正在发牌 (${view.dealtCount}/38)，拿到箭牌可随时亮主...`}
-                </span>
-              )}
+              {counterOptions.map((opt) => (
+                <button
+                  key={opt.suit}
+                  type="button"
+                  className="btn btn-crimson"
+                  onClick={() =>
+                    onSendAction({
+                      type: 'COUNTER_BID',
+                      seat: meSeat,
+                      suit: opt.suit,
+                      cardIds: opt.cardIds,
+                    })
+                  }
+                >
+                  {opt.label}
+                </button>
+              ))}
+              <button
+                type="button"
+                className="btn"
+                onClick={() => onSendAction({ type: 'PASS_COUNTER', seat: meSeat })}
+              >
+                放弃反主
+              </button>
             </>
           )}
 
-          {view.phase === 'CALLING' && (
+          {view.phase === 'COUNTER_RESPONSE' && view.callState.pendingCounter && isMyCounterResponse && (
             <>
-              {canCallNow ? (
-                <>
-                  {callOptions.map((opt, idx) => (
-                    <button
-                      key={`${opt.suit}-${opt.count}-${idx}`}
-                      type="button"
-                      className="btn btn-gold"
-                      onClick={() =>
-                        onSendAction({
-                          type: 'CALL_TRUMP',
-                          seat: meSeat,
-                          suit: opt.suit,
-                          cardIds: opt.cardIds,
-                        })
-                      }
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => onSendAction({ type: 'PASS_CALL', seat: meSeat })}
-                  >
-                    不叫
-                  </button>
-                </>
-              ) : (
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                  已选择不叫，等待其他玩家叫主...
-                </span>
-              )}
-            </>
-          )}
-
-          {view.phase === 'COUNTER_BIDDING' && (
-            <>
-              <span className="pill pill-gold">我的21张比牌：{myBipaiCount} 张</span>
-              {canCounterNow ? (
-                <>
-                  {counterOptions.map((opt) => (
-                    <button
-                      key={opt.suit}
-                      type="button"
-                      className="btn btn-crimson"
-                      onClick={() =>
-                        onSendAction({
-                          type: 'COUNTER_BID',
-                          seat: meSeat,
-                          suit: opt.suit,
-                          cardIds: opt.cardIds,
-                        })
-                      }
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() =>
-                      onSendAction({ type: 'PASS_COUNTER', seat: meSeat })
-                    }
-                  >
-                    放弃反主
-                  </button>
-                </>
-              ) : (
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                  {view.callState.counterAttempts === 0
-                    ? '等待敌方决定是否反主（先点先得）...'
-                    : '等待败方队友决定是否再反主...'}
-                </span>
-              )}
-            </>
-          )}
-
-          {view.phase === 'COUNTER_RESPONSE' && view.callState.pendingCounter && (
-            <>
-              <span className="pill pill-gold">我的21张比牌：{myBipaiCount} 张</span>
-              {isMyCounterResponse ? (
-                <>
-                  <button
-                    type="button"
-                    className="btn btn-emerald"
-                    onClick={() =>
-                      onSendAction({ type: 'ACCEPT_COUNTER', seat: meSeat })
-                    }
-                  >
-                    接受被反（改打{getSuitSymbol(view.callState.pendingCounter.suit)}
-                    {getSuitName(view.callState.pendingCounter.suit)}）
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-crimson"
-                    onClick={() =>
-                      onSendAction({ type: 'DEFEND_COUNTER', seat: meSeat })
-                    }
-                  >
-                    拒绝并比牌
-                  </button>
-                </>
-              ) : (
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                  等待被反主方（{room.seats[view.callState.callerSeat ?? 0].name}）决定接受让反或比牌...
-                </span>
-              )}
+              <button
+                type="button"
+                className="btn btn-emerald"
+                onClick={() => onSendAction({ type: 'ACCEPT_COUNTER', seat: meSeat })}
+              >
+                接受被反（改打{getSuitSymbol(view.callState.pendingCounter.suit)}
+                {getSuitName(view.callState.pendingCounter.suit)}）
+              </button>
+              <button
+                type="button"
+                className="btn btn-crimson"
+                onClick={() => onSendAction({ type: 'DEFEND_COUNTER', seat: meSeat })}
+              >
+                拒绝并比牌
+              </button>
             </>
           )}
 
@@ -859,29 +906,26 @@ export const GameTable: React.FC<GameTableProps> = ({
                     key={s}
                     type="button"
                     className="btn btn-gold"
-                    onClick={() =>
-                      onSendAction({ type: 'BID_SCORE', seat: meSeat, score: s })
-                    }
+                    onClick={() => onSendAction({ type: 'BID_SCORE', seat: meSeat, score: s })}
                   >
-                    叫 {s} 分
+                    叫 {s}
                   </button>
                 ))}
-              {view.bidState.highestBid >= 100 &&
-                view.bidState.highestBid + 5 <= 300 && (
-                  <button
-                    type="button"
-                    className="btn btn-emerald"
-                    onClick={() =>
-                      onSendAction({
-                        type: 'BID_SCORE',
-                        seat: meSeat,
-                        score: view.bidState!.highestBid + 5,
-                      })
-                    }
-                  >
-                    +5 ({view.bidState.highestBid + 5})
-                  </button>
-                )}
+              {view.bidState.highestBid >= 100 && view.bidState.highestBid + 5 <= 300 && (
+                <button
+                  type="button"
+                  className="btn btn-emerald"
+                  onClick={() =>
+                    onSendAction({
+                      type: 'BID_SCORE',
+                      seat: meSeat,
+                      score: view.bidState!.highestBid + 5,
+                    })
+                  }
+                >
+                  +5（{view.bidState.highestBid + 5}）
+                </button>
+              )}
               <button
                 type="button"
                 className="btn"
@@ -900,13 +944,12 @@ export const GameTable: React.FC<GameTableProps> = ({
                   <button
                     key={suit}
                     type="button"
-                    className="btn btn-gold"
-                    onClick={() =>
-                      onSendAction({ type: 'CHOOSE_TRUMP', seat: meSeat, suit })
-                    }
+                    className={`btn btn-suit ${isRedSuit(suit) ? 'is-red-suit' : ''}`}
+                    onClick={() => onSendAction({ type: 'CHOOSE_TRUMP', seat: meSeat, suit })}
                   >
-                    定{getSuitSymbol(suit)}
-                    {getSuitName(suit)} ({cnt}张)
+                    <span className="btn-suit-glyph">{getSuitSymbol(suit)}</span>
+                    {getSuitName(suit)}
+                    <small>{cnt}张</small>
                   </button>
                 );
               })}
@@ -915,10 +958,8 @@ export const GameTable: React.FC<GameTableProps> = ({
 
           {view.phase === 'BURYING' && isMyTurn && (
             <>
-              <span className={`pill ${preview.valid ? 'pill-green' : 'pill-red'}`}>
-                {preview.valid ? preview.label : preview.error}
-              </span>
               <button type="button" className="btn" onClick={handleHintClick}>
+                <Icon name="bulb" />
                 智能选底
               </button>
               <button
@@ -931,7 +972,7 @@ export const GameTable: React.FC<GameTableProps> = ({
               </button>
               <button
                 type="button"
-                className="btn btn-gold"
+                className="btn btn-gold btn-lg"
                 disabled={!preview.valid}
                 onClick={handleConfirmBury}
               >
@@ -942,14 +983,6 @@ export const GameTable: React.FC<GameTableProps> = ({
 
           {view.phase === 'PLAYING' && isMyTurn && (
             <>
-              {autoSelectNote && (
-                <span className="pill auto-select-pill">{autoSelectNote}</span>
-              )}
-              {selectedIds.length > 0 && (
-                <span className={`pill ${preview.valid ? 'pill-green' : 'pill-red'}`}>
-                  {preview.valid ? preview.label : preview.error}
-                </span>
-              )}
               <button
                 type="button"
                 className="btn"
@@ -960,52 +993,22 @@ export const GameTable: React.FC<GameTableProps> = ({
                 }}
                 disabled={selectedIds.length === 0}
               >
+                <Icon name="undo" />
                 重选
               </button>
               <button type="button" className="btn btn-emerald" onClick={handleHintClick}>
+                <Icon name="bulb" />
                 提示
               </button>
               <button
                 type="button"
-                className="btn btn-gold btn-lg"
+                className="btn btn-gold btn-lg btn-play"
                 disabled={!preview.valid || isTrickPaused}
                 onClick={handleConfirmPlay}
               >
-                {isTrickPaused ? '稍候...' : `出牌 (${selectedIds.length})`}
+                {isTrickPaused ? '稍候…' : selectedIds.length > 0 ? `出牌 · ${selectedIds.length}` : '出牌'}
               </button>
             </>
-          )}
-
-          {!isMyTurn &&
-            view.phase !== 'DEALING' &&
-            view.phase !== 'CALLING' &&
-            view.phase !== 'COUNTER_BIDDING' &&
-            view.phase !== 'COUNTER_RESPONSE' &&
-            view.phase !== 'ROUND_OVER' &&
-            view.phase !== 'MATCH_OVER' && (
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                等待座位 {(view.currentTurn ?? 0) + 1} 操作...
-              </span>
-            )}
-        </div>
-
-        <div className="action-bar-group">
-          {view.phase === 'PLAYING' &&
-            view.dealer === meSeat &&
-            view.revealedBottom &&
-            view.revealedBottom.length > 0 && (
-              <button
-                type="button"
-                className="btn btn-xs btn-ghost"
-                onClick={() => setShowBottomModal(true)}
-              >
-                看底牌
-              </button>
-            )}
-          {view.phase === 'PLAYING' && (
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              第 {view.trickNumber} 墩
-            </span>
           )}
         </div>
       </div>
@@ -1024,6 +1027,7 @@ export const GameTable: React.FC<GameTableProps> = ({
         showPointPips={settings.showPointPips}
         onApplySelection={handleApplySelection}
       />
+      </div>
 
       {(view.phase === 'ROUND_OVER' || view.phase === 'MATCH_OVER') && (
         <SettlementModal
@@ -1059,17 +1063,18 @@ export const GameTable: React.FC<GameTableProps> = ({
                 className="btn btn-xs"
                 onClick={() => setInspectTrickSeat(null)}
               >
+                <Icon name="close" />
                 关闭
               </button>
             </div>
-            <div style={{ marginBottom: 8, fontSize: 12, color: 'var(--gold-strong)' }}>
+            <div className="modal-subtitle">
               {getTrickPlayLabel(
                 trickBySeat.get(inspectTrickSeat)!.parsed,
                 trickBySeat.get(inspectTrickSeat)!.cards.length,
                 activeLeadSeat === inspectTrickSeat,
               )}
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            <div className="cards-wrap">
               {sortHandForDisplay(
                 trickBySeat.get(inspectTrickSeat)!.cards,
                 view.trumpSuit,
@@ -1106,10 +1111,11 @@ export const GameTable: React.FC<GameTableProps> = ({
                   className="btn btn-xs"
                   onClick={() => setShowBottomModal(false)}
                 >
+                  <Icon name="close" />
                   关闭
                 </button>
               </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              <div className="cards-wrap">
                 {sortHandForDisplay(
                   view.revealedBottom,
                   view.trumpSuit,
