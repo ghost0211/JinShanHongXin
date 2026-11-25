@@ -832,41 +832,41 @@ export const GameTable: React.FC<GameTableProps> = ({
             >
               <div
                 className={`call-suit-btn is-called-highlight ${isRedSuit(calledSuit) ? 'is-red-suit' : 'is-black-suit'}`}
+                title={view.callState.callerSeat === meSeat ? `你已亮${getSuitName(calledSuit)}主` : `已亮${getSuitName(calledSuit)}主`}
               >
-                <span className="call-suit-glyph-wrap">
-                  <SuitGlyph suit={calledSuit} className="call-suit-glyph" />
-                </span>
-                <span className="call-suit-meta">
-                  <strong>{getSuitName(calledSuit)}主</strong>
-                  <small>{view.callState.callerSeat === meSeat ? '你已亮主' : '已亮主'}</small>
-                </span>
+                <SuitGlyph suit={calledSuit} className="call-suit-glyph" />
               </div>
             </div>
           ) : (
             <div className="call-suit-dock" role="group" aria-label="亮主花色选择">
-              {callOptions.map((opt, idx) => (
-                <button
-                  key={`${opt.suit}-${opt.count}-${idx}`}
-                  type="button"
-                  className={`call-suit-btn is-callable ${isRedSuit(opt.suit) ? 'is-red-suit' : 'is-black-suit'}`}
-                  title={opt.label}
-                  onClick={() =>
-                    onSendAction({
-                      type: 'CALL_TRUMP',
-                      seat: meSeat,
-                      suit: opt.suit,
-                      cardIds: opt.cardIds,
-                    })
-                  }
-                >
-                  <span className="call-suit-glyph-wrap">
+              {callOptions.map((opt, idx) => {
+                const duplicateSuit =
+                  callOptions.filter((other) => other.suit === opt.suit).length > 1;
+                return (
+                  <button
+                    key={`${opt.suit}-${opt.count}-${idx}`}
+                    type="button"
+                    className={`call-suit-btn is-callable ${isRedSuit(opt.suit) ? 'is-red-suit' : 'is-black-suit'}`}
+                    title={opt.label}
+                    aria-label={opt.label}
+                    onClick={() =>
+                      onSendAction({
+                        type: 'CALL_TRUMP',
+                        seat: meSeat,
+                        suit: opt.suit,
+                        cardIds: opt.cardIds,
+                      })
+                    }
+                  >
                     <SuitGlyph suit={opt.suit} className="call-suit-glyph" />
-                  </span>
-                  <span className="call-suit-meta">
-                    <strong>{view.isFirstRound ? `${opt.count}张2` : `亮${view.levelRank}`}</strong>
-                  </span>
-                </button>
-              ))}
+                    {duplicateSuit && (
+                      <span className="call-suit-count-badge" aria-hidden="true">
+                        ×{opt.count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
               {view.phase === 'CALLING' && canCallNow && (
                 <button
                   type="button"
