@@ -56,6 +56,10 @@ test('settings load defaults, migrate legacy skin/mute keys, and clamp volume cl
     assert.equal(clamped.tableSkin, 'night-blue'); // falls back to valid legacy key
     assert.equal(clamped.soundVolume, 100);
     assert.equal(clamped.handLayout, 'double');
+    // Legacy 'classic' skin falls back cleanly to new default 'ink'
+    storage.removeItem('jinshan.settings.v1');
+    storage.setItem('jinshan.tableSkin', 'classic');
+    assert.equal(loadAppSettings().tableSkin, 'ink');
   } finally {
     delete globalThis.window;
   }

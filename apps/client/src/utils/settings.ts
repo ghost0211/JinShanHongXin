@@ -1,24 +1,24 @@
 export const TABLE_SKIN_OPTIONS = [
   {
-    id: 'classic',
-    label: '经典翡翠',
-    desc: '传统丝绒翠绿牌桌',
-    swatch: 'linear-gradient(135deg, #2b8a64 0%, #0d3a2a 100%)',
-    accent: '#f4c96b',
-  },
-  {
-    id: 'night-blue',
-    label: '海派夜蓝',
-    desc: '静谧星夜鎏银质感',
-    swatch: 'linear-gradient(135deg, #3c8cc2 0%, #10243f 100%)',
-    accent: '#91def4',
+    id: 'ink',
+    label: '墨韵黛青',
+    desc: '水墨黛青漆盘 · 朱砂点睛',
+    swatch: 'linear-gradient(135deg, #2b4a44 0%, #0e1c1a 100%)',
+    accent: '#c43c2c',
   },
   {
     id: 'cinnabar',
-    label: '朱砂金',
-    desc: '东方漆器朱砂描金',
-    swatch: 'linear-gradient(135deg, #b83d3b 0%, #3d1620 100%)',
-    accent: '#f0c57a',
+    label: '朱漆描金',
+    desc: '东方朱漆牌桌 · 鎏金描边',
+    swatch: 'linear-gradient(135deg, #8a2d27 0%, #250a09 100%)',
+    accent: '#d6b26a',
+  },
+  {
+    id: 'night-blue',
+    label: '青花瓷蓝',
+    desc: '海派青花釉色 · 瓷白牌背',
+    swatch: 'linear-gradient(135deg, #2f5aa8 0%, #0b1530 100%)',
+    accent: '#f4f6fb',
   },
 ] as const;
 
@@ -43,7 +43,7 @@ const LEGACY_SKIN_KEY = 'jinshan.tableSkin';
 const LEGACY_MUTE_KEY = 'jinshan_sound_muted';
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  tableSkin: 'classic',
+  tableSkin: 'ink',
   soundEnabled: true,
   soundVolume: 82,
   hapticsEnabled: true,

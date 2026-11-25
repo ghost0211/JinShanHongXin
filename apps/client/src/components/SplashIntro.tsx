@@ -7,6 +7,8 @@ interface SplashIntroProps {
   onFinish: () => void;
 }
 
+const TITLE_CHARS = ['金', '山', '打', '红', '心'] as const;
+
 export const SplashIntro: React.FC<SplashIntroProps> = ({ skin, onFinish }) => {
   const [exiting, setExiting] = useState(false);
 
@@ -38,13 +40,19 @@ export const SplashIntro: React.FC<SplashIntroProps> = ({ skin, onFinish }) => {
       onClick={handleSkip}
       role="presentation"
     >
-      <div className="splash-frame" aria-hidden="true" />
-      <div className="splash-aura" aria-hidden="true" />
+      <div className="splash-wash" aria-hidden="true" />
+      <div className="splash-frame" aria-hidden="true">
+        <span className="splash-frame-corner is-tl" />
+        <span className="splash-frame-corner is-tr" />
+        <span className="splash-frame-corner is-bl" />
+        <span className="splash-frame-corner is-br" />
+      </div>
+      <div className="splash-waves" aria-hidden="true" />
 
       <div className="splash-stage">
-        {/* Three-card animated fan: ♠10 (打黑心) + ♥5 (红五尊主) + 大王 */}
-        <div className="splash-card-fan" aria-hidden="true">
-          <div className="splash-card splash-card-left pcard is-black">
+        {/* Three-card fan: ♠10 (打黑心) · 大王 · ♥5 (红五尊主) */}
+        <div className="splash-cards" aria-hidden="true">
+          <div className="splash-card is-left pcard">
             <div className="pcard-inner-frame" />
             <div className="pcard-corner pcard-corner-tl">
               <span className="pcard-rank is-ten">10</span>
@@ -59,7 +67,7 @@ export const SplashIntro: React.FC<SplashIntroProps> = ({ skin, onFinish }) => {
             </div>
           </div>
 
-          <div className="splash-card splash-card-right pcard is-joker-bj">
+          <div className="splash-card is-right pcard is-joker-bj">
             <div className="pcard-inner-frame" />
             <div className="pcard-corner pcard-corner-tl is-joker-corner">
               <span className="pcard-joker-crown">★</span>
@@ -76,7 +84,7 @@ export const SplashIntro: React.FC<SplashIntroProps> = ({ skin, onFinish }) => {
             </div>
           </div>
 
-          <div className="splash-card splash-card-hero pcard is-red is-red5-card">
+          <div className="splash-card is-hero pcard is-red is-red5-card">
             <div className="pcard-inner-frame" />
             <div className="pcard-corner pcard-corner-tl">
               <span className="pcard-rank">5</span>
@@ -95,17 +103,34 @@ export const SplashIntro: React.FC<SplashIntroProps> = ({ skin, onFinish }) => {
         </div>
 
         <div className="splash-brand">
-          <div className="splash-ornament">
-            <span className="splash-ornament-line" />
-            <span className="splash-ornament-suit">♥</span>
-            <span className="splash-ornament-line" />
+          <div className="splash-title-row">
+            <h1 className="splash-title" aria-label="金山打红心">
+              {TITLE_CHARS.map((ch, i) => (
+                <span
+                  key={ch + i}
+                  className={`splash-char ${ch === '红' ? 'is-red' : ''}`}
+                  style={{ '--i': i } as React.CSSProperties}
+                  aria-hidden="true"
+                >
+                  {ch}
+                </span>
+              ))}
+            </h1>
+            <span className="splash-seal" aria-hidden="true">
+              <span>金</span>
+              <span>山</span>
+            </span>
           </div>
-          <h1 className="splash-title">金山打红心</h1>
+          <div className="splash-rule" aria-hidden="true">
+            <span />
+            <i>◆</i>
+            <span />
+          </div>
           <p className="splash-subtitle">红心升级 · 黑心叫分 · 三副牌 510K</p>
         </div>
 
-        <div className="splash-progress">
-          <div className="splash-progress-bar" />
+        <div className="splash-progress" aria-hidden="true">
+          <span className="splash-progress-bar" />
         </div>
       </div>
 
@@ -118,6 +143,9 @@ export const SplashIntro: React.FC<SplashIntroProps> = ({ skin, onFinish }) => {
         }}
       >
         跳过
+        <svg className="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M6 6l6 6-6 6M13 6l6 6-6 6" />
+        </svg>
       </button>
     </div>
   );

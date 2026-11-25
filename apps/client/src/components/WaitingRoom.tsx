@@ -5,6 +5,7 @@ import {
   type LanHostStartResult,
 } from '../net/androidLan.js';
 import type { PlayMode } from '../hooks/useGameClient.js';
+import { Icon } from './Icons.js';
 import { QrCodeSvg } from './QrCodeSvg.js';
 
 interface WaitingRoomProps {
@@ -92,6 +93,7 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
     const isAlly = isHongxin && (pos === 'bottom' || pos === 'top');
     const isOppositeAlly = isHongxin && pos === 'top';
     const isEnemy = isHongxin && (pos === 'left' || pos === 'right');
+    const isSeatHost = slot.seat === room.hostSeat;
 
     const posLabel =
       pos === 'bottom'
@@ -104,17 +106,11 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
             ? '上家'
             : '下家';
 
-    const avatarText = !slot.occupied
-      ? '+'
-      : slot.isBot
-        ? '🤖'
-        : (slot.name || '玩').trim().slice(0, 1);
-
     const statusText = !slot.occupied
       ? '等待入座'
       : !slot.connected
         ? '离线保留'
-        : slot.seat === room.hostSeat
+        : isSeatHost
           ? '房主已就绪'
           : slot.ready
             ? '已准备'
@@ -124,211 +120,222 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
       ? 'is-empty'
       : !slot.connected
         ? 'is-offline'
-        : slot.ready || slot.seat === room.hostSeat
+        : slot.ready || isSeatHost
           ? 'is-ready'
           : 'is-waiting';
+
+    const teamCls = isMe ? 'is-me' : isOppositeAlly ? 'is-ally' : isEnemy ? 'is-enemy' : 'is-neutral';
+
+    const canSwap = !isMe && (!slot.occupied || slot.isBot);
+    const canAddBot = isHost && !slot.occupied;
+    const canRemoveBot = isHost && slot.isBot;
 
     return (
       <div
         key={slot.seat}
-        className={`table-seat-card pos-${pos} ${isMe ? 'is-me' : ''} ${
-          isAlly ? 'is-ally-team' : ''
-        } ${isOppositeAlly ? 'is-teammate' : ''} ${isEnemy ? 'is-enemy-team' : ''} ${
-          !slot.occupied ? 'is-empty-slot' : ''
-        }`}
+        className={`waiting-seat pos-${pos} ${teamCls} ${!slot.occupied ? 'is-empty-slot' : ''}`}
       >
-        <div className="table-seat-top">
-          <div className={`table-seat-avatar ${slot.isBot ? 'is-bot' : ''} ${!slot.occupied ? 'is-empty' : ''}`}>
-            {avatarText}
+        <div className="waiting-seat-badge">
+          <div className="waiting-seat-avatar-wrap">
+            <div
+              className={`waiting-seat-avatar ${slot.isBot ? 'is-bot' : ''} ${
+                !slot.occupied ? 'is-empty' : ''
+              }`}
+            >
+              {!slot.occupied ? (
+                <Icon name="plus" className="waiting-seat-avatar-icon" />
+              ) : slot.isBot ? (
+                <Icon name="robot" className="waiting-seat-avatar-icon" />
+              ) : (
+                (slot.name || '玩').trim().slice(0, 1)
+              )}
+            </div>
+            <span className={`waiting-seat-dot ${statusCls}`} aria-hidden="true" />
+            {isSeatHost && <span className="seal waiting-seat-seal">房主</span>}
           </div>
 
-          <div className="table-seat-info">
-            <div className="table-seat-badges">
-              <span
-                className={`pill table-role-pill ${
-                  isMe
-                    ? 'pill-gold'
-                    : isOppositeAlly
-                      ? 'pill-ally'
-                      : isEnemy
-                        ? 'pill-enemy'
-                        : ''
-                }`}
-              >
-                {isOppositeAlly ? '★ 队友' : posLabel}
-              </span>
+          <div className="waiting-seat-plate">
+            <div className="waiting-seat-name-row">
+              <strong className="waiting-seat-name">
+                {slot.occupied ? slot.name : `空位 ${slot.seat + 1}`}
+              </strong>
+              <span className="waiting-seat-index">座{slot.seat + 1}</span>
+            </div>
+            <div className="waiting-seat-tags">
+              <span className={`waiting-role-tag ${teamCls}`}>{posLabel}</span>
               {isHongxin && (
-                <span className={`table-team-tag ${isAlly ? 'is-ally' : 'is-enemy'}`}>
+                <span className={`waiting-team-tag ${isAlly ? 'is-ally' : 'is-enemy'}`}>
                   {isAlly ? `我方 ${slot.team}队` : `对手 ${slot.team}队`}
                 </span>
               )}
-              {slot.seat === room.hostSeat && <span className="pill pill-gold">房主</span>}
             </div>
-
-            <div className="table-seat-name-row">
-              <strong className="table-seat-name">
-                {slot.occupied ? slot.name : `空位 ${slot.seat + 1}`}
-              </strong>
-              <span className="table-seat-index">座{slot.seat + 1}</span>
-            </div>
-
-            <div className="table-seat-status">
-              <span className={`seat-status-dot ${statusCls}`} />
-              <span>{statusText}</span>
-            </div>
+            <div className={`waiting-seat-status ${statusCls}`}>{statusText}</div>
           </div>
         </div>
 
-        <div className="table-seat-actions">
-          {!isMe && (!slot.occupied || slot.isBot) && (
-            <button
-              type="button"
-              className="btn btn-xs"
-              onClick={() => onSwapSeat(slot.seat)}
-            >
-              换到此座
-            </button>
-          )}
-          {isHost && !slot.occupied && (
-            <button
-              type="button"
-              className="btn btn-xs btn-emerald"
-              onClick={() => onSetSeatBot(slot.seat, true)}
-            >
-              +机器人
-            </button>
-          )}
-          {isHost && slot.isBot && (
-            <button
-              type="button"
-              className="btn btn-xs"
-              onClick={() => onSetSeatBot(slot.seat, false)}
-            >
-              移除
-            </button>
-          )}
-        </div>
+        {(canSwap || canAddBot || canRemoveBot) && (
+          <div className="waiting-seat-actions">
+            {canSwap && (
+              <button
+                type="button"
+                className="btn btn-xs"
+                onClick={() => onSwapSeat(slot.seat)}
+              >
+                换到此座
+              </button>
+            )}
+            {canAddBot && (
+              <button
+                type="button"
+                className="btn btn-xs btn-emerald"
+                onClick={() => onSetSeatBot(slot.seat, true)}
+              >
+                +机器人
+              </button>
+            )}
+            {canRemoveBot && (
+              <button
+                type="button"
+                className="btn btn-xs btn-ghost"
+                onClick={() => onSetSeatBot(slot.seat, false)}
+              >
+                移除
+              </button>
+            )}
+          </div>
+        )}
       </div>
     );
   };
 
   return (
     <div className="waiting-wrap">
-      {/* Compact Top Room Header */}
-      <div className="card-panel waiting-header">
+      {/* Room header */}
+      <header className="waiting-header">
         <div className="waiting-header-left">
-          <strong className="waiting-room-code">房号：{room.roomId}</strong>
+          <div className="waiting-room-code">
+            <span className="waiting-room-code-label">房号</span>
+            <strong>{room.roomId}</strong>
+          </div>
           {playMode !== 'offline' && (
             <button
               type="button"
-              className="btn btn-xs"
+              className="btn btn-xs btn-ghost"
               onClick={() => onCopyRoomId(room.roomId)}
             >
+              <Icon name="copy" />
               复制房号
             </button>
           )}
-          <span className="pill pill-gold">
-            {isHongxin ? '金山打红心 (2v2)' : '金山打黑心 (1v3)'}
+          <span className={`pill ${isHongxin ? 'pill-red' : 'pill-gold'}`}>
+            {isHongxin ? '金山打红心 · 2V2' : '金山打黑心 · 1V3'}
           </span>
           {modeBadgeLabel && <span className="pill pill-green">{modeBadgeLabel}</span>}
-          {room.debugMode && <span className="pill pill-green">调试模式</span>}
+          {room.debugMode && <span className="pill pill-blue">调试模式</span>}
         </div>
 
         <div className="waiting-header-right">
           {isHost && (
-            <>
+            <div className="segmented-control waiting-mode-switch" role="radiogroup" aria-label="玩法">
               <button
                 type="button"
-                className={`btn btn-xs ${isHongxin ? 'btn-gold' : ''}`}
+                role="radio"
+                aria-checked={isHongxin}
+                className={isHongxin ? 'is-active' : ''}
                 onClick={() => onSetMode('hongxin')}
               >
                 打红心
               </button>
               <button
                 type="button"
-                className={`btn btn-xs ${!isHongxin ? 'btn-gold' : ''}`}
+                role="radio"
+                aria-checked={!isHongxin}
+                className={!isHongxin ? 'is-active' : ''}
                 onClick={() => onSetMode('heixin')}
               >
                 打黑心
               </button>
-            </>
+            </div>
           )}
           <button type="button" className="btn btn-xs btn-crimson" onClick={onLeave}>
+            <Icon name="exit" />
             {lanHostInfo ? '关闭房间' : '离开房间'}
           </button>
         </div>
-      </div>
+      </header>
 
-      {/* Main Perspective Table + Optional LAN QR Side Card */}
+      {/* Lacquer table with four seats + optional LAN invite side card */}
       <div className={`waiting-stage ${showLanSidebar ? 'has-lan-side' : ''}`}>
-        <section className="waiting-table-arena" aria-label="拟真牌桌座位布局">
-          {/* Decorative felt table surface spanning center */}
-          <div className={`waiting-table-felt ${isHongxin ? 'is-hongxin' : 'is-heixin'}`}>
-            {isHongxin && (
-              <div className="table-ally-axis" aria-hidden="true">
-                <span className="ally-axis-cap is-top">▲ 队友</span>
-                <span className="ally-axis-line" />
-                <span className="ally-axis-cap is-bottom">▼ 我方</span>
-              </div>
-            )}
+        <section
+          className={`waiting-arena ${isHongxin ? 'is-hongxin' : 'is-heixin'}`}
+          aria-label="拟真牌桌座位布局"
+        >
+          <div className="waiting-felt" aria-hidden="true">
+            <span className="waiting-felt-medal" />
+            {isHongxin && <span className="waiting-ally-axis" />}
+          </div>
 
-            <div className="table-center-hub">
-              <div className="table-center-badge">
-                {isHongxin ? (
-                  <>
-                    <strong>上下对家同队 · 2 打 2</strong>
-                    <span>你（下方）与对面 {room.seats[topSeat].name} 并肩作战</span>
-                  </>
-                ) : (
-                  <>
-                    <strong>1 打 3 · 叫分抢庄</strong>
-                    <span>各自抢庄 · 庄家独抗三家闲家</span>
-                  </>
-                )}
-              </div>
+          <div className="waiting-center">
+            <div className="waiting-center-badge">
+              {isHongxin ? (
+                <>
+                  <strong>上下对家同队 · 2 打 2</strong>
+                  <span>你与对面 {room.seats[topSeat].name || '队友'} 并肩作战</span>
+                </>
+              ) : (
+                <>
+                  <strong>1 打 3 · 叫分抢庄</strong>
+                  <span>各自抢庄，庄家独抗三家</span>
+                </>
+              )}
+            </div>
 
-              <div className="table-center-actions">
-                {!isHost && (
-                  <button
-                    type="button"
-                    className={`btn btn-lg ${me.ready ? '' : 'btn-emerald'}`}
-                    onClick={() => onSetReady(!me.ready)}
-                  >
-                    {me.ready ? '取消准备' : '准备就绪'}
-                  </button>
-                )}
+            <div className="waiting-center-actions">
+              {!isHost && (
+                <button
+                  type="button"
+                  className={`btn btn-lg ${me.ready ? '' : 'btn-emerald'}`}
+                  onClick={() => onSetReady(!me.ready)}
+                >
+                  {me.ready ? '取消准备' : '准备就绪'}
+                </button>
+              )}
 
-                {isHost && !allOccupied && (
-                  <button
-                    type="button"
-                    className="btn btn-emerald"
-                    onClick={handleFillAllBots}
-                  >
-                    + 一键补满机器人 ({emptySeats.length})
-                  </button>
-                )}
+              {isHost && (
+                <button
+                  type="button"
+                  className="btn btn-gold btn-lg waiting-start-btn"
+                  disabled={!allOccupied || !allOnline || !allReady}
+                  onClick={onStartGame}
+                >
+                  {!allOccupied ? (
+                    `还缺 ${emptySeats.length} 人`
+                  ) : !allOnline ? (
+                    '等待离线重连'
+                  ) : !allReady ? (
+                    '等待牌友准备'
+                  ) : (
+                    <>
+                      <Icon name="play" />
+                      开始对局
+                    </>
+                  )}
+                </button>
+              )}
 
-                {isHost && (
-                  <button
-                    type="button"
-                    className="btn btn-gold btn-lg"
-                    disabled={!allOccupied || !allOnline || !allReady}
-                    onClick={onStartGame}
-                  >
-                    {!allOccupied
-                      ? `还缺 ${emptySeats.length} 人`
-                      : !allOnline
-                        ? '等待离线重连'
-                        : !allReady
-                          ? '等待牌友准备'
-                          : '✦ 开始对局'}
-                  </button>
-                )}
-              </div>
+              {isHost && !allOccupied && (
+                <button
+                  type="button"
+                  className="btn btn-emerald"
+                  onClick={handleFillAllBots}
+                >
+                  <Icon name="robot" />
+                  一键补满机器人 ({emptySeats.length})
+                </button>
+              )}
             </div>
           </div>
 
-          {/* 4 Perspective Seats */}
           {renderSeatCard(room.seats[topSeat], 'top')}
           {renderSeatCard(room.seats[leftSeat], 'left')}
           {renderSeatCard(room.seats[rightSeat], 'right')}
@@ -338,13 +345,16 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
         {showLanSidebar && lanHostInfo && (
           <aside className="card-panel lan-invite-side">
             <div className="lan-invite-head">
-              <strong>📡 局域网邀请</strong>
-              <span className="pill pill-green">UDP 广播中</span>
+              <h2 className="section-title">局域网邀请</h2>
+              <span className="pill pill-green">
+                <i className="lan-live-dot" />
+                UDP 广播中
+              </span>
             </div>
 
             <div className="lan-qr-box">
               {lanJoinUrl ? (
-                <QrCodeSvg value={lanJoinUrl} size={136} />
+                <QrCodeSvg value={lanJoinUrl} size={136} className="lan-qr-svg" />
               ) : (
                 <div className="lan-qr-placeholder">未检测到局域网 IP</div>
               )}
@@ -355,17 +365,20 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
               {onRefreshLanHost && (
                 <button
                   type="button"
-                  className="btn btn-xs"
+                  className="btn btn-xs btn-ghost"
                   onClick={onRefreshLanHost}
                 >
-                  ↻ 刷新IP
+                  <Icon name="refresh" />
+                  刷新IP
                 </button>
               )}
             </div>
 
             {lanJoinUrl ? (
               <div className="lan-side-url-wrap">
-                <code className="lan-url-code">{lanJoinUrl}</code>
+                <code className="lan-url-code" title={lanJoinUrl}>
+                  {lanJoinUrl}
+                </code>
                 <button
                   type="button"
                   className="btn btn-xs btn-gold"
@@ -375,6 +388,7 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
                       : onCopyRoomId(lanJoinUrl)
                   }
                 >
+                  <Icon name="copy" />
                   复制直连链接
                 </button>
               </div>
@@ -386,12 +400,12 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
 
             {lanHostInfo.ips.length > 1 && (
               <div className="lan-ip-chips">
-                <span className="lan-ip-label">切换 IP：</span>
+                <span className="lan-ip-label">切换 IP</span>
                 {lanHostInfo.ips.map((ip) => (
                   <button
                     key={ip}
                     type="button"
-                    className={`btn btn-xs ${ip === activeIp ? 'btn-gold' : ''}`}
+                    className={`btn btn-xs ${ip === activeIp ? 'btn-gold' : 'btn-ghost'}`}
                     onClick={() => setSelectedIp(ip)}
                   >
                     {ip}
@@ -401,7 +415,7 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
             )}
 
             <p className="lan-invite-tip">
-              安卓好友在「局域网」页自动发现入座；iPhone / 电脑浏览器直接扫码免装包进房；请保持房主在前台。
+              安卓好友在「局域网」页自动发现入座；iPhone / 电脑扫码免装包进房；请保持房主在前台。
             </p>
           </aside>
         )}
