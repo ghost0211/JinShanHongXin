@@ -1181,27 +1181,28 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 12px;
   max-width: calc(100% - 210px);
   pointer-events: auto;
 }
 
 .call-suit-btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  min-height: 36px;
-  padding: 4px 13px 4px 10px;
-  border-radius: 999px;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: 50%;
   border: 1.5px solid var(--gold);
-  background: linear-gradient(180deg, #fffdf7 0%, #f1e2c2 100%);
+  background: radial-gradient(circle at 35% 28%, #ffffff 0%, #fbf5e6 55%, #ebd9b4 100%);
   color: #1f1b16;
   font-family: inherit;
   box-shadow:
-    0 0 0 1px rgba(255, 245, 214, 0.55) inset,
+    0 0 0 1px rgba(255, 248, 224, 0.72) inset,
     0 0 14px color-mix(in srgb, var(--gold) 58%, transparent),
-    0 3px 10px rgba(0, 0, 0, 0.42);
+    0 3px 10px rgba(0, 0, 0, 0.44);
   transition: transform 140ms var(--ease-out), box-shadow 160ms ease, filter 160ms ease;
 }
 
@@ -1211,52 +1212,42 @@
 }
 
 .call-suit-btn.is-callable:hover {
-  transform: translateY(-2px) scale(1.04);
+  transform: translateY(-2px) scale(1.07);
   box-shadow:
-    0 0 0 1px rgba(255, 250, 232, 0.78) inset,
-    0 0 20px color-mix(in srgb, var(--gold-hi) 82%, transparent),
+    0 0 0 1px rgba(255, 250, 232, 0.85) inset,
+    0 0 22px color-mix(in srgb, var(--gold-hi) 86%, transparent),
     0 6px 14px rgba(0, 0, 0, 0.45);
 }
 
 .call-suit-btn.is-callable:active {
-  transform: translateY(0) scale(0.97);
+  transform: translateY(0) scale(0.95);
 }
 
 .call-suit-btn.is-called-highlight {
   cursor: default;
-  padding: 4px 15px 4px 11px;
-  border: 2px solid #fff3c4;
-  background: linear-gradient(180deg, #fff7d6 0%, #f4cc6c 54%, #dfa334 100%);
-  color: #241706;
+  width: 46px;
+  height: 46px;
+  border: 2px solid #fff5cf;
+  background: radial-gradient(circle at 35% 28%, #fffbe6 0%, #f8d47a 54%, #dfa02c 100%);
   box-shadow:
-    0 0 0 1px rgba(255, 252, 235, 0.85) inset,
-    0 0 0 3px color-mix(in srgb, var(--gold-hi) 42%, transparent),
-    0 0 24px color-mix(in srgb, var(--gold-hi) 85%, transparent),
-    0 4px 14px rgba(0, 0, 0, 0.48);
+    0 0 0 1.5px rgba(255, 253, 240, 0.9) inset,
+    0 0 0 3.5px color-mix(in srgb, var(--gold-hi) 48%, transparent),
+    0 0 26px color-mix(in srgb, var(--gold-hi) 92%, transparent),
+    0 4px 14px rgba(0, 0, 0, 0.5);
   animation: callSuitLockIn 280ms var(--ease-out), callSuitHighlightPulse 1.8s ease-in-out infinite 280ms;
 }
 
-.call-suit-glyph-wrap {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
-  flex-shrink: 0;
-}
-
-.call-suit-btn.is-called-highlight .call-suit-glyph-wrap {
-  background: rgba(255, 253, 245, 0.92);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
-}
-
 .call-suit-glyph {
-  width: 17px;
-  height: 17px;
+  width: 23px;
+  height: 23px;
   display: block;
+  filter: drop-shadow(0 1px 1px rgba(255, 255, 255, 0.5));
+}
+
+.call-suit-btn.is-called-highlight .call-suit-glyph {
+  width: 26px;
+  height: 26px;
+  filter: drop-shadow(0 1px 2px rgba(255, 250, 224, 0.72));
 }
 
 .call-suit-btn.is-red-suit .call-suit-glyph {
@@ -1267,26 +1258,24 @@
   color: #191d24;
 }
 
-.call-suit-meta {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  line-height: 1.08;
-}
-
-.call-suit-meta strong {
-  font-size: 13px;
-  font-weight: 900;
-  letter-spacing: 0.03em;
-  color: #211912;
-  white-space: nowrap;
-}
-
-.call-suit-meta small {
+.call-suit-count-badge {
+  position: absolute;
+  top: -4px;
+  right: -5px;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-num);
   font-size: 10px;
-  font-weight: 700;
-  color: #5b3b09;
-  white-space: nowrap;
+  font-weight: 900;
+  color: #fff6db;
+  background: linear-gradient(180deg, #b83327, #851d15);
+  border: 1px solid #f7d996;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.45);
 }
 
 .call-suit-pass-btn {
@@ -1516,29 +1505,23 @@
     height: 30px;
   }
   .call-suit-dock {
-    gap: 7px;
+    gap: 10px;
   }
   .call-suit-btn {
-    min-height: 32px;
-    padding: 3px 10px 3px 8px;
-    gap: 5px;
+    width: 36px;
+    height: 36px;
   }
   .call-suit-btn.is-called-highlight {
-    padding: 3px 12px 3px 9px;
-  }
-  .call-suit-glyph-wrap {
-    width: 21px;
-    height: 21px;
+    width: 40px;
+    height: 40px;
   }
   .call-suit-glyph {
-    width: 15px;
-    height: 15px;
+    width: 20px;
+    height: 20px;
   }
-  .call-suit-meta strong {
-    font-size: 12px;
-  }
-  .call-suit-meta small {
-    font-size: 9.5px;
+  .call-suit-btn.is-called-highlight .call-suit-glyph {
+    width: 22px;
+    height: 22px;
   }
   .call-suit-pass-btn {
     min-height: 30px;
