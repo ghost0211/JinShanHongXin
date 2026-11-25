@@ -1364,6 +1364,7 @@
 
 .hand-row {
   position: relative;
+  z-index: 1;
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -1380,8 +1381,10 @@
 }
 
 /* Second (non-trump) row tucks over the lower part of the trump row; the
-   rank, suit, point dot and role seal of row 1 stay visible. */
+   rank, suit, point dot and role seal of row 1 stay visible.
+   Explicit z-index isolates each row's stacking context so row 2 always sits above row 1. */
 .hand-row.is-multi-row + .hand-row.is-multi-row {
+  z-index: 2;
   margin-top: calc(var(--card-h) * -0.22 - 18px);
 }
 
