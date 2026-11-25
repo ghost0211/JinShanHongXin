@@ -58,8 +58,19 @@ class SoundController {
     }
   }
 
-  private getContext(create = false): AudioContext | null {
-    if (this.muted || typeof window === 'undefined') return null;
+  /**
+   * Shared single AudioContext across SFX and BGM.
+   * Android WebView / mobile Chromium can silence an older AudioContext when a
+   * second AudioContext starts playing, so all audio buses MUST share one context.
+   */
+  getSharedAudioContext(create = false): AudioContext | null {
+    if (typeof window === 'undefined') return null;
+    if (this.ctx && this.ctx.state === 'closed') {
+      this.ctx = null;
+      this.output = null;
+      this.cardSamples.slide.length = 0;
+      this.cardSamples.land.length = 0;
+    }
     if (this.ctx || !create) return this.ctx;
     const AudioCtx =
       window.AudioContext ||
@@ -73,10 +84,15 @@ class SoundController {
     limiter.attack.value = 0.003;
     limiter.release.value = 0.12;
     this.output = ctx.createGain();
-    this.output.gain.value = this.volume;
+    this.output.gain.value = this.muted ? 0 : this.volume;
     this.output.connect(limiter).connect(ctx.destination);
     this.ctx = ctx;
     return ctx;
+  }
+
+  private getContext(create = false): AudioContext | null {
+    if (this.muted || typeof window === 'undefined') return null;
+    return this.getSharedAudioContext(create);
   }
 
   unlock(): void {
@@ -86,6 +102,15 @@ class SoundController {
     } catch {
       // Audio is optional on browsers without a usable output device.
     }
+  }
+
+  /** Reset cached AudioContext references (used by tests when swapping mock window). */
+  resetContext(): void {
+    this.stopCardSounds();
+    this.ctx = null;
+    this.output = null;
+    this.cardSamples.slide.length = 0;
+    this.cardSamples.land.length = 0;
   }
 
   stopCardSounds(): void {
@@ -123,7 +148,7 @@ class SoundController {
   }
 
   playTap(): void {
-    this.tone(540, 0.045, 'sine', 0.05);
+    this.tone(540, 0.05, 'sine', 0.09);
     if (!this.hapticsEnabled) return;
     try {
       (
