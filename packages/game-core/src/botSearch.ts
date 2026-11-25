@@ -15,6 +15,7 @@ import {
   createThreeDecks,
   getCardCategory,
   getCardKey,
+  getCardOrder,
   getCardPoints,
   getSeatTeam,
   STANDARD_SUITS,
@@ -26,6 +27,7 @@ import {
   chooseHeuristicPlayCards,
   getCardValueCost,
   isSameSide,
+  type PublicCardTracker,
   rankFollowCandidates,
   rankLeadCandidates,
 } from './bot.js';
@@ -106,7 +108,7 @@ interface World {
 function sampleWorld(
   state: GameState,
   seat: Seat,
-  voids: (s: Seat, cat: CardCategory) => boolean,
+  tracker: PublicCardTracker,
   rng: () => number,
   respectVoids: boolean,
 ): World | null {
@@ -147,7 +149,7 @@ function sampleWorld(
     if (slot === BOTTOM) return !(state.mode === 'heixin' && card.rank === '10');
     if (slot === seat) return false;
     if (!respectVoids) return true;
-    return !voids(slot as Seat, getCardCategory(card, trumpSuit, levelRank));
+    return !tracker.isSeatVoid(slot as Seat, getCardCategory(card, trumpSuit, levelRank));
   };
 
   // Shuffle, then place the most constrained cards first
@@ -160,8 +162,11 @@ function sampleWorld(
     .map((card) => ({ card, freedom: slotsFor(card) }))
     .sort((a, b) => a.freedom - b.freedom);
 
-  // Bayesian public-info slot weight: dealers almost never bury trumps or Aces,
-  // and the dealer / trump caller typically holds more trumps than non-callers.
+  // Bayesian public-info slot weight:
+  // - dealers almost never bury trumps or Aces
+  // - dealer/caller & voluntary trump leaders tend to hold more trumps; heavy non-caller trump spenders fewer
+  // - players who repeatedly slough non-point cards of a side suit are likely short/void-seeking in that suit
+  // - 4th-seat players who failed to overtake an enemy on a >=10pt trick are unlikely to hold higher cards in that category
   const slotWeight = (card: Card, sl: number): number => {
     const cat = getCardCategory(card, trumpSuit, levelRank);
     if (sl === BOTTOM) {
@@ -170,11 +175,38 @@ function sampleWorld(
       if (getCardPoints(card) > 0) return 0.7;
       return 1.35;
     }
+    const targetSeat = sl as Seat;
+    let w = 1.0;
+
     if (cat === 'TRUMP') {
-      if (sl === state.dealer || sl === state.callState.callerSeat) return 1.35;
-      return 1.0;
+      const isTrumpRole =
+        targetSeat === state.dealer || targetSeat === state.callState.callerSeat;
+      if (isTrumpRole) {
+        w *= state.mode === 'heixin' && targetSeat === state.dealer ? 1.45 : 1.35;
+      }
+      if (tracker.voluntaryTrumpLeads(targetSeat) >= 1) {
+        w *= 1.18;
+      }
+      const spent = tracker.trumpsPlayed(targetSeat);
+      if (!isTrumpRole && spent >= 13) {
+        w *= Math.max(0.6, 1 - (spent - 12) * 0.06);
+      }
+    } else {
+      const disc = tracker.offSuitDiscardCount(targetSeat, cat);
+      if (disc >= 1) {
+        w *= Math.max(0.45, 1 - disc * 0.2);
+      }
     }
-    return 1.0;
+
+    const failedOrd = tracker.failedHighOrder(targetSeat, cat);
+    if (failedOrd !== null) {
+      const ord = getCardOrder(card, trumpSuit, levelRank);
+      if (ord > failedOrd) {
+        w *= cat === 'TRUMP' ? 0.35 : 0.18;
+      }
+    }
+
+    return w;
   };
 
   for (const { card } of order) {
@@ -253,18 +285,74 @@ function handResourceStrength(
   return strength;
 }
 
+function smoothRamp(val: number, lo: number, hi: number, weight: number): number {
+  if (val <= lo) return 0;
+  if (val >= hi) return weight;
+  return ((val - lo) / (hi - lo)) * weight;
+}
+
+/**
+ * Nonlinear strategic value of the challenger score, capturing exact game thresholds:
+ * - Hongxin: 5 (break shutout), 40 (2-step vs 1-step), 120 (pass line!), 180 / 240 (60-pt steps)
+ * - Heixin: exact bid threshold (300 - bidScore + 5) deciding ±3×bidScore payout
+ */
+function challengerThresholdPotential(state: GameState, challengerScore: number): number {
+  if (state.mode === 'heixin') {
+    const bid = state.bidState?.highestBid ?? 150;
+    const target = 300 - bid + 5;
+    const scale = Math.max(0.85, Math.min(1.45, bid / 150));
+    const bonus =
+      smoothRamp(challengerScore, target - 30, target, 14 * scale) +
+      (challengerScore >= target ? 38 * scale : 0);
+    // Excess points beyond the winning target carry little extra payout value in Heixin
+    const excessDiscount = Math.max(0, challengerScore - target) * 0.45;
+    return bonus - excessDiscount;
+  }
+
+  return (
+    (challengerScore >= 5 ? 6 : 0) +
+    smoothRamp(challengerScore, 20, 40, 5) +
+    (challengerScore >= 40 ? 10 : 0) +
+    smoothRamp(challengerScore, 90, 120, 12) +
+    (challengerScore >= 120 ? 24 : 0) +
+    smoothRamp(challengerScore, 155, 180, 5) +
+    (challengerScore >= 180 ? 10 : 0) +
+    smoothRamp(challengerScore, 215, 240, 5) +
+    (challengerScore >= 240 ? 10 : 0)
+  );
+}
+
 function evaluateOutcome(
   start: GameState,
   end: GameState,
   seat: Seat,
   opts: SearchOptions,
 ): number {
-  let dCh = end.challengerPoints - start.challengerPoints;
+  const startCh = start.challengerPoints;
+  const endCh = end.settlement
+    ? end.settlement.totalChallengerScore
+    : end.challengerPoints;
+  const dCh = endCh - startCh;
   const dBk = end.bankerPoints - start.bankerPoints;
-  if (end.settlement) {
-    dCh += end.settlement.totalChallengerScore - end.settlement.tableChallengerPoints;
-  }
-  let v = isChallengerSide(start, seat) ? dCh - dBk : dBk - dCh;
+
+  // Apply score-threshold potential ONLY at full round settlement (endgame rollout) or
+  // lightly weighted in late game so 1-trick midgame lookahead never suffers horizon artifacts
+  // (like burning ♥5 midgame just to cross 120 two tricks early).
+  const cardsLeft = end.phase === 'PLAYING' ? end.hands[seat].length : 0;
+  const thresholdWeight = end.settlement
+    ? 1.0
+    : cardsLeft <= 10
+      ? ((11 - cardsLeft) / 11) * 0.45
+      : 0;
+  const dThreshold =
+    thresholdWeight > 0
+      ? (challengerThresholdPotential(start, endCh) -
+          challengerThresholdPotential(start, startCh)) *
+        thresholdWeight
+      : 0;
+
+  const challenger = isChallengerSide(start, seat);
+  let v = challenger ? dCh - dBk + dThreshold : dBk - dCh - dThreshold;
 
   if (end.phase === 'PLAYING') {
     const { trumpSuit, levelRank } = end;
@@ -272,8 +360,16 @@ function evaluateOutcome(
       const strength = handResourceStrength(end.hands[s], trumpSuit, levelRank);
       v += (isSameSide(start, seat, s) ? 1 : -1) * opts.alpha * strength;
     }
+    const iAmDealer = start.dealer === seat;
+    const knownBottomPts = iAmDealer
+      ? start.bottomCards.reduce((sum, c) => sum + getCardPoints(c), 0)
+      : 0;
+    const isEndgame = end.hands[seat].length <= 10;
+
     if (end.currentTrick.length === 0 && end.currentTurn !== null) {
-      v += (isSameSide(start, seat, end.currentTurn) ? 1 : -1) * opts.leadBonus;
+      const extraLead =
+        iAmDealer && isEndgame && knownBottomPts >= 15 ? knownBottomPts * 0.14 : 0;
+      v += (isSameSide(start, seat, end.currentTurn) ? 1 : -1) * (opts.leadBonus + extraLead);
     }
   }
   return v;
@@ -326,7 +422,7 @@ export function searchPlayCards(
   const deterministic = seatsAfterMe === 0 && horizon === 1;
   const maxWorlds = deterministic ? 1 : opts.worlds;
 
-  const tracker = buildPublicCardTracker(state, seat);
+  const tracker = buildPublicCardTracker(state, seat, true);
   const rng = mulberry32(decisionSeed(state, seat));
   const base: GameState = { ...state, events: [] };
   const totals = new Array<number>(candidates.length).fill(0);
@@ -338,7 +434,7 @@ export function searchPlayCards(
     if (worldsDone >= opts.minWorlds && Date.now() - t0 > opts.timeBudgetMs) break;
     let world: World | null = null;
     for (let attempt = 0; attempt < 12 && !world; attempt++) {
-      world = sampleWorld(state, seat, tracker.isSeatVoid, rng, attempt < 8);
+      world = sampleWorld(state, seat, tracker, rng, attempt < 8);
     }
     if (!world) break;
     const worldState: GameState = { ...base, hands: world.hands, bottomCards: world.bottom };

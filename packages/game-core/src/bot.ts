@@ -42,10 +42,19 @@ const ALL_CATEGORIES: readonly CardCategory[] = ['TRUMP', 'S', 'H', 'C', 'D'];
 export interface PublicCardTracker {
   unseenByCat: Map<CardCategory, Card[]>;
   voidSeatsByCat: Map<CardCategory, Set<Seat>>;
+  trumpsPlayedBySeat: Record<Seat, number>;
+  voluntaryTrumpLeadsBySeat: Record<Seat, number>;
+  offSuitDiscardsBySeat: Record<Seat, Record<StandardSuit, number>>;
   unseenCount: (cat: CardCategory) => number;
   maxUnseenOrder: (cat: CardCategory) => number;
   isComponentUnbeatable: (cat: CardCategory, comp: AtomicPattern) => boolean;
   isSeatVoid: (seat: Seat, cat: CardCategory) => boolean;
+  hasPossibleTrump: (seat: Seat) => boolean;
+  anySeatHasPossibleTrump: (seats: readonly Seat[]) => boolean;
+  trumpsPlayed: (seat: Seat) => number;
+  voluntaryTrumpLeads: (seat: Seat) => number;
+  offSuitDiscardCount: (seat: Seat, suit: StandardSuit) => number;
+  failedHighOrder: (seat: Seat, cat: CardCategory) => number | null;
 }
 
 export function isSameSide(state: GameState, a: Seat, b: Seat): boolean {
@@ -60,7 +69,11 @@ export function isSameSide(state: GameState, a: Seat, b: Seat): boolean {
  * completed tricks, current trick, the bot's own hand, and (if bot is dealer)
  * the 10 cards the bot itself buried. Never reads other seats' hidden hands.
  */
-export function buildPublicCardTracker(state: GameState, seat: Seat): PublicCardTracker {
+export function buildPublicCardTracker(
+  state: GameState,
+  seat: Seat,
+  includeSearchSignals = false,
+): PublicCardTracker {
   const { trumpSuit, levelRank } = state;
   const knownIds = new Set<number>();
 
@@ -78,8 +91,26 @@ export function buildPublicCardTracker(state: GameState, seat: Seat): PublicCard
     voidSeatsByCat.set(cat, new Set<Seat>());
   }
 
+  const trumpsPlayedBySeat: Record<Seat, number> = { 0: 0, 1: 0, 2: 0, 3: 0 };
+  const voluntaryTrumpLeadsBySeat: Record<Seat, number> = { 0: 0, 1: 0, 2: 0, 3: 0 };
+  const offSuitDiscardsBySeat: Record<Seat, Record<StandardSuit, number>> = {
+    0: { S: 0, H: 0, C: 0, D: 0 },
+    1: { S: 0, H: 0, C: 0, D: 0 },
+    2: { S: 0, H: 0, C: 0, D: 0 },
+    3: { S: 0, H: 0, C: 0, D: 0 },
+  };
+  const failedOrderBySeat = includeSearchSignals
+    ? new Map<Seat, Map<CardCategory, number>>()
+    : null;
+  if (failedOrderBySeat) {
+    for (const s of ALL_SEATS) {
+      failedOrderBySeat.set(s, new Map<CardCategory, number>());
+    }
+  }
+
   const inspectTrick = (
-    plays: ReadonlyArray<{ seat: Seat; cards: readonly Card[]; parsed: ParsedPlay }>,
+    plays: ReadonlyArray<{ seat: Seat; cards: Card[]; parsed: ParsedPlay }>,
+    trickIndex: number,
   ) => {
     if (plays.length === 0) return;
     const leadPlay = plays[0];
@@ -89,10 +120,18 @@ export function buildPublicCardTracker(state: GameState, seat: Seat): PublicCard
       .filter((c) => c.type === 'F510K')
       .reduce((sum, c) => sum + c.length, 0);
 
+    // Voluntary trump lead in early/mid-game signals trump strength
+    if (includeSearchSignals && leadCat === 'TRUMP' && trickIndex < 22) {
+      voluntaryTrumpLeadsBySeat[leadPlay.seat] += 1;
+    }
+
     for (let i = 0; i < plays.length; i++) {
       const p = plays[i];
       for (const c of p.cards) {
         knownIds.add(c.id);
+        if (includeSearchSignals && getCardCategory(c, trumpSuit, levelRank) === 'TRUMP') {
+          trumpsPlayedBySeat[p.seat] += 1;
+        }
       }
       if (i === 0) continue;
 
@@ -109,14 +148,66 @@ export function buildPublicCardTracker(state: GameState, seat: Seat): PublicCard
         } else {
           voidSeatsByCat.get(leadCat)!.add(p.seat);
         }
+
+        // Discard signal: sloughing 0-point off-suit cards when void (not trump-killing)
+        // signals intent to void that suit or short trash in that suit.
+        const isTrumpRuff = leadCat !== 'TRUMP' && p.parsed.category === 'TRUMP';
+        if (!isTrumpRuff) {
+          for (const c of p.cards) {
+            const cCat = getCardCategory(c, trumpSuit, levelRank);
+            if (cCat !== 'TRUMP' && cCat !== leadCat && getCardPoints(c) === 0) {
+              offSuitDiscardsBySeat[p.seat][cCat] += 1;
+            }
+          }
+        }
+      } else if (
+        failedOrderBySeat &&
+        i === 3 &&
+        plays.length === 4 &&
+        leadPlay.parsed.patternType === 'SINGLE' &&
+        p.cards.length === 1
+      ) {
+        // Fast O(1) negative high-card inference (no resolveTrickWinner allocation):
+        // 4th seat followed in leadCat on a >=10-pt trick where an enemy won in leadCat without trump-ruff.
+        let winSeat = leadPlay.seat;
+        let winOrd = getCardOrder(leadPlay.cards[0], trumpSuit, levelRank);
+        let ptsOnTable = getCardPoints(leadPlay.cards[0]) + getCardPoints(p.cards[0]);
+        let ruffed = false;
+        for (let k = 1; k < 3; k++) {
+          const pk = plays[k];
+          const c0 = pk.cards[0];
+          ptsOnTable += getCardPoints(c0);
+          const cCat = getCardCategory(c0, trumpSuit, levelRank);
+          if (leadCat !== 'TRUMP' && cCat === 'TRUMP') {
+            ruffed = true;
+            break;
+          }
+          if (cCat === leadCat) {
+            const ord = getCardOrder(c0, trumpSuit, levelRank);
+            if (ord > winOrd) {
+              winOrd = ord;
+              winSeat = pk.seat;
+            }
+          }
+        }
+        if (!ruffed && ptsOnTable >= 10 && !isSameSide(state, p.seat, winSeat)) {
+          const myOrd = getCardOrder(p.cards[0], trumpSuit, levelRank);
+          if (myOrd <= winOrd) {
+            const seatMap = failedOrderBySeat.get(p.seat)!;
+            const prev = seatMap.get(leadCat);
+            if (prev === undefined || winOrd < prev) {
+              seatMap.set(leadCat, winOrd);
+            }
+          }
+        }
       }
     }
   };
 
-  for (const trick of state.completedTricks) {
-    inspectTrick(trick.plays);
+  for (let idx = 0; idx < state.completedTricks.length; idx++) {
+    inspectTrick(state.completedTricks[idx].plays, idx);
   }
-  inspectTrick(state.currentTrick);
+  inspectTrick(state.currentTrick, state.completedTricks.length);
 
   const unseenByCat = new Map<CardCategory, Card[]>();
   for (const cat of ALL_CATEGORIES) {
@@ -140,9 +231,18 @@ export function buildPublicCardTracker(state: GameState, seat: Seat): PublicCard
     maxOrderByCat.set(cat, best);
   }
 
+  const unseenTrumps = unseenByCat.get('TRUMP')?.length ?? 0;
+  const isSeatVoidFn = (targetSeat: Seat, cat: CardCategory) =>
+    voidSeatsByCat.get(cat)?.has(targetSeat) ?? false;
+  const hasPossibleTrumpFn = (targetSeat: Seat) =>
+    unseenTrumps > 0 && !isSeatVoidFn(targetSeat, 'TRUMP');
+
   return {
     unseenByCat,
     voidSeatsByCat,
+    trumpsPlayedBySeat,
+    voluntaryTrumpLeadsBySeat,
+    offSuitDiscardsBySeat,
     unseenCount: (cat) => unseenByCat.get(cat)?.length ?? 0,
     maxUnseenOrder: (cat) => maxOrderByCat.get(cat) ?? -1,
     isComponentUnbeatable: (cat, comp) => {
@@ -150,8 +250,15 @@ export function buildPublicCardTracker(state: GameState, seat: Seat): PublicCard
       if (unseen.length === 0) return true;
       return !canHandBeatComponent(unseen, cat, comp, trumpSuit, levelRank);
     },
-    isSeatVoid: (targetSeat, cat) =>
-      voidSeatsByCat.get(cat)?.has(targetSeat) ?? false,
+    isSeatVoid: isSeatVoidFn,
+    hasPossibleTrump: hasPossibleTrumpFn,
+    anySeatHasPossibleTrump: (seats) => seats.some((s) => hasPossibleTrumpFn(s)),
+    trumpsPlayed: (targetSeat) => trumpsPlayedBySeat[targetSeat] ?? 0,
+    voluntaryTrumpLeads: (targetSeat) => voluntaryTrumpLeadsBySeat[targetSeat] ?? 0,
+    offSuitDiscardCount: (targetSeat, suit) =>
+      offSuitDiscardsBySeat[targetSeat]?.[suit] ?? 0,
+    failedHighOrder: (targetSeat, cat) =>
+      failedOrderBySeat?.get(targetSeat)?.get(cat) ?? null,
   };
 }
 
@@ -555,30 +662,45 @@ export function suggestBuryCards(
     }
   }
 
-  // Identify short off-suits that can be cleanly voided!
+  // Identify short off-suits whose NON-ACE cards can be cleanly cleared!
+  // Keeping A / AA while burying the rest of the suit lets dealer cash A/AA on trick 1
+  // for free points and STILL become 100% void in that suit on trick 2 (strictly better than burying Aces!).
   const voidTargetSuits = new Set<StandardSuit>();
+  const weakTrumpControl = trumps.length <= 13 || highTrumps.length <= 2;
   const offSuitsSorted = STANDARD_SUITS.filter((s) => s !== trumpSuit)
     .map((s) => {
       const cards = suitCards.get(s)!;
-      const eligibleCards = cards.filter((c) => mode !== 'heixin' || c.rank !== '10');
-      const canFullyVoid = eligibleCards.length === cards.length && cards.length > 0;
-      const aces = cards.filter((c) => c.rank === 'A').length;
-      const hasTriple = groupCardsByKey(cards, trumpSuit, levelRank).some(
+      const nonAceCards = cards.filter((c) => c.rank !== 'A');
+      const eligibleNonAce = nonAceCards.filter(
+        (c) => mode !== 'heixin' || c.rank !== '10',
+      );
+      const canVoidNonAces =
+        eligibleNonAce.length === nonAceCards.length && nonAceCards.length > 0;
+      const aces = cards.length - nonAceCards.length;
+      const hasTriple = groupCardsByKey(nonAceCards, trumpSuit, levelRank).some(
         (g) => g.cards.length === 3,
       );
-      const pts = cards.reduce((sum, c) => sum + getCardPoints(c), 0);
-      return { suit: s, len: cards.length, canFullyVoid, aces, hasTriple, pts };
+      const nonAcePts = nonAceCards.reduce((sum, c) => sum + getCardPoints(c), 0);
+      return {
+        suit: s,
+        nonAceLen: nonAceCards.length,
+        canVoidNonAces,
+        aces,
+        hasTriple,
+        nonAcePts,
+      };
     })
-    .filter((info) => info.canFullyVoid && info.len <= 6 && !info.hasTriple)
-    .sort((a, b) => a.len + a.aces * 2.5 - (b.len + b.aces * 2.5));
+    .filter((info) => info.canVoidNonAces && info.nonAceLen <= 6 && !info.hasTriple)
+    .sort((a, b) => a.nonAceLen + a.aces * 1.2 - (b.nonAceLen + b.aces * 1.2));
 
   let voidBudget = 10;
   for (const info of offSuitsSorted) {
-    if (info.len <= voidBudget && info.aces <= 1) {
-      // Avoid burying 25+ points in a void suit if trump control is weak
-      if (!strongTrumpControl && info.pts >= 25 && info.len >= 3) continue;
+    if (info.nonAceLen <= voidBudget) {
+      // Avoid burying heavy points into a void suit when trump control isn't strong
+      if (weakTrumpControl && info.nonAcePts >= 15) continue;
+      if (!strongTrumpControl && info.nonAcePts >= 25 && info.nonAceLen >= 3) continue;
       voidTargetSuits.add(info.suit);
-      voidBudget -= info.len;
+      voidBudget -= info.nonAceLen;
     }
   }
 
@@ -592,25 +714,36 @@ export function suggestBuryCards(
 
     if (cat === 'TRUMP') {
       keepScore += 260 + getCardValueCost(card, trumpSuit, levelRank) * 4;
+    } else if (card.rank === 'A') {
+      // NEVER bury an off-suit Ace: cash it early to win points & shorten/void the suit!
+      keepScore = 95 + order * 2.5 + (mult >= 2 ? 35 : 0);
     } else {
       const len = suitCards.get(cat)?.length ?? 0;
       const isVoidTarget = voidTargetSuits.has(cat);
 
       if (isVoidTarget) {
-        // Strongly encourage clearing the entire short suit to create a trump-kill void
-        keepScore = -45 + order * 1.1 + (card.rank === 'A' ? 28 : 0);
+        // Strongly encourage clearing all non-Ace cards of the short suit to create an instant/1-trick void
+        keepScore = -45 + order * 1.1;
         if (pts > 0) {
-          keepScore += strongTrumpControl ? -6 : 16;
+          keepScore += strongTrumpControl ? -8 : weakTrumpControl ? 30 + pts : 18 + pts * 0.4;
         }
       } else {
         keepScore = order * 2.8 + len * 2.4;
-        if (card.rank === 'A') keepScore += 60;
         if (mult === 3) keepScore += 75;
         else if (mult === 2) keepScore += 30;
         if (protectedIds.has(card.id)) keepScore += 32;
         if (pts > 0) {
-          // Burying 10/K/5 is risky if bottom might get killed; safe only with very strong trumps
-          keepScore += strongTrumpControl ? 4 : 26 + pts * 0.8;
+          // Strong trump control -> burying loose non-combo points safely banks them;
+          // weak trump control -> keep bottom clean to prevent painful 2× bottom kills!
+          if (strongTrumpControl && mult === 1 && !protectedIds.has(card.id)) {
+            keepScore -= 8;
+          } else {
+            keepScore += strongTrumpControl
+              ? 4
+              : weakTrumpControl
+                ? 36 + pts * 1.1
+                : 26 + pts * 0.8;
+          }
         }
       }
     }
@@ -644,7 +777,25 @@ export function rankLeadCandidates(state: GameState, seat: Seat): Card[][] {
   const enemies = ALL_SEATS.filter((s) => !isSameSide(state, seat, s));
   const allies = ALL_SEATS.filter((s) => s !== seat && isSameSide(state, seat, s));
   const isBankerSide = state.dealer !== null && isSameSide(state, seat, state.dealer);
+  const isHeixinChallenger = state.mode === 'heixin' && !isBankerSide;
+  const dealerSeat = state.dealer;
+  const knownBottomPts =
+    dealerSeat === seat
+      ? state.bottomCards.reduce((sum, c) => sum + getCardPoints(c), 0)
+      : 0;
   const unseenTrumps = tracker.unseenCount('TRUMP');
+  const enemiesHaveTrump = tracker.anySeatHasPossibleTrump(enemies);
+  const allyMayHaveTrump = tracker.anySeatHasPossibleTrump(allies);
+  const partnerIsStrongRole =
+    state.mode === 'hongxin' &&
+    allies.some(
+      (a) =>
+        (a === state.dealer || a === state.callState.callerSeat) &&
+        tracker.hasPossibleTrump(a),
+    );
+  const fourthSeat = ((seat + 3) % 4) as Seat;
+  const dealerRel =
+    isHeixinChallenger && dealerSeat !== null ? (dealerSeat - seat + 4) % 4 : -1;
 
   const myTrumps = hand.filter(
     (c) => getCardCategory(c, trumpSuit, levelRank) === 'TRUMP',
@@ -653,11 +804,19 @@ export function rankLeadCandidates(state: GameState, seat: Seat): Card[][] {
     if (isRedFive(c) || c.suit === 'J' || c.rank === levelRank) return true;
     return trumpSuit !== null && c.rank === '3';
   });
+  // Never pull trumps when all enemies are already void in trump (burning trumps into thin air
+  // wastes our ruffing interceptors, lets enemies shed trash/make voids, and cannibalizes teammate's trumps!).
+  // In 1v3 heixin, challengers suffer a 3-for-1 trump drain when pulling trumps mid-game, so only pull in endgame.
   const wantPullTrump =
-    unseenTrumps > 0 &&
+    enemiesHaveTrump &&
+    (!isHeixinChallenger || hand.length <= 5) &&
     ((isBankerSide && myTrumps.length >= 8 && myHighTrumps.length >= 3) ||
       (myTrumps.length >= 11 && myHighTrumps.length >= 4) ||
       (hand.length <= 6 && myHighTrumps.length >= 2));
+  // Only penalize pulling trumps when all enemies are void in TRUMP AND our teammate still has trumps
+  // (otherwise leading an unbeatable trump when everyone is void lets our teammate safely feed us points!).
+  const cannibalizeAllyTrumpPenalty =
+    !enemiesHaveTrump && allyMayHaveTrump && hand.length > 6 ? 26 : 0;
 
   const candidatePlays: { cards: Card[]; priority: number }[] = [];
   const seenSigs = new Set<string>();
@@ -693,24 +852,35 @@ export function rankLeadCandidates(state: GameState, seat: Seat): Card[][] {
       const safe510k =
         parsed510k !== null &&
         parsed510k.components.every((comp) => tracker.isComponentUnbeatable(cat, comp));
-      const enemyVoid = hasAnyVoidSeat(tracker, enemies, cat);
+      const enemyRuffDanger =
+        cat !== 'TRUMP' &&
+        enemies.some((e) => tracker.isSeatVoid(e, cat) && tracker.hasPossibleTrump(e));
       const unseenInCat = tracker.unseenCount(cat);
 
       if (cat === 'TRUMP') {
-        // Trump 510K forces enemies without trump triple/510K to surrender their 3 BIGGEST trumps!
-        let prio = 88 + count510k * 16;
+        // Trump 510K forces EVERY non-triple seat (including our own teammate!) to surrender their 3 BIGGEST trumps!
+        // Great for solo heixin dealer (0 friendly fire); catastrophic for heixin challengers (2-for-1 self-damage).
+        let prio = 88 + count510k * 16 - cannibalizeAllyTrumpPenalty;
         if (safe510k) prio += 26;
         if (wantPullTrump) prio += 18;
-        if (unseenTrumps < 6) prio -= 14;
+        if (!enemiesHaveTrump || unseenTrumps < 6) prio -= 14;
+        if (state.mode === 'heixin' && dealerSeat === seat && enemiesHaveTrump) {
+          prio += safe510k ? 18 : 6;
+        } else if (isHeixinChallenger && allyMayHaveTrump) {
+          prio -= 55;
+        } else if (allyMayHaveTrump && !safe510k && unseenTrumps >= 18) {
+          // Avoid early unsafe trump 510K in 2v2 that feeds enemy triple while stripping teammate's top trumps
+          prio -= 32;
+        }
         addCandidate(fCards, prio);
       } else {
         // Side-suit 510K carries 25*k points! Only lead aggressively when safe or unlikely to get killed
         let prio = 38 + count510k * 18;
         if (safe510k) prio += 36;
-        if (enemyVoid && unseenTrumps > 0) prio -= 55;
-        else if (unseenInCat <= 8 && unseenTrumps > 0) prio -= 18;
+        if (enemyRuffDanger) prio -= 55;
+        else if (unseenInCat <= 8 && enemiesHaveTrump) prio -= 18;
         else if (unseenInCat >= 14 && count510k === 1 && !safe510k) prio -= 10;
-        if (unseenTrumps === 0 && safe510k) prio += 30;
+        if (!enemiesHaveTrump && safe510k) prio += 30;
         addCandidate(fCards, prio);
       }
     }
@@ -729,9 +899,26 @@ export function rankLeadCandidates(state: GameState, seat: Seat): Card[][] {
 
     const groups = groupCardsByKey(inCat, trumpSuit, levelRank);
     const isTrumpCat = cat === 'TRUMP';
-    const enemyVoid = !isTrumpCat && hasAnyVoidSeat(tracker, enemies, cat);
-    const allyVoid = !isTrumpCat && hasAnyVoidSeat(tracker, allies, cat);
+    const enemyRuffDanger =
+      !isTrumpCat &&
+      enemies.some((e) => tracker.isSeatVoid(e, cat) && tracker.hasPossibleTrump(e));
+    const fourthSeatEnemyRuffRisk =
+      !isTrumpCat &&
+      !isSameSide(state, seat, fourthSeat) &&
+      tracker.isSeatVoid(fourthSeat, cat) &&
+      tracker.hasPossibleTrump(fourthSeat);
+    const allyVoidWithTrump =
+      !isTrumpCat &&
+      allies.some((a) => tracker.isSeatVoid(a, cat) && tracker.hasPossibleTrump(a));
+    const allySignaledVoid =
+      !isTrumpCat &&
+      !allyVoidWithTrump &&
+      allies.some(
+        (a) => tracker.offSuitDiscardCount(a, cat) >= 2 && tracker.hasPossibleTrump(a),
+      );
     const unseenInCat = tracker.unseenCount(cat);
+    const heixinSandwichBonus =
+      isHeixinChallenger && dealerRel === 1 && !isTrumpCat && !enemyRuffDanger ? 8 : 0;
 
     // 1. Check for 100% fair guaranteed-safe multi-card sling in this category
     const safeComponents: AtomicPattern[] = [];
@@ -750,10 +937,10 @@ export function rankLeadCandidates(state: GameState, seat: Seat): Card[][] {
       };
       const safe = tracker.isComponentUnbeatable(cat, comp);
       let prio = isTrumpCat
-        ? (wantPullTrump ? 128 : 88) + ch.topOrder
+        ? (wantPullTrump ? 128 : 88) + ch.topOrder - cannibalizeAllyTrumpPenalty
         : 105 + ch.topOrder;
       if (safe) prio += 20;
-      if (enemyVoid && unseenTrumps > 0) prio -= 48;
+      if (enemyRuffDanger) prio -= 48;
       addCandidate(ch.cards, prio);
 
       if (safe && ch.cards.every((c) => !usedSafeIds.has(c.id))) {
@@ -775,11 +962,11 @@ export function rankLeadCandidates(state: GameState, seat: Seat): Card[][] {
       };
       const safe = tracker.isComponentUnbeatable(cat, comp);
       let prio = isTrumpCat
-        ? (wantPullTrump ? 112 : 74) + ch.topOrder
+        ? (wantPullTrump ? 112 : 74) + ch.topOrder - cannibalizeAllyTrumpPenalty
         : 84 + ch.topOrder;
       if (safe) prio += 22;
-      if (enemyVoid && unseenTrumps > 0) prio -= 44;
-      else if (!isTrumpCat && unseenInCat < 6 && unseenTrumps > 0) prio -= 18;
+      if (enemyRuffDanger) prio -= 44;
+      else if (!isTrumpCat && unseenInCat < 6 && enemiesHaveTrump) prio -= 18;
       addCandidate(ch.cards, prio);
 
       if (safe && ch.cards.every((c) => !usedSafeIds.has(c.id))) {
@@ -806,10 +993,10 @@ export function rankLeadCandidates(state: GameState, seat: Seat): Card[][] {
         const safe = tracker.isComponentUnbeatable(cat, comp);
         const pts = g.cards.reduce((s, c) => s + getCardPoints(c), 0);
         let prio = isTrumpCat
-          ? (wantPullTrump ? 104 : 62) + g.order
+          ? (wantPullTrump ? 104 : 62) + g.order - cannibalizeAllyTrumpPenalty
           : (safe ? 96 : 48) + g.order;
-        if (enemyVoid && unseenTrumps > 0) prio -= 45 + pts;
-        else if (!isTrumpCat && unseenInCat < 5 && unseenTrumps > 0) prio -= 16;
+        if (enemyRuffDanger) prio -= 45 + pts;
+        else if (!isTrumpCat && unseenInCat < 5 && enemiesHaveTrump) prio -= 16;
         addCandidate(g.cards, prio);
 
         if (safe && g.cards.every((c) => !usedSafeIds.has(c.id))) {
@@ -828,10 +1015,15 @@ export function rankLeadCandidates(state: GameState, seat: Seat): Card[][] {
         const safe = tracker.isComponentUnbeatable(cat, comp);
         const pts = g.cards.reduce((s, c) => s + getCardPoints(c), 0);
         let prio = isTrumpCat
-          ? (wantPullTrump && safe ? 94 : safe ? 68 : 34) + g.order
+          ? (wantPullTrump && safe ? 94 : safe ? 68 : 34) + g.order - cannibalizeAllyTrumpPenalty
           : (safe ? 86 : 26) + g.order - (safe ? 0 : pts * 1.4);
-        if (enemyVoid && unseenTrumps > 0) prio -= 38 + pts;
-        else if (!isTrumpCat && unseenInCat < 4 && unseenTrumps > 0) prio -= 14;
+        if (!isTrumpCat && !safe && allyVoidWithTrump && !fourthSeatEnemyRuffRisk) {
+          if (!enemyRuffDanger && unseenInCat >= 4 && unseenTrumps >= 4) {
+            prio += 18 + (pts > 0 && unseenInCat >= 6 ? pts * 0.8 : 0);
+          }
+        }
+        if (enemyRuffDanger) prio -= 38 + pts;
+        else if (!isTrumpCat && unseenInCat < 4 && enemiesHaveTrump) prio -= 14;
         addCandidate(g.cards, prio);
 
         if (safe && g.cards.every((c) => !usedSafeIds.has(c.id))) {
@@ -855,34 +1047,62 @@ export function rankLeadCandidates(state: GameState, seat: Seat): Card[][] {
         let prio = 0;
         if (safe) {
           if (isTrumpCat) {
-            prio = (wantPullTrump ? 92 : 66) + g.order;
+            prio = (wantPullTrump ? 92 : 66) + g.order - cannibalizeAllyTrumpPenalty;
             // Don't trivially waste lone ♥5 on early lead unless pulling trumps or endgame
             if (isRedFive(card) && !wantPullTrump && hand.length > 8) {
               prio -= 26;
             }
           } else {
-            prio = 82 + g.order;
-            if (enemyVoid && unseenTrumps > 0) prio -= 42 + pts * 1.5;
-            else if (unseenInCat <= 2 && unseenTrumps > 0) prio -= 20;
+            prio = 82 + g.order + heixinSandwichBonus;
+            if (enemyRuffDanger) prio -= 42 + pts * 1.5;
+            else if (unseenInCat <= 2 && enemiesHaveTrump) prio -= 20;
             // Prefer cashing top Aces/Kings when unseen cards still exist in suit
-            if (unseenInCat >= 4 && !enemyVoid) prio += 12;
+            if (unseenInCat >= 4 && !enemyRuffDanger) prio += 12;
           }
           if (!usedSafeIds.has(card.id)) {
             safeComponents.push(comp);
             usedSafeIds.add(card.id);
           }
         } else {
-          // Non-top exploratory lead: prefer low non-point off-suit card; never break combos or donate points!
+          // Non-top exploratory lead: prefer low non-point off-suit card, or cooperatively feed teammate's void!
           if (isTrumpCat) {
-            prio = (wantPullTrump ? 24 : 4) - g.order * 0.6 - pts * 2.5;
+            prio =
+              (wantPullTrump ? 24 : 4) -
+              g.order * 0.6 -
+              pts * 2.5 -
+              cannibalizeAllyTrumpPenalty;
           } else {
             prio = 32 - g.order * 1.1 - pts * 3.2;
-            if (allyVoid && !enemyVoid && unseenTrumps > 0) {
-              // Feed teammate's void suit so teammate can trump-kill!
-              prio += 26;
+            if (allyVoidWithTrump && !fourthSeatEnemyRuffRisk) {
+              if (!enemyRuffDanger && unseenInCat >= 6 && unseenTrumps >= 5 && !inCombo) {
+                // High-confidence void-feed: low card leads partner cleanly, and even 5/10/K is worth considering
+                prio =
+                  pts === 0
+                    ? 66 - g.order * 0.5 + heixinSandwichBonus
+                    : 54 - g.order * 0.5 + pts * 0.9 + heixinSandwichBonus;
+                if (partnerIsStrongRole) prio += 6;
+              } else if (!enemyRuffDanger) {
+                prio += 30 + heixinSandwichBonus;
+                if (partnerIsStrongRole) prio += 6;
+              } else if (pts === 0) {
+                // 2nd seat enemy is void, but 3rd seat ally acts after them and 4th seat enemy is not void
+                prio += 14;
+              }
+            } else if (allySignaledVoid && !enemyRuffDanger && pts === 0 && !inCombo) {
+              // Teammate voluntarily sloughed this suit repeatedly -> probe it to finish/use their void
+              prio += 12 + heixinSandwichBonus;
+            } else if (heixinSandwichBonus > 0 && pts === 0) {
+              prio += heixinSandwichBonus;
             }
-            if (enemyVoid && unseenTrumps > 0) {
-              prio -= 18 + pts * 2;
+
+            // In 1v3 heixin, avoid leading point cards or short suits directly into 4th-seat dealer
+            if (isHeixinChallenger && dealerRel === 3 && !allyVoidWithTrump) {
+              if (pts > 0) prio -= 10;
+              if (unseenInCat <= 5 && enemiesHaveTrump) prio -= 10;
+            }
+
+            if (enemyRuffDanger) {
+              prio -= (isHeixinChallenger ? 26 : 18) + pts * 2;
             }
           }
           if (inCombo) prio -= 24;
@@ -893,7 +1113,7 @@ export function rankLeadCandidates(state: GameState, seat: Seat): Card[][] {
     }
 
     // Build a safe multi-card sling if we have >= 2 strictly unbeatable components!
-    if (safeComponents.length >= 2 && (!enemyVoid || unseenTrumps === 0)) {
+    if (safeComponents.length >= 2 && !enemyRuffDanger) {
       const slingCards = safeComponents.flatMap((c) => c.cards);
       const parsedSling = parsePlay(slingCards, trumpSuit, levelRank);
       if (
@@ -902,13 +1122,16 @@ export function rankLeadCandidates(state: GameState, seat: Seat): Card[][] {
           tracker.isComponentUnbeatable(cat, comp),
         )
       ) {
+        const isFinishing = slingCards.length === hand.length;
         let slingPrio = isTrumpCat
-          ? (wantPullTrump ? 132 : 95) + slingCards.length * 4
+          ? (wantPullTrump ? 132 : 95) +
+            slingCards.length * 4 -
+            (isFinishing ? 0 : cannibalizeAllyTrumpPenalty)
           : 110 + slingCards.length * 4;
-        if (!isTrumpCat && unseenInCat < slingCards.length && unseenTrumps > 0) {
+        if (!isTrumpCat && unseenInCat < slingCards.length && enemiesHaveTrump) {
           slingPrio -= 30;
         }
-        if (slingCards.length === hand.length) {
+        if (isFinishing) {
           slingPrio += 120; // Finish out the round cleanly!
         }
         addCandidate(slingCards, slingPrio);
@@ -1144,21 +1367,103 @@ function enumerateSmartSlingMatches(
   return results;
 }
 
+/**
+ * Estimate probability that a teammate acting AFTER us will cleanly trump-kill
+ * the current enemy-winning off-suit trick (so 2nd/3rd seat can feed points to them!).
+ */
+function estimateRearAllyRuffConfidence(
+  tracker: PublicCardTracker,
+  state: GameState,
+  seat: Seat,
+  currentBestPlay: { seat: Seat; cards: readonly Card[]; parsed: ParsedPlay },
+): number {
+  const leadPlay = state.currentTrick[0].parsed;
+  if (leadPlay.category === 'TRUMP') return 0;
+  if (currentBestPlay.parsed.category === 'TRUMP') return 0;
+  if (leadPlay.patternType !== 'SINGLE' && leadPlay.patternType !== 'PAIR') return 0;
+
+  const remainingSeats = getRemainingSeatsAfter(state, seat);
+  if (remainingSeats.length === 0) return 0;
+
+  const unseenTrumps = tracker.unseenCount('TRUMP');
+  const unseenInLead = tracker.unseenCount(leadPlay.category);
+  const remainingEnemies = remainingSeats.filter((s) => !isSameSide(state, seat, s));
+
+  let bestConf = 0;
+  for (let idx = 0; idx < remainingSeats.length; idx++) {
+    const s = remainingSeats[idx];
+    if (!isSameSide(state, seat, s)) continue;
+    if (!tracker.isSeatVoid(s, leadPlay.category) || !tracker.hasPossibleTrump(s)) continue;
+
+    // Never blindly feed if an enemy acting AFTER this void ally can over-ruff
+    const enemiesAfterAlly = remainingSeats
+      .slice(idx + 1)
+      .filter((e) => !isSameSide(state, seat, e));
+    if (
+      enemiesAfterAlly.some(
+        (e) => tracker.isSeatVoid(e, leadPlay.category) && tracker.hasPossibleTrump(e),
+      )
+    ) {
+      continue;
+    }
+
+    const anyRemainingEnemyRuffRisk = remainingEnemies.some(
+      (e) => tracker.isSeatVoid(e, leadPlay.category) && tracker.hasPossibleTrump(e),
+    );
+    if (anyRemainingEnemyRuffRisk) {
+      bestConf = Math.max(bestConf, 0.22);
+      continue;
+    }
+
+    if (leadPlay.patternType === 'SINGLE') {
+      if (remainingEnemies.length === 0) {
+        bestConf = Math.max(bestConf, unseenTrumps >= 3 ? 0.88 : 0.72);
+      } else if (unseenInLead >= 3 && unseenTrumps >= 4) {
+        bestConf = Math.max(bestConf, 0.78);
+      } else if (unseenInLead >= 2 && unseenTrumps >= 2) {
+        bestConf = Math.max(bestConf, 0.68);
+      } else {
+        bestConf = Math.max(bestConf, 0.45);
+      }
+    } else {
+      // PAIR: ally needs a trump pair to ruff
+      if (remainingEnemies.length === 0 && unseenTrumps >= 6) {
+        bestConf = Math.max(bestConf, 0.72);
+      } else if (unseenInLead >= 4 && unseenTrumps >= 8) {
+        bestConf = Math.max(bestConf, 0.62);
+      } else {
+        bestConf = Math.max(bestConf, 0.35);
+      }
+    }
+  }
+
+  return bestConf;
+}
+
 export function buildSmartFollowCandidates(
   state: GameState,
   seat: Seat,
+  trackerArg?: PublicCardTracker,
 ): Card[][] {
   const hand = state.hands[seat];
   const { trumpSuit, levelRank } = state;
   const leadPlay = state.currentTrick[0].parsed;
   const N = leadPlay.cards.length;
 
+  const tracker = trackerArg ?? buildPublicCardTracker(state, seat);
   const currentBest = resolveTrickWinner(
     state.currentTrick,
     trumpSuit,
     levelRank,
   );
+  const currentBestPlay = state.currentTrick.find(
+    (p) => p.seat === currentBest.winnerSeat,
+  )!;
   const currentWinningAlly = isSameSide(state, seat, currentBest.winnerSeat);
+  const rearAllyRuffConf = currentWinningAlly
+    ? 0
+    : estimateRearAllyRuffConfidence(tracker, state, seat, currentBestPlay);
+  const allowPointFeed = currentWinningAlly || rearAllyRuffConf >= 0.62;
 
   const base = findLegalFollowCards(hand, leadPlay, trumpSuit, levelRank);
   const candidates: Card[][] = [];
@@ -1181,7 +1486,7 @@ export function buildSmartFollowCandidates(
     leadPlay.components.some((comp) => comp.type === 'F510K');
 
   for (const c of base) {
-    if (currentWinningAlly || hasTrump510KLead) {
+    if (allowPointFeed || hasTrump510KLead) {
       pushIfValid(c);
     } else {
       // When enemy is currently winning, keep all beating plays from `base`,
@@ -1281,30 +1586,38 @@ export function buildSmartFollowCandidates(
 
   const rankForSafePointFeed = (pool: readonly Card[]): Card[] =>
     [...pool].sort((a, b) => {
-      const aT = getCardCategory(a, trumpSuit, levelRank) === 'TRUMP' ? 1 : 0;
-      const bT = getCardCategory(b, trumpSuit, levelRank) === 'TRUMP' ? 1 : 0;
-      // Prefer feeding off-suit points before spending trump points (especially ♥5!)
+      const catA = getCardCategory(a, trumpSuit, levelRank);
+      const catB = getCardCategory(b, trumpSuit, levelRank);
+      const aT = catA === 'TRUMP' ? 1 : 0;
+      const bT = catB === 'TRUMP' ? 1 : 0;
+      const mA = keyMult.get(getCardKey(a)) ?? 1;
+      const mB = keyMult.get(getCardKey(b)) ?? 1;
+      const aVoidBonus = !aT && (offSuitLens.get(catA) ?? 99) === 1 ? 8 : 0;
+      const bVoidBonus = !bT && (offSuitLens.get(catB) ?? 99) === 1 ? 8 : 0;
+      // Prefer feeding off-suit lone points (especially void-creating ones!) before breaking pairs/triples or spending trumps
       const aFeedVal =
-        getCardPoints(a) * 10 -
+        getCardPoints(a) * 10 +
+        aVoidBonus -
         (isRedFive(a) ? 200 : aT * 45) -
-        ((keyMult.get(getCardKey(a)) ?? 1) >= 3 ? 35 : 0) -
+        (mA >= 3 ? 35 : mA === 2 ? 12 : 0) -
         getCardValueCost(a, trumpSuit, levelRank) * 0.4;
       const bFeedVal =
-        getCardPoints(b) * 10 -
+        getCardPoints(b) * 10 +
+        bVoidBonus -
         (isRedFive(b) ? 200 : bT * 45) -
-        ((keyMult.get(getCardKey(b)) ?? 1) >= 3 ? 35 : 0) -
+        (mB >= 3 ? 35 : mB === 2 ? 12 : 0) -
         getCardValueCost(b, trumpSuit, levelRank) * 0.4;
       if (bFeedVal !== aFeedVal) return bFeedVal - aFeedVal;
       return a.id - b.id;
     });
 
   if (inCatHand.length === 0) {
-    // Void in led category: add smart discards (strict 0-pt, balanced low-loss, void-making; point feed only when ally winning) + trump kills
+    // Void in led category: add smart discards (strict 0-pt, balanced low-loss, void-making; point feed when ally winning or rear void ally ruffs) + trump kills
     pushIfValid(rankForLowSafeDiscard(hand).slice(0, N));
     pushIfValid(rankForBalancedDiscard(hand, 2.4, true).slice(0, N));
     pushIfValid(rankForBalancedDiscard(hand, 1.5, true).slice(0, N));
     pushIfValid(rankForVoidMakingDiscard(hand).slice(0, N));
-    if (currentWinningAlly) {
+    if (allowPointFeed) {
       pushIfValid(rankForSafePointFeed(hand).slice(0, N));
     }
 
@@ -1369,7 +1682,7 @@ export function buildSmartFollowCandidates(
     pushIfValid([...inCatHand, ...rankForBalancedDiscard(outCatHand, 2.4, true).slice(0, needExtra)]);
     pushIfValid([...inCatHand, ...rankForBalancedDiscard(outCatHand, 1.5, true).slice(0, needExtra)]);
     pushIfValid([...inCatHand, ...rankForVoidMakingDiscard(outCatHand).slice(0, needExtra)]);
-    if (currentWinningAlly) {
+    if (allowPointFeed) {
       pushIfValid([...inCatHand, ...rankForSafePointFeed(outCatHand).slice(0, needExtra)]);
     }
   } else if (inCatHand.length > N) {
@@ -1378,7 +1691,7 @@ export function buildSmartFollowCandidates(
     pushIfValid(rankForLowSafeDiscard(inCatHand).slice(0, N));
     pushIfValid(rankForBalancedDiscard(inCatHand, 2.4, true).slice(0, N));
     pushIfValid(rankForBalancedDiscard(inCatHand, 1.5, true).slice(0, N));
-    if (currentWinningAlly) {
+    if (allowPointFeed) {
       pushIfValid(rankForSafePointFeed(inCatHand).slice(0, N));
     }
     if (leadPlay.patternType === 'SLING') {
@@ -1416,11 +1729,23 @@ function estimateWinHoldConfidence(
   const { trumpSuit, levelRank } = state;
   const leadCat = state.currentTrick[0].parsed.category;
   const winCat = winningPlay.parsed.category;
-  const unseenTrumps = tracker.unseenCount('TRUMP');
+  const remainingEnemiesHaveTrump = tracker.anySeatHasPossibleTrump(remainingEnemies);
 
-  // If currently winning with an off-suit play and a remaining enemy is confirmed void while trumps remain
-  if (winCat !== 'TRUMP' && unseenTrumps > 0) {
-    if (hasAnyVoidSeat(tracker, remainingEnemies, leadCat)) {
+  // If all remaining enemies are confirmed void in winCat (and cannot ruff if off-suit), this play is 100% safe!
+  if (
+    remainingEnemies.every((e) => tracker.isSeatVoid(e, winCat)) &&
+    (winCat === 'TRUMP' || !remainingEnemiesHaveTrump)
+  ) {
+    return 1.0;
+  }
+
+  // If currently winning with an off-suit play and a remaining enemy is confirmed void while holding possible trumps
+  if (winCat !== 'TRUMP' && remainingEnemiesHaveTrump) {
+    if (
+      remainingEnemies.some(
+        (e) => tracker.isSeatVoid(e, leadCat) && tracker.hasPossibleTrump(e),
+      )
+    ) {
       return 0.18;
     }
   }
@@ -1431,7 +1756,7 @@ function estimateWinHoldConfidence(
       tracker.isComponentUnbeatable(winCat, comp),
     );
     if (unbeatableInOwnCat) {
-      if (winCat === 'TRUMP' || unseenTrumps === 0) return 1.0;
+      if (winCat === 'TRUMP' || !remainingEnemiesHaveTrump) return 1.0;
       const unseenInLead = tracker.unseenCount(leadCat);
       if (unseenInLead >= remainingEnemies.length * winningPlay.cards.length * 2) {
         return 0.92;
@@ -1451,9 +1776,14 @@ function estimateWinHoldConfidence(
 
   if (maxUnseen < 0) return 0.95;
   const gap = maxUnseen - myTop;
-  if (gap <= 1) return 0.62;
-  if (gap <= 3) return 0.42;
-  return 0.22;
+  let baseConf = gap <= 1 ? 0.62 : gap <= 3 ? 0.42 : 0.22;
+  const pt = winningPlay.parsed.patternType;
+  if (pt === 'PAIR' || pt === 'TRIPLE' || pt === 'TRACTOR' || pt === 'TRIPLE_TRACTOR') {
+    baseConf += 0.14;
+  }
+  if (remainingEnemies.length === 1) baseConf += 0.06;
+  else if (remainingEnemies.length >= 2) baseConf -= 0.05;
+  return Math.max(0.12, Math.min(0.88, baseConf));
 }
 
 /** All legal follow options, best-first by heuristic score. */
@@ -1461,13 +1791,13 @@ export function rankFollowCandidates(state: GameState, seat: Seat): Card[][] {
   const hand = state.hands[seat];
   const { trumpSuit, levelRank } = state;
   const leadPlay = state.currentTrick[0].parsed;
-  const candidates = buildSmartFollowCandidates(state, seat);
+  const tracker = buildPublicCardTracker(state, seat);
+  const candidates = buildSmartFollowCandidates(state, seat, tracker);
 
   if (candidates.length <= 1) {
     return candidates.length === 1 ? candidates : [hand.slice(0, leadPlay.cards.length)];
   }
 
-  const tracker = buildPublicCardTracker(state, seat);
   const currentBest = resolveTrickWinner(
     state.currentTrick,
     trumpSuit,
@@ -1483,6 +1813,10 @@ export function rankFollowCandidates(state: GameState, seat: Seat): Card[][] {
   );
   const isLastTrick = hand.length === leadPlay.cards.length;
   const isNearEndgame = hand.length <= leadPlay.cards.length + 3;
+  const knownBottomPts =
+    state.dealer === seat
+      ? state.bottomCards.reduce((sum, c) => sum + getCardPoints(c), 0)
+      : null;
 
   const allyHoldConfidence = currentWinningAlly
     ? estimateWinHoldConfidence(
@@ -1493,6 +1827,9 @@ export function rankFollowCandidates(state: GameState, seat: Seat): Card[][] {
         remainingEnemies,
       )
     : 0;
+  const rearAllyRuffConf = currentWinningAlly
+    ? 0
+    : estimateRearAllyRuffConfidence(tracker, state, seat, currentBestPlay);
 
   // Precompute hand structure for breakage penalties and void-creation bonuses
   const allGroups = groupCardsByKey(hand, trumpSuit, levelRank);
@@ -1584,60 +1921,34 @@ export function rankFollowCandidates(state: GameState, seat: Seat): Card[][] {
         )
       : 0;
 
-    // Value of winning this trick (points + lead control + last-trick bottom multiplier!)
-    const bottomMultiplierBonus = isLastTrick ? 190 : isNearEndgame ? 26 : 0;
-    const trickValue = trickPts * 3.1 + 14 + bottomMultiplierBonus;
+    // Unified game-theoretic expected-value follow scoring (aligned with PIMC's ~5.6 point-to-cost ratio):
+    // For any outcome with team win probability p in [0, 1], expected net swing is (2p - 1) * (trickPts * W + L + bottom) - cardCost.
+    // This seamlessly handles last-seat feeding (p=1), enemy dodging (p=0), 3rd-hand-high teammate protection (q vs p),
+    // never overtaking a secure teammate (q≈p saves cardCost), and 2nd/3rd-seat feeding to a void rear teammate!
+    const bottomBonus = isLastTrick ? 110 : isNearEndgame ? 14 : 0;
+    const trickPot = trickPts * 2.75 + 11 + bottomBonus;
 
-    let score = 0;
-
-    if (currentWinningAlly) {
-      if (!iWin) {
-        // Letting ally keep the win!
-        if (allyHoldConfidence >= 0.78) {
-          // Ally win is secure (e.g. last seat or ally played a top card): feed maximum safe points!
-          score =
-            140 +
-            trickPts * 2.5 +
-            candPts * 4.8 +
-            voidBonus -
-            cardCost * 1.15;
-        } else {
-          // Ally win is vulnerable to remaining enemy: protect our points and play small trash
-          score =
-            60 * allyHoldConfidence -
-            candPts * 3.2 +
-            voidBonus -
-            cardCost * 1.1;
-        }
-      } else {
-        // Overtaking our own ally
-        if (allyHoldConfidence >= 0.8) {
-          // NEVER waste cards overtaking a secure ally (especially in 4th seat)!
-          score =
-            75 +
-            trickPts * 2.0 -
-            55 -
-            cardCost * 1.45;
-        } else {
-          // Ally is vulnerable to remaining enemy: overtaking with a strong/top card to secure points makes sense!
-          score =
-            trickValue * myWinHold +
-            (myWinHold - allyHoldConfidence) * (trickPts * 2.8 + 25) -
-            cardCost * 1.2;
-        }
-      }
-    } else if (mySideWins && iWin) {
-      // Enemy was winning, and this play overtakes them!
-      score = trickValue * myWinHold - cardCost * 1.15;
-      // Extra urgency to contest a 20+ point trick
-      if (trickPts >= 20) score += 20 * myWinHold;
-      // Avoid wasting huge trumps (♥5 / BJ / SJ) on a 0-point early trick
-      if (trickPts === 0 && !isLastTrick && !isNearEndgame && cardCost >= 32) {
-        score -= 28;
-      }
+    let winProb: number;
+    if (iWin) {
+      winProb = myWinHold;
+    } else if (currentWinningAlly) {
+      winProb = allyHoldConfidence;
+    } else if (rearAllyRuffConf >= 0.65) {
+      // Conservative effective ruff-hold probability (accounts for ally possibly holding only huge trumps)
+      winProb = rearAllyRuffConf * 0.88;
     } else {
-      // Enemy keeps winning: strictly dodge points without throwing away Jokers/参谋 over a lone 5!
-      score = -candPts * 4.2 + voidBonus - cardCost * 1.15;
+      winProb = 0;
+    }
+
+    let score = (2 * winProb - 1) * trickPot + voidBonus - cardCost;
+
+    // Slight tie-break against unnecessarily overtaking a teammate who is already very likely to hold
+    if (currentWinningAlly && iWin && allyHoldConfidence >= 0.8) {
+      score -= 18;
+    }
+    // Avoid burning huge trumps (♥5 / BJ / SJ) on a 0-point early trick
+    if (iWin && trickPts === 0 && !isLastTrick && !isNearEndgame && cardCost >= 32) {
+      score -= 22;
     }
 
     scoredCands.push({ cards, score });
