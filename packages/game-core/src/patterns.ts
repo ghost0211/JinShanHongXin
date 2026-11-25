@@ -563,6 +563,78 @@ export function parsePlay(
   trumpSuit: StandardSuit | null,
   levelRank: LevelRank,
 ): ParsedPlay | null {
+  const n = cards.length;
+  if (n === 0) return null;
+  if (n === 1) {
+    const c = cards[0];
+    const cat = getCardCategory(c, trumpSuit, levelRank);
+    const ord = getCardOrder(c, trumpSuit, levelRank);
+    return {
+      patternType: 'SINGLE',
+      category: cat,
+      cards: [c],
+      components: [
+        {
+          type: 'SINGLE',
+          cards: [c],
+          cardKeys: [getCardKey(c)],
+          length: 1,
+          topOrder: ord,
+          usedLowAce: false,
+        },
+      ],
+    };
+  }
+  if (n === 2) {
+    const a = cards[0];
+    const b = cards[1];
+    const catA = getCardCategory(a, trumpSuit, levelRank);
+    const catB = getCardCategory(b, trumpSuit, levelRank);
+    if (catA !== catB) return null;
+    const ordA = getCardOrder(a, trumpSuit, levelRank);
+    const keyA = getCardKey(a);
+    if (a.suit === b.suit && a.rank === b.rank) {
+      return {
+        patternType: 'PAIR',
+        category: catA,
+        cards: [a, b],
+        components: [
+          {
+            type: 'PAIR',
+            cards: [a, b],
+            cardKeys: [keyA],
+            length: 1,
+            topOrder: ordA,
+            usedLowAce: false,
+          },
+        ],
+      };
+    }
+    const ordB = getCardOrder(b, trumpSuit, levelRank);
+    const keyB = getCardKey(b);
+    const compA: AtomicPattern = {
+      type: 'SINGLE',
+      cards: [a],
+      cardKeys: [keyA],
+      length: 1,
+      topOrder: ordA,
+      usedLowAce: false,
+    };
+    const compB: AtomicPattern = {
+      type: 'SINGLE',
+      cards: [b],
+      cardKeys: [keyB],
+      length: 1,
+      topOrder: ordB,
+      usedLowAce: false,
+    };
+    return {
+      patternType: 'SLING',
+      category: catA,
+      cards: [a, b],
+      components: ordA >= ordB ? [compA, compB] : [compB, compA],
+    };
+  }
   const decompositions = enumeratePlayDecompositions(cards, trumpSuit, levelRank);
   return decompositions[0] ?? null;
 }

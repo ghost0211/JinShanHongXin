@@ -47,3 +47,28 @@ for long horizons. A better rollout policy is the next lever.
 | **PIMC search (12 worlds, default)** | **hongxin R1** | **200** | **+3.0 ± 2.7** | **52.0%** | **+0.025** | **66 vs 59** | 1246 vs 1133 ms |
 | **PIMC search (12 worlds, default)** | **heixin R1** | **200** | **+2.3 ± 2.1** | **51.5%** | **+5.00** | **93 vs 94** | 1058 vs 938 ms |
 | PIMC search (12 worlds, default) | hongxin R3 | 80 | −5.9 ± 4.3 | 51.2% | −0.044 | 24 vs 22 | 1387 vs 1171 ms |
+
+## Results log (Phase 2: 24 worlds + 14 candidates + fullRollout ≤11 + two-stage halving + 1v3 excessStrength + hot-path cache)
+
+### Hyperparameter sweep vs Phase 1 (`ef83877`, hongxin R1, 80 deals)
+
+| Sweep option | Margin / deal | Win rate | Steps | Bottom kills | Speed |
+|---|---:|---:|---:|---:|---:|
+| `extraTricks: 1` (dropped: strategy fusion) | −13.4 ± 5.3 | 44.4% | −0.081 | 20 vs 31 | 2613 vs 1353 ms |
+| `worlds: 24` | **+6.6 ± 4.3** | **55.0%** | +0.063 | 32 vs 20 | 2568 vs 1315 ms |
+| `maxCandidates: 14` | **+2.9 ± 3.5** | 50.0% | +0.031 | 29 vs 24 | 1771 vs 1482 ms |
+| `fullRolloutCards: 12` | **+2.1 ± 3.3** | **52.5%** | +0.013 | 20 vs 22 | 1994 vs 1362 ms |
+| `alpha: 0.25` / `0.45` (keep `0.35`) | −1.1 / −1.9 | 45.0% / 50.6% | −0.013 / −0.019 | 23/31 / 24/24 | ~1360 ms |
+
+### Phase 2 final vs Phase 1 (`ef83877`) and cumulative vs original (`e69bdb8`)
+
+| Matchup | Mode | Deals | Margin / deal | Win rate | Steps / Bid net | Bottom kills | Speed |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Phase 2 vs Phase 1 (`ef83877`) | hongxin R1 | 200 | **+2.3 ± 2.8** | 50.5% | −0.003 | 62 vs 62 | 2398 → 1637 ms* |
+| Phase 2 (hot-path opt) vs Phase 1 (`ef83877`) | hongxin R1 | 100 | **+6.3 ± 4.0** | **51.0%** | **+0.030** | **29 vs 22** | **1637 vs 1423 ms** |
+| Phase 2 vs Phase 1 (`ef83877`) | heixin R1 | 200 | **+4.5 ± 2.4** | **52.0%** | **+7.20** | **106 vs 81** | 1971 → 1344 ms* |
+| Phase 2 vs Phase 1 (`ef83877`) | hongxin R3 | 100 | **+4.0 ± 3.9** | 47.5% | +0.020 | 32 vs 31 | 2801 ms |
+| **Phase 1+2 cumulative vs `e69bdb8`** | **hongxin R1** | **200** | **+5.6 ± 3.1** | **53.7%** | **+0.052** | **63 vs 58** | **1695 vs 1298 ms** |
+| **Phase 1+2 cumulative vs `e69bdb8`** | **heixin R1** | **200** | **+8.1 ± 2.5** | **52.0%** | **+6.90** | **100 vs 89** | **1344 vs 979 ms** |
+
+\*Hot-path speedups (`getCardOrder` memoization, `parsePlay` 1/2-card fast path, `WeakMap` completed-trick cache, pre-validated single-follow path) cut Phase 2 wall-clock by **37.4%** (3 games: `6856 ms → 4291 ms`).

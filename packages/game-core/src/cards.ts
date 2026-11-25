@@ -125,13 +125,24 @@ export function getCardCategory(
   return isTrump(card, trumpSuit, levelRank) ? 'TRUMP' : (card.suit as StandardSuit);
 }
 
-export function getSuitNormalRanks(
+interface NormalRankCacheEntry {
+  ranks: NormalRank[];
+  indexByRank: Partial<Record<NormalRank, number>>;
+}
+
+const suitNormalRanksCache = new Map<string, NormalRankCacheEntry>();
+
+function getSuitNormalRanksEntry(
   suit: StandardSuit,
   trumpSuit: StandardSuit | null,
   levelRank: LevelRank,
-): NormalRank[] {
+): NormalRankCacheEntry {
+  const key = `${suit}|${trumpSuit ?? '-'}|${levelRank}`;
+  const cached = suitNormalRanksCache.get(key);
+  if (cached) return cached;
+
   const sameColor = trumpSuit ? getSameColorSuit(trumpSuit) : null;
-  return ASCENDING_NORMAL_RANKS.filter((rank) => {
+  const ranks = ASCENDING_NORMAL_RANKS.filter((rank) => {
     if (rank === levelRank) return false;
     if (suit === 'H' && rank === '5') return false;
     if (trumpSuit !== null && rank === '3' && (suit === trumpSuit || suit === sameColor)) {
@@ -139,6 +150,21 @@ export function getSuitNormalRanks(
     }
     return true;
   });
+  const indexByRank: Partial<Record<NormalRank, number>> = {};
+  for (let i = 0; i < ranks.length; i++) {
+    indexByRank[ranks[i]] = i;
+  }
+  const entry: NormalRankCacheEntry = { ranks, indexByRank };
+  suitNormalRanksCache.set(key, entry);
+  return entry;
+}
+
+export function getSuitNormalRanks(
+  suit: StandardSuit,
+  trumpSuit: StandardSuit | null,
+  levelRank: LevelRank,
+): NormalRank[] {
+  return [...getSuitNormalRanksEntry(suit, trumpSuit, levelRank).ranks];
 }
 
 export function getCardOrder(
@@ -147,8 +173,8 @@ export function getCardOrder(
   levelRank: LevelRank,
 ): number {
   if (!isTrump(card, trumpSuit, levelRank)) {
-    const normalRanks = getSuitNormalRanks(card.suit as StandardSuit, trumpSuit, levelRank);
-    return normalRanks.indexOf(card.rank as NormalRank);
+    const entry = getSuitNormalRanksEntry(card.suit as StandardSuit, trumpSuit, levelRank);
+    return entry.indexByRank[card.rank as NormalRank] ?? -1;
   }
 
   if (trumpSuit === null) {
@@ -158,8 +184,8 @@ export function getCardOrder(
     return 3; // ♥5
   }
 
-  const normalTrump = getSuitNormalRanks(trumpSuit, trumpSuit, levelRank);
-  const M = normalTrump.length;
+  const entry = getSuitNormalRanksEntry(trumpSuit, trumpSuit, levelRank);
+  const M = entry.ranks.length;
   if (isRedFive(card)) return M + 6;
   if (card.rank === 'BJ') return M + 5;
   if (card.rank === 'SJ') return M + 4;
@@ -167,7 +193,7 @@ export function getCardOrder(
   if (card.rank === '3' && card.suit === getSameColorSuit(trumpSuit)) return M + 2;
   if (card.rank === levelRank && card.suit === trumpSuit) return M + 1;
   if (card.rank === levelRank) return M;
-  return normalTrump.indexOf(card.rank as NormalRank);
+  return entry.indexByRank[card.rank as NormalRank] ?? -1;
 }
 
 export function canUseAceAsOne(

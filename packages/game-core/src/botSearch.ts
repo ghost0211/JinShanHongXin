@@ -37,6 +37,10 @@ export interface SearchOptions {
   worlds: number;
   /** Max candidate plays examined (heuristic best-first). */
   maxCandidates: number;
+  /** Screening worlds in Stage 1 before pruning dominated candidates (0 disables pruning). */
+  stage1Worlds: number;
+  /** Minimum finalists kept for Stage 2 full-world evaluation. */
+  stage2Keep: number;
   /** Tricks simulated beyond the current one in the midgame (0 = finish current trick only). */
   extraTricks: number;
   /** When our hand has at most this many cards, roll out to the end of the round. */
@@ -51,14 +55,16 @@ export interface SearchOptions {
 }
 
 export const DEFAULT_SEARCH_OPTIONS: SearchOptions = {
-  worlds: 12,
-  maxCandidates: 10,
+  worlds: 24,
+  maxCandidates: 14,
+  stage1Worlds: 6,
+  stage2Keep: 5,
   extraTricks: 0,
-  fullRolloutCards: 8,
+  fullRolloutCards: 11,
   alpha: 0.35,
   leadBonus: 4,
-  timeBudgetMs: 200,
-  minWorlds: 4,
+  timeBudgetMs: 220,
+  minWorlds: 6,
 };
 
 let activeOptions: SearchOptions = { ...DEFAULT_SEARCH_OPTIONS };
@@ -76,6 +82,7 @@ export function getBotSearchOptions(): SearchOptions & { enabled: boolean } {
 }
 
 const SEATS: readonly Seat[] = [0, 1, 2, 3];
+const THREE_DECKS: readonly Card[] = createThreeDecks();
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -140,7 +147,7 @@ function sampleWorld(
     }
   }
 
-  const pool = createThreeDecks().filter((c) => !known.has(c.id));
+  const pool = THREE_DECKS.filter((c) => !known.has(c.id));
   const totalCap = cap.reduce((a, b) => a + b, 0);
   if (totalCap !== pool.length) return null;
 
@@ -356,8 +363,11 @@ function evaluateOutcome(
 
   if (end.phase === 'PLAYING') {
     const { trumpSuit, levelRank } = end;
+    // Subtract per-card baseline (4.5) so 1v3 Heixin multi-card leads don't suffer a 3N vs 1N
+    // phantom card-count bias (cancels identically to 0 in 2v2 Hongxin where both sides have 2 seats).
     for (const s of SEATS) {
-      const strength = handResourceStrength(end.hands[s], trumpSuit, levelRank);
+      const hand = end.hands[s];
+      const strength = handResourceStrength(hand, trumpSuit, levelRank) - 4.5 * hand.length;
       v += (isSameSide(start, seat, s) ? 1 : -1) * opts.alpha * strength;
     }
     const iAmDealer = start.dealer === seat;
@@ -426,12 +436,44 @@ export function searchPlayCards(
   const rng = mulberry32(decisionSeed(state, seat));
   const base: GameState = { ...state, events: [] };
   const totals = new Array<number>(candidates.length).fill(0);
+  const evalCounts = new Array<number>(candidates.length).fill(0);
   const ids = candidates.map((cards) => cards.map((c) => c.id));
   const t0 = Date.now();
   let worldsDone = 0;
 
+  // Two-stage successive halving: evaluate all candidates on `stage1Worlds`, then prune clearly
+  // dominated candidates so the top contenders get full `worlds` (e.g. 24) precision at ~half the cost!
+  let activeIndices: number[] = Array.from({ length: candidates.length }, (_, i) => i);
+  const useHalving =
+    !deterministic &&
+    opts.stage1Worlds > 0 &&
+    opts.stage1Worlds < maxWorlds &&
+    candidates.length > opts.stage2Keep;
+  let pruned = false;
+
   for (let w = 0; w < maxWorlds; w++) {
     if (worldsDone >= opts.minWorlds && Date.now() - t0 > opts.timeBudgetMs) break;
+
+    if (useHalving && !pruned && worldsDone >= opts.stage1Worlds) {
+      pruned = true;
+      const rankedByMean = [...activeIndices].sort(
+        (a, b) =>
+          totals[b] / Math.max(1, evalCounts[b]) -
+          totals[a] / Math.max(1, evalCounts[a]) || a - b,
+      );
+      const bestMean = totals[rankedByMean[0]] / Math.max(1, evalCounts[rankedByMean[0]]);
+      const maxFinalists = Math.min(candidates.length, Math.max(opts.stage2Keep, 7));
+      const kept: number[] = [];
+      for (let k = 0; k < rankedByMean.length; k++) {
+        const idx = rankedByMean[k];
+        const mean = totals[idx] / Math.max(1, evalCounts[idx]);
+        if (k < opts.stage2Keep || (kept.length < maxFinalists && bestMean - mean <= 5.0)) {
+          kept.push(idx);
+        }
+      }
+      activeIndices = kept;
+    }
+
     let world: World | null = null;
     for (let attempt = 0; attempt < 12 && !world; attempt++) {
       world = sampleWorld(state, seat, tracker, rng, attempt < 8);
@@ -441,8 +483,9 @@ export function searchPlayCards(
 
     const values: number[] = [];
     let failed = false;
-    for (let i = 0; i < candidates.length; i++) {
-      const end = simulate(worldState, seat, ids[i], horizon);
+    for (let j = 0; j < activeIndices.length; j++) {
+      const idx = activeIndices[j];
+      const end = simulate(worldState, seat, ids[idx], horizon);
       if (!end) {
         failed = true;
         break;
@@ -450,15 +493,25 @@ export function searchPlayCards(
       values.push(evaluateOutcome(worldState, end, seat, opts));
     }
     if (failed) continue;
-    for (let i = 0; i < values.length; i++) totals[i] += values[i];
+    for (let j = 0; j < activeIndices.length; j++) {
+      const idx = activeIndices[j];
+      totals[idx] += values[j];
+      evalCounts[idx] += 1;
+    }
     worldsDone += 1;
   }
 
   if (worldsDone === 0) return ids[0];
-  let best = 0;
-  for (let i = 1; i < candidates.length; i++) {
+  let best = activeIndices[0];
+  let bestScore = totals[best] / Math.max(1, evalCounts[best]) - best * 1e-6;
+  for (let j = 1; j < activeIndices.length; j++) {
+    const idx = activeIndices[j];
     // tiny tie-break toward the heuristic's preference order
-    if (totals[i] - i * 1e-6 > totals[best] - best * 1e-6) best = i;
+    const sc = totals[idx] / Math.max(1, evalCounts[idx]) - idx * 1e-6;
+    if (sc > bestScore) {
+      best = idx;
+      bestScore = sc;
+    }
   }
   return ids[best];
 }
