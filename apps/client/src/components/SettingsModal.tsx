@@ -1,13 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import type { ConnectionStatus } from '../net/wsClient.js';
 import {
+  BGM_TRACK_OPTIONS,
   BOT_DIFFICULTY_OPTIONS,
+  DEAL_SPEED_OPTIONS,
   DEFAULT_APP_SETTINGS,
   TABLE_SKIN_OPTIONS,
   type AppSettings,
+  type BgmTrackId,
   type BotDifficulty,
+  type DealSpeed,
   type TableSkin,
 } from '../utils/settings.js';
+import { bgmPlayer } from '../utils/bgm.js';
 import { soundFX } from '../utils/sound.js';
 import { SuitGlyph } from './CardArt.js';
 import { Icon } from './Icons.js';
@@ -53,9 +58,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         ? { text: '连接中...', cls: 'pill-gold' }
         : { text: '未连接', cls: 'pill-red' };
 
+  const activeBgmTrack =
+    BGM_TRACK_OPTIONS.find((t) => t.id === settings.bgmTrack) ?? BGM_TRACK_OPTIONS[0];
+  const activeDealSpeed =
+    DEAL_SPEED_OPTIONS.find((d) => d.id === settings.dealSpeed) ?? DEAL_SPEED_OPTIONS[4];
+
   const handleSelectSkin = (skin: TableSkin) => {
     soundFX.playTap();
     onUpdateSettings({ tableSkin: skin });
+  };
+
+  const handleSelectBgmTrack = (track: BgmTrackId) => {
+    soundFX.playTap();
+    onUpdateSettings({ bgmTrack: track, bgmEnabled: true });
+    bgmPlayer.unlock();
   };
 
   const handleSaveServer = () => {
@@ -217,6 +233,78 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </section>
 
+          {/* 背景音乐 */}
+          <section className="set-group is-wide">
+            <div className="set-group-head">
+              <h4 className="section-title">背景音乐</h4>
+              <span className={`pill ${settings.bgmEnabled ? 'pill-gold' : ''}`}>
+                {settings.bgmEnabled ? `播放中 · ${activeBgmTrack.label}` : '已关闭'}
+              </span>
+            </div>
+            <div className="set-rows">
+              {renderToggleRow(
+                '开启背景音乐',
+                '离线内置牌室配乐，切到后台自动暂停',
+                settings.bgmEnabled,
+                (v) => {
+                  onUpdateSettings({ bgmEnabled: v });
+                  if (v) bgmPlayer.unlock();
+                },
+              )}
+              <div className={`set-row is-stacked ${settings.bgmEnabled ? '' : 'is-disabled'}`}>
+                <span className="set-row-info">
+                  <span className="set-row-title">
+                    音乐音量
+                    <span className="set-row-value">{settings.bgmVolume}%</span>
+                  </span>
+                </span>
+                <input
+                  type="range"
+                  className="set-slider"
+                  min={0}
+                  max={100}
+                  step={2}
+                  disabled={!settings.bgmEnabled}
+                  value={settings.bgmVolume}
+                  style={{ '--val': `${settings.bgmVolume}%` } as React.CSSProperties}
+                  onChange={(e) => onUpdateSettings({ bgmVolume: Number(e.target.value) })}
+                />
+              </div>
+            </div>
+            <div
+              className={`bgm-track-picker ${settings.bgmEnabled ? '' : 'is-muted'}`}
+              role="radiogroup"
+              aria-label="选择背景音乐"
+            >
+              {BGM_TRACK_OPTIONS.map((track) => {
+                const active = settings.bgmEnabled && settings.bgmTrack === track.id;
+                const selected = settings.bgmTrack === track.id;
+                return (
+                  <button
+                    key={track.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    className={`bgm-track-option ${active ? 'is-active' : selected ? 'is-selected' : ''}`}
+                    onClick={() => handleSelectBgmTrack(track.id)}
+                  >
+                    <span className="bgm-track-head">
+                      <span className="bgm-track-icon" aria-hidden="true">♪</span>
+                      <strong>{track.label}</strong>
+                      <span className="bgm-track-sub">{track.subtitle}</span>
+                    </span>
+                    <small className="bgm-track-desc">{track.desc}</small>
+                    {active && (
+                      <span className="skin-option-check bgm-track-check" aria-hidden="true">
+                        <Icon name="check" />
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
           {/* 音效与触感 */}
           <section className="set-group">
             <h4 className="section-title">音效与触感</h4>
@@ -256,10 +344,38 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </section>
 
-          {/* 出牌辅助 */}
+          {/* 出牌与发牌 */}
           <section className="set-group">
-            <h4 className="section-title">出牌辅助</h4>
+            <h4 className="section-title">出牌与发牌</h4>
             <div className="set-rows">
+              <div className="set-row is-stacked">
+                <span className="set-row-info">
+                  <span className="set-row-title">
+                    发牌速度
+                    <span className="set-row-value">{activeDealSpeed.label}</span>
+                  </span>
+                  <span className="set-row-desc">
+                    {activeDealSpeed.desc}（房主修改即时生效）
+                  </span>
+                </span>
+                <div className="segmented-control is-five" role="radiogroup" aria-label="发牌速度">
+                  {DEAL_SPEED_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={settings.dealSpeed === opt.id}
+                      className={settings.dealSpeed === opt.id ? 'is-active' : ''}
+                      onClick={() => {
+                        soundFX.playTap();
+                        onUpdateSettings({ dealSpeed: opt.id as DealSpeed });
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
               {renderToggleRow(
                 '必出牌自动预选',
                 '同门不足或跟主牌 510K 必出大主时自动帮你选中',

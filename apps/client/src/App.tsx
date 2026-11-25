@@ -11,6 +11,7 @@ import {
   saveAppSettings,
   type AppSettings,
 } from './utils/settings.js';
+import { bgmPlayer } from './utils/bgm.js';
 import { soundFX } from './utils/sound.js';
 
 export const App: React.FC = () => {
@@ -19,6 +20,11 @@ export const App: React.FC = () => {
     soundFX.setVolume(initial.soundVolume);
     soundFX.setHapticsEnabled(initial.hapticsEnabled);
     soundFX.setMuted(!initial.soundEnabled);
+    bgmPlayer.configure({
+      enabled: initial.bgmEnabled,
+      track: initial.bgmTrack,
+      volume: initial.bgmVolume,
+    });
     return initial;
   });
   const settingsRef = useRef<AppSettings>(settings);
@@ -27,6 +33,7 @@ export const App: React.FC = () => {
   const client = useGameClient({
     allyBotDifficulty: settings.allyBotDifficulty,
     opponentBotDifficulty: settings.opponentBotDifficulty,
+    dealSpeed: settings.dealSpeed,
   });
   const [showSplash, setShowSplash] = useState<boolean>(() => settings.splashEnabled);
   const [showSettings, setShowSettings] = useState(false);
@@ -38,16 +45,20 @@ export const App: React.FC = () => {
       settingsRef.current = next;
       setSettings(next);
       saveAppSettings(next);
+      const isHost = Boolean(
+        client.room && client.session && client.room.hostSeat === client.session.seat,
+      );
       if (
-        (patch.allyBotDifficulty !== undefined || patch.opponentBotDifficulty !== undefined) &&
-        client.room &&
-        client.session &&
-        client.room.hostSeat === client.session.seat
+        isHost &&
+        (patch.allyBotDifficulty !== undefined || patch.opponentBotDifficulty !== undefined)
       ) {
         client.setBotDifficulty(next.allyBotDifficulty, next.opponentBotDifficulty);
       }
+      if (isHost && patch.dealSpeed !== undefined) {
+        client.setDealSpeed(next.dealSpeed);
+      }
     },
-    [client.room, client.session, client.setBotDifficulty],
+    [client.room, client.session, client.setBotDifficulty, client.setDealSpeed],
   );
 
   useEffect(() => {
@@ -57,6 +68,14 @@ export const App: React.FC = () => {
       soundFX.setMuted(!settings.soundEnabled);
     }
   }, [settings.soundEnabled, settings.soundVolume, settings.hapticsEnabled]);
+
+  useEffect(() => {
+    bgmPlayer.configure({
+      enabled: settings.bgmEnabled,
+      track: settings.bgmTrack,
+      volume: settings.bgmVolume,
+    });
+  }, [settings.bgmEnabled, settings.bgmTrack, settings.bgmVolume]);
 
   const handleCopyText = async (text: string, label = '内容') => {
     try {

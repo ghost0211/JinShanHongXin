@@ -359,6 +359,10 @@ export function createGameServer(
             ) {
               badRoomMessage();
             }
+            const dealSpeed = msg.dealSpeed === undefined ? 5 : msg.dealSpeed;
+            if (dealSpeed !== 1 && dealSpeed !== 2 && dealSpeed !== 3 && dealSpeed !== 4 && dealSpeed !== 5) {
+              badRoomMessage();
+            }
             const user = authenticate(msg.authToken);
             const displayName = user?.nickname ?? playerName(msg.playerName);
             const room = roomManager.createRoom({
@@ -366,6 +370,7 @@ export function createGameServer(
               debugMode,
               allyBotDifficulty,
               opponentBotDifficulty,
+              dealSpeed,
             });
             const joined = room.addHuman(displayName, ws, 0, user?.id ?? null);
             if (fillBots) {
@@ -422,6 +427,12 @@ export function createGameServer(
               badRoomMessage();
             }
             room.setBotDifficulty(actorSeat, msg.allyDifficulty, msg.opponentDifficulty);
+            break;
+          case 'SET_DEAL_SPEED':
+            if (msg.dealSpeed !== 1 && msg.dealSpeed !== 2 && msg.dealSpeed !== 3 && msg.dealSpeed !== 4 && msg.dealSpeed !== 5) {
+              badRoomMessage();
+            }
+            room.setDealSpeed(actorSeat, msg.dealSpeed);
             break;
           case 'SET_SEAT_BOT':
             if (!isSeat(msg.seat)) badRoomMessage();
