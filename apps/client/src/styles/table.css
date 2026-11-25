@@ -802,6 +802,7 @@
   grid-column: 2;
   grid-row: 2;
   position: relative;
+  z-index: 5;
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -810,7 +811,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .trick-grid {
@@ -819,17 +820,24 @@
   height: 100%;
   min-height: 96px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.32fr) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   align-items: center;
   justify-items: center;
-  gap: 6px 8px;
-  padding: 2px 4px 22px;
+  gap: 6px 6px;
+  padding: 4px 4px 16px;
+}
+
+@media (max-height: 450px) {
+  .trick-grid {
+    gap: 4px 6px;
+    padding: 4px 2px 10px;
+  }
 }
 
 @media (max-height: 390px) {
   .trick-grid {
-    padding-bottom: 10px;
+    padding-bottom: 8px;
   }
 }
 
@@ -904,9 +912,17 @@
 }
 
 .trick-cards-row {
+  position: relative;
   display: flex;
   align-items: center;
+  justify-content: center;
   max-width: 100%;
+}
+.trick-slot-left .trick-cards-row {
+  justify-content: flex-start;
+}
+.trick-slot-right .trick-cards-row {
+  justify-content: flex-end;
 }
 .trick-cards-row > .pcard {
   cursor: inherit;
@@ -921,7 +937,8 @@
   bottom: -7px;
   left: 50%;
   transform: translateX(-50%);
-  max-width: 100%;
+  max-width: max(100%, 140px);
+  white-space: nowrap;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
   padding: 1px 7px;
   font-size: 10.5px;
