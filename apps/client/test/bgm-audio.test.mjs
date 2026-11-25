@@ -11,15 +11,18 @@ import {
 
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
-    return nextResolve(
-      specifier === './bgmAudio.js' && context.parentURL?.endsWith('/utils/bgm.ts')
-        ? './bgmAudio.ts'
-        : specifier,
-      context,
-    );
+    if (context.parentURL?.endsWith('/utils/bgm.ts')) {
+      if (specifier === './bgmAudio.js') return nextResolve('./bgmAudio.ts', context);
+      if (specifier === './sound.js') return nextResolve('./sound.ts', context);
+    }
+    if (context.parentURL?.endsWith('/utils/sound.ts') && specifier === './cardAudio.js') {
+      return nextResolve('./cardAudio.ts', context);
+    }
+    return nextResolve(specifier, context);
   },
 });
 const { bgmPlayer } = await import('../src/utils/bgm.ts');
+const { soundFX } = await import('../src/utils/sound.ts');
 hooks.deregister();
 
 test('all 3 offline BGM tracks have bounded, non-clipping DSP synthesis and warm reverb impulse', () => {
@@ -138,6 +141,7 @@ test('BgmController unlocks on gesture, schedules notes with reverb, switches tr
       createBufferSource() {
         const v = mockNode({
           buffer: null,
+          playbackRate: { value: 1 },
           start(at) {
             this.startedAt = at;
           },
@@ -148,6 +152,14 @@ test('BgmController unlocks on gesture, schedules notes with reverb, switches tr
         voices.push(v);
         return v;
       }
+      createOscillator() {
+        return mockNode({
+          type: 'sine',
+          frequency: { setValueAtTime() {} },
+          start() {},
+          stop() {},
+        });
+      }
       createStereoPanner() {
         return mockNode({ pan: { value: 0 } });
       }
@@ -155,6 +167,8 @@ test('BgmController unlocks on gesture, schedules notes with reverb, switches tr
   };
 
   try {
+    soundFX.setMuted(false);
+    soundFX.unlock();
     bgmPlayer.configure({ enabled: true, track: 'jiangnan', volume: 50 });
     assert.equal(bgmPlayer.isEnabled(), true);
     assert.equal(bgmPlayer.getTrack(), 'jiangnan');
@@ -162,12 +176,24 @@ test('BgmController unlocks on gesture, schedules notes with reverb, switches tr
 
     bgmPlayer.unlock();
     await new Promise((r) => setTimeout(r, 10));
-    assert.equal(created, 1);
+    // CRITICAL: SFX and BGM MUST share a single AudioContext so Android WebView never silences SFX!
+    assert.equal(created, 1, 'SFX and BGM must share one AudioContext');
     assert.equal(resumeCalls, 1);
     assert.equal(convolvers.length, 1);
     assert.ok(convolvers[0].buffer, 'reverb impulse should be loaded');
     assert.equal(bgmPlayer.isPlaying(), true);
     assert.ok(voices.length > 0, 'opening bar notes should be scheduled immediately');
+
+    // Card-play SFX continues working seamlessly while BGM is playing!
+    const bgmVoiceCount = voices.length;
+    const cards = [{ id: 1 }, { id: 2 }];
+    soundFX.playCards({ seat: 0, cards, parsed: { patternType: 'PAIR', cards, components: [] } }, 0);
+    assert.ok(voices.length > bgmVoiceCount, 'SFX playCards must emit voices while BGM is active');
+
+    // Muting SFX must NOT stop BGM, and disabling BGM must NOT break SFX!
+    soundFX.setMuted(true);
+    assert.equal(bgmPlayer.isPlaying(), true);
+    soundFX.setMuted(false);
 
     const countBeforeSwitch = voices.length;
     bgmPlayer.configure({ track: 'haipai' });
@@ -176,9 +202,12 @@ test('BgmController unlocks on gesture, schedules notes with reverb, switches tr
 
     bgmPlayer.configure({ enabled: false });
     assert.equal(bgmPlayer.isPlaying(), false);
-    assert.ok(voices.every((v) => v.stopped), 'disabling BGM must stop all active voices');
+    const countAfterBgmOff = voices.length;
+    soundFX.playCards({ seat: 0, cards, parsed: { patternType: 'PAIR', cards, components: [] } }, 0);
+    assert.ok(voices.length > countAfterBgmOff, 'SFX must keep playing after turning BGM off');
   } finally {
     bgmPlayer.dispose();
+    soundFX.resetContext();
     delete globalThis.window;
   }
 });

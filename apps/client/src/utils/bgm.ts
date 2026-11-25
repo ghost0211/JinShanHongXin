@@ -6,9 +6,10 @@ import {
   type BgmTrackId,
   type BgmTrackPlan,
 } from './bgmAudio.js';
+import { soundFX } from './sound.js';
 
 /** Comfortable ceiling so BGM stays warm beneath card-play SFX. */
-const MAX_BGM_GAIN = 0.44;
+const MAX_BGM_GAIN = 0.32;
 const LOOKAHEAD_SEC = 0.32;
 const SCHEDULER_TICK_MS = 110;
 const MAX_ACTIVE_VOICES = 28;
@@ -113,18 +114,20 @@ class BgmController {
   dispose(): void {
     this.stopPlayback(false);
     this.bufferCache.clear();
-    if (this.ctx) {
-      try {
-        void this.ctx.close();
-      } catch {
-        // ignore
-      }
-      this.ctx = null;
-      this.masterGain = null;
-      this.dryGain = null;
-      this.wetGain = null;
-      this.reverbNode = null;
+    try {
+      this.dryGain?.disconnect();
+      this.wetGain?.disconnect();
+      this.reverbNode?.disconnect();
+      this.masterGain?.disconnect();
+    } catch {
+      // ignore
     }
+    // Never close the shared AudioContext here — soundFX shares it!
+    this.ctx = null;
+    this.masterGain = null;
+    this.dryGain = null;
+    this.wetGain = null;
+    this.reverbNode = null;
   }
 
   private bindVisibilityListeners(): void {
@@ -134,17 +137,10 @@ class BgmController {
       if (document.hidden) {
         this.pausedByVisibility = true;
         this.stopPlayback(true);
-        if (this.ctx && this.ctx.state === 'running') {
-          void this.ctx.suspend().catch(() => {});
-        }
       } else {
         this.pausedByVisibility = false;
-        if (this.enabled && this.ctx) {
-          void this.ctx.resume().then(() => {
-            if (this.enabled && !this.pausedByVisibility) {
-              this.startPlayback();
-            }
-          }).catch(() => {});
+        if (this.enabled) {
+          this.unlock();
         }
       }
     };
@@ -158,35 +154,45 @@ class BgmController {
   }
 
   private ensureContext(): AudioContext | null {
-    if (typeof window === 'undefined') return null;
-    if (this.ctx) return this.ctx;
-    const AudioCtx =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext?: typeof AudioContext })
-        .webkitAudioContext;
-    if (!AudioCtx) return null;
+    const shared = soundFX.getSharedAudioContext(true);
+    if (!shared) return null;
+    if (this.ctx === shared && this.masterGain && this.dryGain) {
+      return shared;
+    }
 
-    const ctx = new AudioCtx();
-    const compressor = ctx.createDynamicsCompressor();
+    // Rebind BGM bus onto the single shared AudioContext
+    this.stopVoices();
+    this.bufferCache.clear();
+    try {
+      this.dryGain?.disconnect();
+      this.wetGain?.disconnect();
+      this.reverbNode?.disconnect();
+      this.masterGain?.disconnect();
+    } catch {
+      // ignore
+    }
+
+    const compressor = shared.createDynamicsCompressor();
     compressor.threshold.value = -16;
     compressor.ratio.value = 4;
     compressor.attack.value = 0.01;
     compressor.release.value = 0.2;
 
-    const masterGain = ctx.createGain();
+    const masterGain = shared.createGain();
     masterGain.gain.value = 0.0001;
 
-    const dryGain = ctx.createGain();
+    const dryGain = shared.createGain();
     dryGain.gain.value = 0.72;
 
-    const wetGain = ctx.createGain();
+    const wetGain = shared.createGain();
     wetGain.gain.value = 0.34;
 
     dryGain.connect(masterGain);
-    if (typeof ctx.createConvolver === 'function') {
-      const reverb = ctx.createConvolver();
-      const [impL, impR] = makeReverbImpulse(ctx.sampleRate, 2.0);
-      const impulseBuf = ctx.createBuffer(2, impL.length, ctx.sampleRate);
+    this.reverbNode = null;
+    if (typeof shared.createConvolver === 'function') {
+      const reverb = shared.createConvolver();
+      const [impL, impR] = makeReverbImpulse(shared.sampleRate, 1.4);
+      const impulseBuf = shared.createBuffer(2, impL.length, shared.sampleRate);
       impulseBuf.getChannelData(0).set(impL);
       impulseBuf.getChannelData(1).set(impR);
       reverb.buffer = impulseBuf;
@@ -194,13 +200,13 @@ class BgmController {
       this.reverbNode = reverb;
     }
 
-    masterGain.connect(compressor).connect(ctx.destination);
+    masterGain.connect(compressor).connect(shared.destination);
 
-    this.ctx = ctx;
+    this.ctx = shared;
     this.masterGain = masterGain;
     this.dryGain = dryGain;
     this.wetGain = wetGain;
-    return ctx;
+    return shared;
   }
 
   private targetGain(): number {
