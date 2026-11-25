@@ -6,6 +6,7 @@ import {
   chooseBotAction,
   chooseBotDealingCallAction,
   createInitialMatchState,
+  evaluateBottomHoldStrength,
   getCardCategory,
   getCardPoints,
   getPlayerView,
@@ -570,6 +571,67 @@ describe('Bot burying strategy', () => {
         `expected non-Ace short diamond ${trash.rank} to be buried so ♦A cashes into a trick-2 void`,
       );
     }
+  });
+
+  it('refuses to dump heavy points in hongxin when unable to strip enemies or block/beat enemy trump 510K', () => {
+    resetCardIds();
+    // 18 trumps with 6 medium high-trumps (old bot triggered strongTrumpControl & buried 35-45 pts!),
+    // BUT only 1 BJ, 0 ♥5, 0 trump triples, and opponents can still form 2+ trump 510Ks!
+    const vulnerableTrumps: Card[] = [
+      c('J', 'BJ'), c('J', 'SJ'), c('S', '3'), c('C', '3'), c('S', '2'), c('H', '2'),
+      c('S', 'A'), c('S', 'K'), c('S', 'Q'), c('S', 'J'), c('S', '10'), c('S', '9'),
+      c('S', '8'), c('S', '7'), c('S', '6'), c('S', '5'), c('S', '4'), c('S', '4'),
+    ];
+    // 30 off-suit cards containing 45+ points of loose 5/10/K plus >=10 clean 0-point singles
+    const offSuitCards: Card[] = [
+      c('D', 'A'), c('D', 'K'), c('D', '10'), c('D', '9'), c('D', '8'), c('D', '7'), c('D', '6'), c('D', '5'), c('D', '4'), c('D', '4'),
+      c('C', 'A'), c('C', 'K'), c('C', '10'), c('C', '9'), c('C', '8'), c('C', '7'), c('C', '6'), c('C', '5'), c('C', '4'), c('C', '4'),
+      c('H', 'A'), c('H', 'K'), c('H', '10'), c('H', 'Q'), c('H', 'J'), c('H', '9'), c('H', '8'), c('H', '7'), c('H', '6'), c('H', '4'),
+    ];
+    const hand48 = [...vulnerableTrumps, ...offSuitCards];
+    assert.equal(hand48.length, 48);
+
+    const evalWeak = evaluateBottomHoldStrength(hand48, 'S', '2');
+    assert.equal(evalWeak.canStripEnemyTrumps, false);
+    assert.equal(evalWeak.canBeatEnemyTrump510K, false);
+    assert.ok(evalWeak.tier <= 1, `expected tier <= 1 for 510K-vulnerable hand, got ${evalWeak.tier}`);
+
+    const buriedIds = suggestBuryCards(hand48, 'S', '2', 'hongxin');
+    const buriedSet = new Set(buriedIds);
+    const buriedPts = hand48
+      .filter((x) => buriedSet.has(x.id))
+      .reduce((sum, x) => sum + getCardPoints(x), 0);
+    assert.ok(
+      buriedPts <= 10,
+      `vulnerable 18-trump hongxin hand must NOT bury heavy points (buried ${buriedPts} pts)`,
+    );
+
+    // Now test anti-510K recognition: owning a trump triple OR all 3 of trump K upgrades bottom-hold score
+    const anti510kTrumps: Card[] = [
+      c('H', '5'), c('H', '5'), c('J', 'BJ'), c('J', 'SJ'), c('S', '3'), c('S', '2'),
+      c('S', 'A'), c('S', 'A'), c('S', 'A'), // trump triple beats enemy single trump 510K!
+      c('S', 'K'), c('S', 'K'), c('S', 'K'), // also blocks enemy trump 510K completely (maxEnemyTrump510K=0)!
+      c('S', 'Q'), c('S', 'J'), c('S', '10'), c('S', '9'), c('S', '8'), c('S', '7'),
+      c('S', '6'), c('S', '5'), c('S', '4'), c('S', '4'),
+    ]; // 22 trumps!
+    const monster48 = [...anti510kTrumps, ...offSuitCards.slice(0, 26)];
+    assert.equal(monster48.length, 48);
+
+    const evalStrong = evaluateBottomHoldStrength(monster48, 'S', '2');
+    assert.equal(evalStrong.canBeatEnemyTrump510K, true);
+    assert.equal(evalStrong.maxEnemyTrump510K, 0);
+    assert.equal(evalStrong.tier, 3, `expected tier 3 for bottom-lock monster hand, got ${evalStrong.tier}`);
+    assert.ok(evalStrong.score > evalWeak.score + 40);
+
+    const monsterBuriedIds = suggestBuryCards(monster48, 'S', '2', 'hongxin');
+    const monsterBuriedSet = new Set(monsterBuriedIds);
+    const monsterBuriedPts = monster48
+      .filter((x) => monsterBuriedSet.has(x.id))
+      .reduce((sum, x) => sum + getCardPoints(x), 0);
+    assert.ok(
+      monsterBuriedPts >= 10 && monsterBuriedPts <= 40,
+      `dominant bottom-lock hand should safely bank moderate loose points (got ${monsterBuriedPts} pts)`,
+    );
   });
 });
 
