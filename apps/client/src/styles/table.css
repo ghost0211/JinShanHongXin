@@ -1162,12 +1162,179 @@
 }
 
 .action-bar {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   min-height: 42px;
   padding: 4px 12px 2px;
+}
+
+/* Centered dealing / calling suit bar right above the player's hand cards */
+.call-suit-dock {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  max-width: calc(100% - 210px);
+  pointer-events: auto;
+}
+
+.call-suit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 4px 13px 4px 10px;
+  border-radius: 999px;
+  border: 1.5px solid var(--gold);
+  background: linear-gradient(180deg, #fffdf7 0%, #f1e2c2 100%);
+  color: #1f1b16;
+  font-family: inherit;
+  box-shadow:
+    0 0 0 1px rgba(255, 245, 214, 0.55) inset,
+    0 0 14px color-mix(in srgb, var(--gold) 58%, transparent),
+    0 3px 10px rgba(0, 0, 0, 0.42);
+  transition: transform 140ms var(--ease-out), box-shadow 160ms ease, filter 160ms ease;
+}
+
+.call-suit-btn.is-callable {
+  cursor: pointer;
+  animation: callSuitAppear 200ms var(--ease-out), callSuitGlow 1.7s ease-in-out infinite 200ms;
+}
+
+.call-suit-btn.is-callable:hover {
+  transform: translateY(-2px) scale(1.04);
+  box-shadow:
+    0 0 0 1px rgba(255, 250, 232, 0.78) inset,
+    0 0 20px color-mix(in srgb, var(--gold-hi) 82%, transparent),
+    0 6px 14px rgba(0, 0, 0, 0.45);
+}
+
+.call-suit-btn.is-callable:active {
+  transform: translateY(0) scale(0.97);
+}
+
+.call-suit-btn.is-called-highlight {
+  cursor: default;
+  padding: 4px 15px 4px 11px;
+  border: 2px solid #fff3c4;
+  background: linear-gradient(180deg, #fff7d6 0%, #f4cc6c 54%, #dfa334 100%);
+  color: #241706;
+  box-shadow:
+    0 0 0 1px rgba(255, 252, 235, 0.85) inset,
+    0 0 0 3px color-mix(in srgb, var(--gold-hi) 42%, transparent),
+    0 0 24px color-mix(in srgb, var(--gold-hi) 85%, transparent),
+    0 4px 14px rgba(0, 0, 0, 0.48);
+  animation: callSuitLockIn 280ms var(--ease-out), callSuitHighlightPulse 1.8s ease-in-out infinite 280ms;
+}
+
+.call-suit-glyph-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+  flex-shrink: 0;
+}
+
+.call-suit-btn.is-called-highlight .call-suit-glyph-wrap {
+  background: rgba(255, 253, 245, 0.92);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+}
+
+.call-suit-glyph {
+  width: 17px;
+  height: 17px;
+  display: block;
+}
+
+.call-suit-btn.is-red-suit .call-suit-glyph {
+  color: #cf2428;
+}
+
+.call-suit-btn.is-black-suit .call-suit-glyph {
+  color: #191d24;
+}
+
+.call-suit-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.08;
+}
+
+.call-suit-meta strong {
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  color: #211912;
+  white-space: nowrap;
+}
+
+.call-suit-meta small {
+  font-size: 10px;
+  font-weight: 700;
+  color: #5b3b09;
+  white-space: nowrap;
+}
+
+.call-suit-pass-btn {
+  min-height: 34px;
+  padding: 4px 13px;
+  border-radius: 999px;
+}
+
+@keyframes callSuitAppear {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.86);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes callSuitGlow {
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(255, 249, 224, 0.72) inset,
+      0 0 22px color-mix(in srgb, var(--gold-hi) 84%, transparent),
+      0 4px 12px rgba(0, 0, 0, 0.44);
+  }
+}
+
+@keyframes callSuitLockIn {
+  0% {
+    transform: scale(0.88);
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes callSuitHighlightPulse {
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(255, 253, 240, 0.95) inset,
+      0 0 0 4px color-mix(in srgb, var(--gold-hi) 56%, transparent),
+      0 0 30px color-mix(in srgb, var(--gold-hi) 95%, transparent),
+      0 4px 14px rgba(0, 0, 0, 0.48);
+  }
 }
 
 .action-bar-group {
@@ -1343,6 +1510,46 @@
   }
   .me-chip {
     height: 30px;
+  }
+  .call-suit-dock {
+    gap: 7px;
+  }
+  .call-suit-btn {
+    min-height: 32px;
+    padding: 3px 10px 3px 8px;
+    gap: 5px;
+  }
+  .call-suit-btn.is-called-highlight {
+    padding: 3px 12px 3px 9px;
+  }
+  .call-suit-glyph-wrap {
+    width: 21px;
+    height: 21px;
+  }
+  .call-suit-glyph {
+    width: 15px;
+    height: 15px;
+  }
+  .call-suit-meta strong {
+    font-size: 12px;
+  }
+  .call-suit-meta small {
+    font-size: 9.5px;
+  }
+  .call-suit-pass-btn {
+    min-height: 30px;
+    padding: 3px 10px;
+  }
+}
+
+@media (max-width: 580px) {
+  .call-suit-dock {
+    position: static;
+    transform: none;
+    max-width: 100%;
+    width: 100%;
+    order: 2;
+    padding-top: 2px;
   }
 }
 

@@ -1,4 +1,4 @@
-import type { GameMode, RoomSummary } from '@jinshan/protocol';
+import type { BotDifficulty, GameMode, RoomSummary } from '@jinshan/protocol';
 import {
   GameRoom,
   type RoomHistorySink,
@@ -55,12 +55,16 @@ export class RoomManager {
     mode?: GameMode;
     debugMode?: boolean;
     fillBots?: boolean;
+    allyBotDifficulty?: BotDifficulty;
+    opponentBotDifficulty?: BotDifficulty;
   }): GameRoom {
     const roomId = this.generateRoomId();
     const room = new GameRoom({
       roomId,
       mode: options?.mode ?? 'hongxin',
       debugMode: options?.debugMode ?? false,
+      allyBotDifficulty: options?.allyBotDifficulty ?? 'high',
+      opponentBotDifficulty: options?.opponentBotDifficulty ?? 'high',
       botDelayMs: this.botDelayMs,
       store: this.store,
       ...this.timingOptions,

@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type { Card, LevelRank, Seat, StandardSuit } from '@jinshan/protocol';
+import type { BotDifficulty, Card, LevelRank, Seat, StandardSuit } from '@jinshan/protocol';
 import {
   applyAction,
   chooseBotAction,
+  chooseBotDealingCallAction,
   createInitialMatchState,
   getCardCategory,
   getCardPoints,
@@ -1071,5 +1072,62 @@ describe('Smart sling trump-kill and dealer bottom peek', () => {
     assert.equal(dealerView.revealedBottom?.length, 10);
     assert.equal(allyView.revealedBottom, null);
     assert.equal(enemyView.revealedBottom, null);
+  });
+
+  it('supports low, medium, and high bot difficulties across hongxin and heixin with 300-point conservation', () => {
+    const pairs: Array<[BotDifficulty, BotDifficulty]> = [
+      ['low', 'low'],
+      ['medium', 'medium'],
+      ['low', 'high'],
+      ['medium', 'high'],
+    ];
+    for (const mode of ['hongxin', 'heixin'] as const) {
+      for (const [diffA, diffB] of pairs) {
+        let state = createInitialMatchState({ mode, seed: 412, withDealing: false });
+        let steps = 0;
+        while (state.phase !== 'ROUND_OVER' && state.phase !== 'MATCH_OVER') {
+          steps += 1;
+          assert.ok(steps < 400, `${mode} ${diffA}/${diffB} stalled in phase=${state.phase}`);
+          let actor: Seat;
+          if (state.phase === 'CALLING') {
+            actor = ([0, 1, 2, 3] as Seat[]).find(
+              (s) => !state.callState.passedSeats.includes(s),
+            )!;
+          } else if (state.phase === 'COUNTER_BIDDING') {
+            actor = state.callState.eligibleCounterSeats[0];
+          } else {
+            actor = state.currentTurn!;
+          }
+          const diff = actor % 2 === 0 ? diffA : diffB;
+          const act = chooseBotAction(state, actor, diff);
+          const res = applyAction(state, act);
+          assert.equal(
+            res.ok,
+            true,
+            `${mode} (${diff}) produced illegal action ${act.type}: ${!res.ok ? res.error : ''}`,
+          );
+          state = res.state;
+        }
+        const bottomPts = state.bottomCards.reduce((s, card) => s + getCardPoints(card), 0);
+        assert.equal(
+          state.bankerPoints + state.challengerPoints + bottomPts,
+          300,
+          `${mode} ${diffA}/${diffB} must conserve 300 total points`,
+        );
+      }
+    }
+
+    // Low difficulty bot yields dealing-phase calls to human players
+    const dealing = createInitialMatchState({ mode: 'hongxin', seed: 12, withDealing: true });
+    const withFullHand: GameState = {
+      ...dealing,
+      dealtCount: 38,
+      hands: {
+        ...dealing.hands,
+        1: [c('S', '2'), c('S', '2'), c('S', '2'), c('H', '5')],
+      },
+    };
+    assert.equal(chooseBotDealingCallAction(withFullHand, 1, 'low'), null);
+    assert.notEqual(chooseBotDealingCallAction(withFullHand, 1, 'high'), null);
   });
 });

@@ -1,4 +1,5 @@
 import type {
+  BotDifficulty,
   ClientMessage,
   GameMode,
   RoomSummary,
@@ -53,6 +54,10 @@ function isSeat(value: unknown): value is Seat {
 
 function isGameMode(value: unknown): value is GameMode {
   return value === 'hongxin' || value === 'heixin';
+}
+
+function isBotDifficulty(value: unknown): value is BotDifficulty {
+  return value === 'low' || value === 'medium' || value === 'high';
 }
 
 function badMessage(): never {
@@ -214,8 +219,20 @@ export class LocalHostController {
           const autoStart =
             msg.autoStart === undefined ? false : requireBoolean(msg.autoStart);
           if (autoStart && !fillBots) badMessage();
+          const allyBotDifficulty =
+            msg.allyBotDifficulty === undefined ? 'high' : msg.allyBotDifficulty;
+          const opponentBotDifficulty =
+            msg.opponentBotDifficulty === undefined ? 'high' : msg.opponentBotDifficulty;
+          if (!isBotDifficulty(allyBotDifficulty) || !isBotDifficulty(opponentBotDifficulty)) {
+            badMessage();
+          }
           const displayName = sanitizePlayerName(msg.playerName);
-          const room = this.roomManager.createRoom({ mode, debugMode });
+          const room = this.roomManager.createRoom({
+            mode,
+            debugMode,
+            allyBotDifficulty,
+            opponentBotDifficulty,
+          });
           const joined = room.addHuman(displayName, ctx.socket, 0, null);
           if (fillBots) {
             room.fillEmptySeatsWithBots();
@@ -264,6 +281,12 @@ export class LocalHostController {
         case 'SET_ROOM_MODE':
           if (!isGameMode(msg.mode)) badMessage();
           previousRoom.setRoomMode(currentSeat, msg.mode);
+          break;
+        case 'SET_BOT_DIFFICULTY':
+          if (!isBotDifficulty(msg.allyDifficulty) || !isBotDifficulty(msg.opponentDifficulty)) {
+            badMessage();
+          }
+          previousRoom.setBotDifficulty(currentSeat, msg.allyDifficulty, msg.opponentDifficulty);
           break;
         case 'SET_SEAT_BOT':
           if (!isSeat(msg.seat)) badMessage();

@@ -24,6 +24,17 @@ export const TABLE_SKIN_OPTIONS = [
 
 export type TableSkin = (typeof TABLE_SKIN_OPTIONS)[number]['id'];
 export type HandLayoutMode = 'double' | 'single';
+export type BotDifficulty = 'low' | 'medium' | 'high';
+
+export const BOT_DIFFICULTY_OPTIONS: readonly {
+  id: BotDifficulty;
+  label: string;
+  desc: string;
+}[] = [
+  { id: 'low', label: '低', desc: '轻松入门' },
+  { id: 'medium', label: '中', desc: '休闲实战' },
+  { id: 'high', label: '强', desc: '高智商搜索' },
+];
 
 export interface AppSettings {
   tableSkin: TableSkin;
@@ -36,6 +47,8 @@ export interface AppSettings {
   showPointPips: boolean;
   autoSelectMandatory: boolean;
   hidePortraitBanner: boolean;
+  allyBotDifficulty: BotDifficulty;
+  opponentBotDifficulty: BotDifficulty;
 }
 
 const SETTINGS_KEY = 'jinshan.settings.v1';
@@ -53,10 +66,16 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   showPointPips: true,
   autoSelectMandatory: true,
   hidePortraitBanner: false,
+  allyBotDifficulty: 'high',
+  opponentBotDifficulty: 'high',
 };
 
 export function isTableSkin(value: unknown): value is TableSkin {
   return TABLE_SKIN_OPTIONS.some((s) => s.id === value);
+}
+
+export function isBotDifficulty(value: unknown): value is BotDifficulty {
+  return value === 'low' || value === 'medium' || value === 'high';
 }
 
 function clampVolume(v: unknown, fallback: number): number {
@@ -91,6 +110,12 @@ export function loadAppSettings(): AppSettings {
       }
       if (typeof parsed.hidePortraitBanner === 'boolean') {
         base.hidePortraitBanner = parsed.hidePortraitBanner;
+      }
+      if (isBotDifficulty(parsed.allyBotDifficulty)) {
+        base.allyBotDifficulty = parsed.allyBotDifficulty;
+      }
+      if (isBotDifficulty(parsed.opponentBotDifficulty)) {
+        base.opponentBotDifficulty = parsed.opponentBotDifficulty;
       }
     }
   } catch {

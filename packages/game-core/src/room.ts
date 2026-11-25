@@ -1,4 +1,5 @@
 import type {
+  BotDifficulty,
   GameAction,
   GameMode,
   GamePhase,
@@ -93,6 +94,8 @@ export interface RoomOptions extends RoomTimingOptions {
   roomId: string;
   mode?: GameMode;
   debugMode?: boolean;
+  allyBotDifficulty?: BotDifficulty;
+  opponentBotDifficulty?: BotDifficulty;
   botDelayMs?: number;
   store?: RoomHistorySink;
   onReclaim?: (room: GameRoom) => void;
@@ -131,6 +134,8 @@ export class GameRoom {
   mode: GameMode;
   readonly debugMode: boolean;
   debugOpenHands: boolean;
+  allyBotDifficulty: BotDifficulty;
+  opponentBotDifficulty: BotDifficulty;
   status: 'WAITING' | 'IN_GAME' | 'FINISHED' = 'WAITING';
   hostSeat: Seat = 0;
 
@@ -166,6 +171,8 @@ export class GameRoom {
     this.mode = options.mode ?? 'hongxin';
     this.debugMode = options.debugMode ?? false;
     this.debugOpenHands = false;
+    this.allyBotDifficulty = options.allyBotDifficulty ?? 'high';
+    this.opponentBotDifficulty = options.opponentBotDifficulty ?? 'high';
     this.botDelayMs = options.botDelayMs ?? 450;
     this.withDealing = options.withDealing ?? true;
     this.dealStepMs = options.dealStepMs ?? 340;
@@ -212,6 +219,8 @@ export class GameRoom {
       status: this.status,
       debugMode: this.debugMode,
       debugOpenHands: this.debugOpenHands,
+      allyBotDifficulty: this.allyBotDifficulty,
+      opponentBotDifficulty: this.opponentBotDifficulty,
       hostSeat: this.hostSeat,
       seats: seatsInfo,
       roundNumber: this.gameState?.roundNumber ?? 0,
@@ -528,6 +537,36 @@ export class GameRoom {
     }
     this.mode = mode;
     this.broadcastRoomSummary();
+  }
+
+  setBotDifficulty(
+    actorSeat: Seat,
+    allyDifficulty: BotDifficulty,
+    opponentDifficulty: BotDifficulty,
+  ): void {
+    if (actorSeat !== this.hostSeat) {
+      this.sendError(this.seats[actorSeat].ws, 'NOT_HOST', '只有房主可以调整机器人难度');
+      return;
+    }
+    this.allyBotDifficulty = allyDifficulty;
+    this.opponentBotDifficulty = opponentDifficulty;
+    this.broadcastRoomSummary();
+  }
+
+  private resolveBotDifficulty(seat: Seat): BotDifficulty {
+    // Human players using autoBot (托管) always get strong assistance.
+    if (!this.seats[seat].isBot) return 'high';
+    if (this.mode === 'heixin') {
+      const dealer = this.gameState?.dealer ?? null;
+      if (dealer !== null) {
+        const isAlly = (seat === dealer) === (this.hostSeat === dealer);
+        return isAlly ? this.allyBotDifficulty : this.opponentBotDifficulty;
+      }
+      // During initial bidding before dealer is decided, all other seats compete against host
+      return this.opponentBotDifficulty;
+    }
+    const isAlly = getSeatTeam(seat) === getSeatTeam(this.hostSeat);
+    return isAlly ? this.allyBotDifficulty : this.opponentBotDifficulty;
   }
 
   setSeatBot(actorSeat: Seat, targetSeat: Seat, isBot: boolean): void {
@@ -1052,7 +1091,7 @@ export class GameRoom {
     ) {
       for (const s of [0, 1, 2, 3] as Seat[]) {
         if (this.seats[s].isBot || this.seats[s].autoBot) {
-          const callAct = chooseBotDealingCallAction(next, s);
+          const callAct = chooseBotDealingCallAction(next, s, this.resolveBotDifficulty(s));
           if (callAct) {
             const callRes = applyAction(next, callAct);
             if (callRes.ok) {
@@ -1071,7 +1110,7 @@ export class GameRoom {
     if (this.disposed || !this.gameState || this.gameState.phase !== 'CALLING') return;
     if (!this.seats[seat].isBot && !this.seats[seat].autoBot) return;
     if (this.gameState.callState.passedSeats.includes(seat)) return;
-    const action = chooseBotAction(this.gameState, seat);
+    const action = chooseBotAction(this.gameState, seat, this.resolveBotDifficulty(seat));
     const res = applyAction(this.gameState, action);
     if (res.ok) {
       this.applySuccessState(res.state);
@@ -1084,7 +1123,7 @@ export class GameRoom {
     }
     if (!this.seats[seat].isBot && !this.seats[seat].autoBot) return;
     if (!this.gameState.callState.eligibleCounterSeats.includes(seat)) return;
-    const action = chooseBotAction(this.gameState, seat);
+    const action = chooseBotAction(this.gameState, seat, this.resolveBotDifficulty(seat));
     const res = applyAction(this.gameState, action);
     if (res.ok) {
       this.applySuccessState(res.state);
@@ -1106,7 +1145,7 @@ export class GameRoom {
             seat: turn,
             cardIds: this.gameState.hands[turn].map((c) => c.id),
           }
-        : chooseBotAction(this.gameState, turn);
+        : chooseBotAction(this.gameState, turn, this.resolveBotDifficulty(turn));
     const res = applyAction(this.gameState, action);
     if (res.ok) {
       this.applySuccessState(res.state);

@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import type { ConnectionStatus } from '../net/wsClient.js';
 import {
+  BOT_DIFFICULTY_OPTIONS,
   DEFAULT_APP_SETTINGS,
   TABLE_SKIN_OPTIONS,
   type AppSettings,
+  type BotDifficulty,
   type TableSkin,
 } from '../utils/settings.js';
 import { soundFX } from '../utils/sound.js';
@@ -270,6 +272,59 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 settings.hidePortraitBanner,
                 (v) => onUpdateSettings({ hidePortraitBanner: v }),
               )}
+            </div>
+          </section>
+
+          {/* 机器人难度 */}
+          <section className="set-group is-wide">
+            <div className="set-group-head">
+              <h4 className="section-title">机器人难度</h4>
+              <span className="pill">低 · 中 · 强 可独立设置</span>
+            </div>
+            <div className="set-rows">
+              <div className="set-row">
+                <span className="set-row-info">
+                  <span className="set-row-title">队友机器人</span>
+                  <span className="set-row-desc">与你同队（含打黑心同阵营闲家）的机器人强度</span>
+                </span>
+                <div className="segmented-control">
+                  {BOT_DIFFICULTY_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      className={settings.allyBotDifficulty === opt.id ? 'is-active' : ''}
+                      onClick={() => {
+                        soundFX.playTap();
+                        onUpdateSettings({ allyBotDifficulty: opt.id as BotDifficulty });
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="set-row">
+                <span className="set-row-info">
+                  <span className="set-row-title">对手机器人</span>
+                  <span className="set-row-desc">敌方阵营机器人强度（房主修改后对局内即时生效）</span>
+                </span>
+                <div className="segmented-control">
+                  {BOT_DIFFICULTY_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      className={settings.opponentBotDifficulty === opt.id ? 'is-active' : ''}
+                      onClick={() => {
+                        soundFX.playTap();
+                        onUpdateSettings({ opponentBotDifficulty: opt.id as BotDifficulty });
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </section>
 
