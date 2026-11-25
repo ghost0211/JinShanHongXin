@@ -1350,9 +1350,9 @@
 }
 
 .action-buttons {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   justify-content: flex-end;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .action-hint {
@@ -1471,7 +1471,11 @@
 }
 
 .action-status .pill {
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .btn-play {
@@ -1683,6 +1687,9 @@
     grid-column: 1 / -1;
   }
   .action-bar {
+    flex-wrap: wrap;
+  }
+  .action-buttons {
     flex-wrap: wrap;
   }
 }

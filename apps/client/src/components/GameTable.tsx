@@ -745,7 +745,8 @@ export const GameTable: React.FC<GameTableProps> = ({
                 ) : null}
               </div>
               {renderCallDisplaySlot(rightSeat, 'call-slot-right')}
-              {renderCallDisplaySlot(meSeat, 'call-slot-bottom')}
+              {!(showCallSuitDock && view.callState.callerSeat === meSeat) &&
+                renderCallDisplaySlot(meSeat, 'call-slot-bottom')}
             </div>
           ) : (
             <div className="trick-grid">
