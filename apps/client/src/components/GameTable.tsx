@@ -399,7 +399,9 @@ export const GameTable: React.FC<GameTableProps> = ({
     const count = sortedCards.length;
     const isSide = placement === 'left' || placement === 'right';
 
-    // Adaptive sizing + multi-row wrapping so large slings (10~24+ cards) NEVER overflow or cover opponent fans
+    // Adaptive sizing + row wrapping so large plays (6~24+ cards) NEVER collide with top/bottom nameplates.
+    // Top & bottom slots share tight vertical space in landscape phones -> stay single-row up to 12 cards!
+    // Left & right slots span both vertical rows -> wrap to 2 rows earlier to keep horizontal margin clean.
     let cardSize: 'sm' | 'xs' = 'sm';
     let rowCount = 1;
     let overlapRatio = -0.44;
@@ -411,21 +413,30 @@ export const GameTable: React.FC<GameTableProps> = ({
     } else if (count === 6) {
       cardSize = 'sm';
       rowCount = isSide ? 2 : 1;
-      overlapRatio = isSide ? -0.44 : -0.56;
-    } else if (count <= 12) {
-      cardSize = isSide && count <= 10 ? 'sm' : 'xs';
+      overlapRatio = isSide ? -0.44 : -0.54;
+    } else if (!isSide && count <= 12) {
+      cardSize = 'xs';
+      rowCount = 1;
+      overlapRatio = count <= 8 ? -0.44 : count <= 10 ? -0.48 : -0.54;
+    } else if (isSide && count <= 12) {
+      cardSize = count <= 10 ? 'sm' : 'xs';
       rowCount = 2;
-      overlapRatio = cardSize === 'sm' ? -0.54 : -0.46;
+      overlapRatio = cardSize === 'sm' ? -0.54 : -0.48;
     } else {
       cardSize = 'xs';
-      rowCount = count <= 16 ? 2 : 3;
-      overlapRatio = -0.52;
+      rowCount = !isSide ? 2 : count <= 18 ? 2 : 3;
+      overlapRatio = !isSide
+        ? count <= 18
+          ? -0.52
+          : -0.58
+        : -0.52;
     }
 
     const rows = splitCardsIntoRows(sortedCards, rowCount);
     const cardWVar = cardSize === 'xs' ? 'var(--card-xs-w)' : 'var(--card-sm-w)';
     const cardHVar = cardSize === 'xs' ? 'var(--card-xs-h)' : 'var(--card-sm-h)';
-    const rowOverlapRatio = rowCount >= 3 ? -0.56 : -0.48;
+    const rowOverlapRatio =
+      rowCount >= 3 ? -0.58 : !isSide ? -0.56 : -0.48;
 
     const isTrickWinner =
       isShowingLastTrick && view.lastTrick?.winnerSeat === seat;
