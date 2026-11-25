@@ -37,7 +37,7 @@ export const RulesModal: React.FC<RulesModalProps> = ({ onClose }) => {
           <div>
             <strong>3. 金山打黑心（1 打 3 · 叫分）</strong>
             <ul style={{ margin: '4px 0', paddingLeft: 18 }}>
-              <li>固定打 10 不升级，副参谋与打红心一致（同色 3），100~300 叫分抢庄，最高者坐庄并自选主花色，<strong>不限制埋底牌型（允许埋任意牌）</strong>。</li>
+              <li>固定打 10 不升级，副参谋与打红心一致（同色 3），100~300 叫分抢庄，最高者坐庄并自选主花色，<strong>严禁把 10 埋入底牌</strong>。</li>
               <li>庄家抓分，末轮闲家赢墩触发抠底（仅算底牌 5/10/K ×2），庄家最终得分满叫分即庄家获胜，否则闲家获胜。</li>
             </ul>
           </div>
@@ -45,7 +45,7 @@ export const RulesModal: React.FC<RulesModalProps> = ({ onClose }) => {
           <div>
             <strong>4. 跟牌、510K 与 A=1 规则</strong>
             <ul style={{ margin: '4px 0', paddingLeft: 18 }}>
-              <li><strong>自由跟牌</strong>：除「有同门花色必须跟同门花色」与「跟主牌 510K 未压/未抵须出最大主牌」外，<strong>没有任何强制跟对子、三张、拖拉机或连三的要求</strong>；甩牌失败强出最小被管上组件。</li>
+              <li><strong>自由跟牌与甩牌盖毙</strong>：除「有同门必跟同门」与「跟主牌 510K 未压/未抵须出最大主牌」外，<strong>无强制跟对子、三张或拖拉机要求</strong>；甩牌失败强出最小被管上组件；多人主牌盖毙副牌甩牌时，<strong>按单组张数最多的牌型定胜负（同牌型只比最大一组，打平先出为大；同张数不同结构并列全不输才算盖毙）</strong>。</li>
               <li><code>A=1</code>：非打 A 时，各花色 A 可当 1 与最小普通点连成拖拉机（如打 2 主 ♦ 时，♦AA♦44、♥AA♥44♥66 均可），不可首尾回绕。</li>
               <li><code>510K</code>（仅限同花色，可借非主 ♥5 及级牌 10/K）：单 510K 仅同门三张压；双 510K 仅 2 连三拖拉机压；三 510K 仅 3 连三拖拉机压，不相连三张/510K 仅抵消。</li>
               <li>跟<strong>主牌 510K</strong> 允许放弃压/抵，未抵消部分须出手中当前剩余最大的对应张数主牌。</li>

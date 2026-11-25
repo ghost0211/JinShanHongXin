@@ -144,7 +144,7 @@ function sampleWorld(
 
   const eligible = (card: Card, slot: number): boolean => {
     if (cap[slot] <= 0) return false;
-    if (slot === BOTTOM) return true;
+    if (slot === BOTTOM) return !(state.mode === 'heixin' && card.rank === '10');
     if (slot === seat) return false;
     if (!respectVoids) return true;
     return !voids(slot as Seat, getCardCategory(card, trumpSuit, levelRank));
