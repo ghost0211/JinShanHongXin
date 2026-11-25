@@ -1,5 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import type { GameMode, RoomSummary, UserProfile } from '@jinshan/protocol';
+import type {
+  BotDifficulty,
+  DealSpeed,
+  GameMode,
+  RoomSummary,
+  UserProfile,
+} from '@jinshan/protocol';
 import type { DiscoveredLanHost } from '../net/androidLan.js';
 import {
   isRunningInAndroidApk,
@@ -15,11 +21,17 @@ import type {
   LocalMatchHistoryRow,
   LocalStatsSummary,
 } from '../utils/localHistory.js';
-import { TABLE_SKIN_OPTIONS, type TableSkin } from '../utils/settings.js';
+import {
+  BOT_DIFFICULTY_OPTIONS,
+  DEAL_SPEED_OPTIONS,
+  TABLE_SKIN_OPTIONS,
+  type TableSkin,
+} from '../utils/settings.js';
 import { soundFX } from '../utils/sound.js';
 import { AuthModal } from './AuthModal.js';
 import { SuitGlyph } from './CardArt.js';
 import { Icon } from './Icons.js';
+import { MatchSetupModal, type MatchSetupValues } from './MatchSetupModal.js';
 
 interface LobbyScreenProps {
   playMode: PlayMode;
@@ -38,8 +50,24 @@ interface LobbyScreenProps {
   historyList: MatchHistoryRow[];
   leaderboard: UserProfile[];
   tableSkin: TableSkin;
+  defaultMatchSetup: {
+    dealSpeed: DealSpeed;
+    allyBotDifficulty: BotDifficulty;
+    opponentBotDifficulty: BotDifficulty;
+  };
+  onSaveMatchSetupDefaults: (patch: {
+    dealSpeed: DealSpeed;
+    allyBotDifficulty: BotDifficulty;
+    opponentBotDifficulty: BotDifficulty;
+  }) => void;
   onSetPlayMode: (mode: PlayMode) => void;
-  onStartLanHost: (opts: { mode: GameMode; debugMode?: boolean }) => void;
+  onStartLanHost: (opts: {
+    mode: GameMode;
+    debugMode?: boolean;
+    allyBotDifficulty?: BotDifficulty;
+    opponentBotDifficulty?: BotDifficulty;
+    dealSpeed?: DealSpeed;
+  }) => void;
   onJoinDiscoveredLanHost: (host: DiscoveredLanHost) => void;
   onConnectLanManual: (addr: string) => void;
   onDisconnectLanGuest: () => void;
@@ -59,6 +87,9 @@ interface LobbyScreenProps {
     debugMode: boolean;
     fillBots: boolean;
     autoStart?: boolean;
+    allyBotDifficulty?: BotDifficulty;
+    opponentBotDifficulty?: BotDifficulty;
+    dealSpeed?: DealSpeed;
   }) => void;
   onJoinRoom: (roomId: string) => void;
   onReconnectSaved: () => void;
@@ -156,6 +187,8 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   historyList,
   leaderboard,
   tableSkin,
+  defaultMatchSetup,
+  onSaveMatchSetupDefaults,
   onSetPlayMode,
   onStartLanHost,
   onJoinDiscoveredLanHost,
@@ -185,6 +218,101 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showLeaderboardModal, setShowLeaderboardModal] = useState(false);
+  const [pendingSetup, setPendingSetup] = useState<{
+    kind: 'offline-quick' | 'offline-waiting' | 'lan-host' | 'online-quick' | 'online-room';
+    title: string;
+    subtitle: string;
+    confirmLabel: string;
+    defaultDebug: boolean;
+  } | null>(null);
+
+  const openSetupModal = (
+    kind: 'offline-quick' | 'offline-waiting' | 'lan-host' | 'online-quick' | 'online-room',
+  ) => {
+    soundFX.playTap();
+    if (kind === 'offline-quick') {
+      setPendingSetup({
+        kind,
+        title: '单机人机 · 本局参数',
+        subtitle: '确认发牌速度与队友/对手机器人强度后立即开局',
+        confirmLabel: '开始对局',
+        defaultDebug: offlineDebugMode,
+      });
+    } else if (kind === 'offline-waiting') {
+      setPendingSetup({
+        kind,
+        title: '单机候客室 · 本局参数',
+        subtitle: '先设置本局参数，进入候客室后可自由换座再开局',
+        confirmLabel: '进入候客室',
+        defaultDebug: offlineDebugMode,
+      });
+    } else if (kind === 'lan-host') {
+      setPendingSetup({
+        kind,
+        title: '创建局域网房间 · 本局参数',
+        subtitle: '房间参数对所有扫码/直连加入的牌友共同生效，候客室内仍可随时调整',
+        confirmLabel: '创建局域网房间',
+        defaultDebug: false,
+      });
+    } else if (kind === 'online-quick') {
+      setPendingSetup({
+        kind,
+        title: '在线人机开局 · 本局参数',
+        subtitle: '确认发牌速度与机器人难度后立即配齐 3 名 AI 开局',
+        confirmLabel: '开始对局',
+        defaultDebug: true,
+      });
+    } else {
+      setPendingSetup({
+        kind,
+        title: '创建好友房 · 本局参数',
+        subtitle: '由房主统一设定本房间发牌速度与补位机器人强度，所有玩家共享',
+        confirmLabel: '创建房间',
+        defaultDebug: false,
+      });
+    }
+  };
+
+  const handleConfirmMatchSetup = (values: MatchSetupValues) => {
+    const req = pendingSetup;
+    setPendingSetup(null);
+    if (!req) return;
+    setMode(values.mode);
+    if (req.kind === 'offline-quick' || req.kind === 'offline-waiting') {
+      setOfflineDebugMode(values.debugMode);
+    }
+    onSaveMatchSetupDefaults({
+      dealSpeed: values.dealSpeed,
+      allyBotDifficulty: values.allyBotDifficulty,
+      opponentBotDifficulty: values.opponentBotDifficulty,
+    });
+    if (req.kind === 'lan-host') {
+      onStartLanHost({
+        mode: values.mode,
+        debugMode: values.debugMode,
+        allyBotDifficulty: values.allyBotDifficulty,
+        opponentBotDifficulty: values.opponentBotDifficulty,
+        dealSpeed: values.dealSpeed,
+      });
+      return;
+    }
+    onCreateRoom({
+      mode: values.mode,
+      debugMode: values.debugMode,
+      fillBots: req.kind !== 'online-room',
+      autoStart: req.kind === 'offline-quick' || req.kind === 'online-quick',
+      allyBotDifficulty: values.allyBotDifficulty,
+      opponentBotDifficulty: values.opponentBotDifficulty,
+      dealSpeed: values.dealSpeed,
+    });
+  };
+
+  const dealSpeedLabel =
+    DEAL_SPEED_OPTIONS.find((d) => d.id === defaultMatchSetup.dealSpeed)?.label ?? '极速';
+  const allyDiffLabel =
+    BOT_DIFFICULTY_OPTIONS.find((d) => d.id === defaultMatchSetup.allyBotDifficulty)?.label ?? '强';
+  const oppDiffLabel =
+    BOT_DIFFICULTY_OPTIONS.find((d) => d.id === defaultMatchSetup.opponentBotDifficulty)?.label ?? '强';
 
   useEffect(() => {
     if (lanTargetUrl) {
@@ -508,19 +636,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                 {playMode === 'offline' && (
                   <>
                     <div className="offline-quick-opts">
-                      <label className="offline-opt-toggle">
-                        <span className={`toggle-switch ${offlineDebugMode ? 'is-on' : ''}`}>
-                          <input
-                            type="checkbox"
-                            checked={offlineDebugMode}
-                            onChange={(e) => setOfflineDebugMode(e.target.checked)}
-                          />
-                          <span className="toggle-thumb" />
-                        </span>
-                        <span className="offline-opt-text">
-                          允许对局中开启「上帝视角」看各家手牌
-                        </span>
-                      </label>
+                      <span className="offline-opt-text">
+                        上次配置：发牌 <strong>{dealSpeedLabel}</strong> · 队友AI{' '}
+                        <strong>{allyDiffLabel}</strong> · 对手AI <strong>{oppDiffLabel}</strong>
+                      </span>
                       <span className="pill offline-opt-pill">自动记录本机战绩</span>
                     </div>
 
@@ -529,34 +648,20 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         type="button"
                         className="btn btn-gold btn-lg lobby-cta-primary"
                         disabled={connStatus !== 'connected'}
-                        onClick={() =>
-                          onCreateRoom({
-                            mode,
-                            debugMode: offlineDebugMode,
-                            fillBots: true,
-                            autoStart: true,
-                          })
-                        }
+                        onClick={() => openSetupModal('offline-quick')}
                       >
                         <span className="cta-main">
                           <Icon name="play" className="cta-icon" />
-                          立即单机开局
+                          开始人机对战
                         </span>
-                        <span className="cta-sub">配 3 名本地 AI · {modeLabel(mode)}秒开</span>
+                        <span className="cta-sub">确认本局参数 · {modeLabel(mode)}秒开</span>
                       </button>
 
                       <button
                         type="button"
                         className="btn btn-lg lobby-cta-secondary"
                         disabled={connStatus !== 'connected'}
-                        onClick={() =>
-                          onCreateRoom({
-                            mode,
-                            debugMode: offlineDebugMode,
-                            fillBots: true,
-                            autoStart: false,
-                          })
-                        }
+                        onClick={() => openSetupModal('offline-waiting')}
                       >
                         <span className="cta-main">
                           <Icon name="users" className="cta-icon" />
@@ -575,14 +680,14 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         <button
                           type="button"
                           className="btn btn-gold btn-lg lobby-cta-primary lobby-cta-full"
-                          onClick={() => onStartLanHost({ mode, debugMode: false })}
+                          onClick={() => openSetupModal('lan-host')}
                         >
                           <span className="cta-main">
                             <Icon name="wifi" className="cta-icon" />
                             创建局域网房间（我当房主）
                           </span>
                           <span className="cta-sub">
-                            生成二维码 + 自动广播 · iPhone/安卓扫码即入 · 缺人补机器人
+                            设定本局参数 + 生成二维码广播 · 缺人补机器人
                           </span>
                         </button>
                       </div>
@@ -655,35 +760,26 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         type="button"
                         className="btn btn-gold btn-lg lobby-cta-primary"
                         disabled={connStatus !== 'connected'}
-                        onClick={() =>
-                          onCreateRoom({
-                            mode,
-                            debugMode: true,
-                            fillBots: true,
-                            autoStart: true,
-                          })
-                        }
+                        onClick={() => openSetupModal('online-quick')}
                       >
                         <span className="cta-main">
                           <Icon name="play" className="cta-icon" />
-                          快速单人开局
+                          快速人机开局
                         </span>
-                        <span className="cta-sub">配 3 名机器人 · 可开上帝视角</span>
+                        <span className="cta-sub">确认本局参数 · 配 3 名机器人</span>
                       </button>
 
                       <button
                         type="button"
                         className="btn btn-lg lobby-cta-secondary"
                         disabled={connStatus !== 'connected'}
-                        onClick={() =>
-                          onCreateRoom({ mode, debugMode: false, fillBots: false })
-                        }
+                        onClick={() => openSetupModal('online-room')}
                       >
                         <span className="cta-main">
                           <Icon name="plus" className="cta-icon" />
                           创建好友房
                         </span>
-                        <span className="cta-sub">生成 6 位房号邀牌友</span>
+                        <span className="cta-sub">设定本局参数 · 6 位房号邀牌友</span>
                       </button>
                     </div>
 
@@ -1050,6 +1146,22 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             )}
           </div>
         </div>
+      )}
+      {pendingSetup && (
+        <MatchSetupModal
+          title={pendingSetup.title}
+          subtitle={pendingSetup.subtitle}
+          confirmLabel={pendingSetup.confirmLabel}
+          initialValues={{
+            mode,
+            dealSpeed: defaultMatchSetup.dealSpeed,
+            allyBotDifficulty: defaultMatchSetup.allyBotDifficulty,
+            opponentBotDifficulty: defaultMatchSetup.opponentBotDifficulty,
+            debugMode: pendingSetup.defaultDebug,
+          }}
+          onConfirm={handleConfirmMatchSetup}
+          onClose={() => setPendingSetup(null)}
+        />
       )}
     </div>
   );
