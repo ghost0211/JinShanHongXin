@@ -6,6 +6,8 @@ export type GameMode = 'hongxin' | 'heixin';
 
 export type BotDifficulty = 'low' | 'medium' | 'high';
 
+export type DealSpeed = 1 | 2 | 3 | 4 | 5;
+
 export type StandardSuit = 'S' | 'H' | 'C' | 'D';
 
 export type Suit = StandardSuit | 'J';
@@ -272,6 +274,7 @@ export interface RoomSummary {
   debugOpenHands: boolean;
   allyBotDifficulty: BotDifficulty;
   opponentBotDifficulty: BotDifficulty;
+  dealSpeed: DealSpeed;
   hostSeat: Seat;
   seats: RoomSeatInfo[];
   roundNumber: number;
@@ -288,12 +291,14 @@ export type ClientMessage =
       autoStart?: boolean;
       allyBotDifficulty?: BotDifficulty;
       opponentBotDifficulty?: BotDifficulty;
+      dealSpeed?: DealSpeed;
     }
   | { type: 'JOIN_ROOM'; roomId: string; playerName: string; authToken?: string; playerId?: string; preferredSeat?: Seat }
   | { type: 'RECONNECT'; roomId: string; playerId: string; authToken?: string }
   | { type: 'LEAVE_ROOM' }
   | { type: 'SET_ROOM_MODE'; mode: GameMode }
   | { type: 'SET_BOT_DIFFICULTY'; allyDifficulty: BotDifficulty; opponentDifficulty: BotDifficulty }
+  | { type: 'SET_DEAL_SPEED'; dealSpeed: DealSpeed }
   | { type: 'SET_SEAT_BOT'; seat: Seat; isBot: boolean }
   | { type: 'SWAP_SEAT'; targetSeat: Seat }
   | { type: 'SET_READY'; ready: boolean }

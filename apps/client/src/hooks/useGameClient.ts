@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   BotDifficulty,
+  DealSpeed,
   GameAction,
   GameMode,
   PlayerView,
@@ -219,6 +220,7 @@ function saveAuthToken(serverUrl: string, token: string | null): void {
 export function useGameClient(options?: {
   allyBotDifficulty?: BotDifficulty;
   opponentBotDifficulty?: BotDifficulty;
+  dealSpeed?: DealSpeed;
 }) {
   const [serverUrl, setServerUrl] = useState<string>(() => getSavedServerUrl());
   const [initialIntent] = useState<InitialLaunchIntent>(() =>
@@ -267,6 +269,7 @@ export function useGameClient(options?: {
   const playerNameRef = useRef<string>(playerName);
   const allyBotDifficultyRef = useRef<BotDifficulty>(options?.allyBotDifficulty ?? 'high');
   const opponentBotDifficultyRef = useRef<BotDifficulty>(options?.opponentBotDifficulty ?? 'high');
+  const dealSpeedRef = useRef<DealSpeed>(options?.dealSpeed ?? 5);
   const authGeneration = useRef(0);
   const [initialAuthToken] = useState(() => loadAuthToken(serverUrl));
   const authTokenRef = useRef<string | null>(initialAuthToken);
@@ -285,6 +288,7 @@ export function useGameClient(options?: {
   playerNameRef.current = playerName;
   allyBotDifficultyRef.current = options?.allyBotDifficulty ?? 'high';
   opponentBotDifficultyRef.current = options?.opponentBotDifficulty ?? 'high';
+  dealSpeedRef.current = options?.dealSpeed ?? 5;
 
   const localStats = useMemo(() => summarizeLocalStats(localHistory), [localHistory]);
 
@@ -519,6 +523,7 @@ export function useGameClient(options?: {
               autoStart: pending.autoStart,
               allyBotDifficulty: allyBotDifficultyRef.current,
               opponentBotDifficulty: opponentBotDifficultyRef.current,
+              dealSpeed: dealSpeedRef.current,
             });
           }
         } else if (mode === 'lan' && role === 'guest') {
@@ -989,6 +994,7 @@ export function useGameClient(options?: {
       autoStart?: boolean;
       allyBotDifficulty?: BotDifficulty;
       opponentBotDifficulty?: BotDifficulty;
+      dealSpeed?: DealSpeed;
     }) => {
       if (leavingRef.current || reconnectingRef.current) return;
       const isOnline = playModeRef.current === 'online';
@@ -1002,6 +1008,7 @@ export function useGameClient(options?: {
         autoStart: opts.autoStart,
         allyBotDifficulty: opts.allyBotDifficulty ?? allyBotDifficultyRef.current,
         opponentBotDifficulty: opts.opponentBotDifficulty ?? opponentBotDifficultyRef.current,
+        dealSpeed: opts.dealSpeed ?? dealSpeedRef.current,
       });
     },
     [playerName, currentUser],
@@ -1097,6 +1104,13 @@ export function useGameClient(options?: {
     [],
   );
 
+  const setDealSpeed = useCallback((dealSpeed: DealSpeed) => {
+    clientRef.current?.send({
+      type: 'SET_DEAL_SPEED',
+      dealSpeed,
+    });
+  }, []);
+
   return {
     playMode,
     setPlayMode,
@@ -1152,5 +1166,6 @@ export function useGameClient(options?: {
     setAutoBot,
     toggleDebugOpenHands,
     setBotDifficulty,
+    setDealSpeed,
   };
 }

@@ -1,6 +1,7 @@
 import type {
   BotDifficulty,
   ClientMessage,
+  DealSpeed,
   GameMode,
   RoomSummary,
   RoundSettlement,
@@ -8,6 +9,7 @@ import type {
   ServerMessage,
 } from '@jinshan/protocol';
 import {
+  isDealSpeed,
   RoomAdmissionError,
   type PeerSocketLike,
   type RoomHistorySink,
@@ -226,12 +228,15 @@ export class LocalHostController {
           if (!isBotDifficulty(allyBotDifficulty) || !isBotDifficulty(opponentBotDifficulty)) {
             badMessage();
           }
+          const dealSpeed: DealSpeed = msg.dealSpeed === undefined ? 5 : msg.dealSpeed;
+          if (!isDealSpeed(dealSpeed)) badMessage();
           const displayName = sanitizePlayerName(msg.playerName);
           const room = this.roomManager.createRoom({
             mode,
             debugMode,
             allyBotDifficulty,
             opponentBotDifficulty,
+            dealSpeed,
           });
           const joined = room.addHuman(displayName, ctx.socket, 0, null);
           if (fillBots) {
@@ -287,6 +292,10 @@ export class LocalHostController {
             badMessage();
           }
           previousRoom.setBotDifficulty(currentSeat, msg.allyDifficulty, msg.opponentDifficulty);
+          break;
+        case 'SET_DEAL_SPEED':
+          if (!isDealSpeed(msg.dealSpeed)) badMessage();
+          previousRoom.setDealSpeed(currentSeat, msg.dealSpeed);
           break;
         case 'SET_SEAT_BOT':
           if (!isSeat(msg.seat)) badMessage();

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ServerMessage } from '@jinshan/protocol';
 import { LocalHostController } from '../localHost.js';
-import type { PeerSocketLike } from '../room.js';
+import { DEAL_SPEED_MS, type PeerSocketLike } from '../room.js';
 
 function createVirtualPeer() {
   let state = 1;
@@ -221,5 +221,58 @@ describe('LocalHostController (offline single-player & multi-peer LAN)', () => {
     assert.ok(updated && updated.type === 'ROOM_UPDATED');
     assert.equal(updated.room.allyBotDifficulty, 'high');
     assert.equal(updated.room.opponentBotDifficulty, 'low');
+  });
+
+  it('supports 5-tier dealSpeed on room create, host live update, and blocks non-host changes', (t) => {
+    // 5 is the fastest (original 340ms), 1..4 are progressively slower
+    assert.equal(DEAL_SPEED_MS[5], 340);
+    assert.ok(
+      DEAL_SPEED_MS[1] > DEAL_SPEED_MS[2] &&
+        DEAL_SPEED_MS[2] > DEAL_SPEED_MS[3] &&
+        DEAL_SPEED_MS[3] > DEAL_SPEED_MS[4] &&
+        DEAL_SPEED_MS[4] > DEAL_SPEED_MS[5],
+    );
+
+    const host = new LocalHostController({
+      withDealing: true,
+      botDelayMs: 50,
+      trickIntervalMs: 0,
+    });
+    t.after(() => host.dispose());
+
+    const hostPeer = createVirtualPeer();
+    const guest = createVirtualPeer();
+    host.connectPeer('local-host', hostPeer.socket);
+    host.connectPeer('lan:g1', guest.socket);
+
+    host.handleMessage('local-host', {
+      type: 'CREATE_ROOM',
+      playerName: '房主',
+      mode: 'hongxin',
+      debugMode: false,
+      fillBots: false,
+      dealSpeed: 2,
+    });
+    const joined = hostPeer.messages.find((m) => m.type === 'ROOM_JOINED');
+    assert.ok(joined && joined.type === 'ROOM_JOINED');
+    assert.equal(joined.room.dealSpeed, 2);
+
+    host.handleMessage('lan:g1', {
+      type: 'JOIN_ROOM',
+      roomId: joined.roomId,
+      playerName: '客座牌友',
+    });
+
+    // Non-host cannot change deal speed
+    host.handleMessage('lan:g1', { type: 'SET_DEAL_SPEED', dealSpeed: 5 });
+    const guestErr = guest.messages.findLast((m) => m.type === 'ACTION_ERROR');
+    assert.ok(guestErr && guestErr.type === 'ACTION_ERROR');
+    assert.equal(guestErr.code, 'NOT_HOST');
+
+    // Host updates dealSpeed cleanly
+    host.handleMessage('local-host', { type: 'SET_DEAL_SPEED', dealSpeed: 4 });
+    const updated = hostPeer.messages.findLast((m) => m.type === 'ROOM_UPDATED');
+    assert.ok(updated && updated.type === 'ROOM_UPDATED');
+    assert.equal(updated.room.dealSpeed, 4);
   });
 });

@@ -1,5 +1,6 @@
 import type {
   BotDifficulty,
+  DealSpeed,
   GameAction,
   GameMode,
   GamePhase,
@@ -90,12 +91,25 @@ export interface RoomTimingOptions {
   disconnectGraceMs?: number;
 }
 
+export const DEAL_SPEED_MS: Record<DealSpeed, number> = {
+  1: 960,
+  2: 760,
+  3: 600,
+  4: 460,
+  5: 340,
+};
+
+export function isDealSpeed(value: unknown): value is DealSpeed {
+  return value === 1 || value === 2 || value === 3 || value === 4 || value === 5;
+}
+
 export interface RoomOptions extends RoomTimingOptions {
   roomId: string;
   mode?: GameMode;
   debugMode?: boolean;
   allyBotDifficulty?: BotDifficulty;
   opponentBotDifficulty?: BotDifficulty;
+  dealSpeed?: DealSpeed;
   botDelayMs?: number;
   store?: RoomHistorySink;
   onReclaim?: (room: GameRoom) => void;
@@ -136,12 +150,13 @@ export class GameRoom {
   debugOpenHands: boolean;
   allyBotDifficulty: BotDifficulty;
   opponentBotDifficulty: BotDifficulty;
+  dealSpeed: DealSpeed;
   status: 'WAITING' | 'IN_GAME' | 'FINISHED' = 'WAITING';
   hostSeat: Seat = 0;
 
   private readonly botDelayMs: number;
   private readonly withDealing: boolean;
-  private readonly dealStepMs: number;
+  private readonly dealStepMsOverride?: number;
   private readonly callWindowMs: number;
   private readonly counterWindowMs: number;
   private readonly reCounterWindowMs: number;
@@ -173,9 +188,10 @@ export class GameRoom {
     this.debugOpenHands = false;
     this.allyBotDifficulty = options.allyBotDifficulty ?? 'high';
     this.opponentBotDifficulty = options.opponentBotDifficulty ?? 'high';
+    this.dealSpeed = options.dealSpeed ?? 5;
     this.botDelayMs = options.botDelayMs ?? 450;
     this.withDealing = options.withDealing ?? true;
-    this.dealStepMs = options.dealStepMs ?? 340;
+    this.dealStepMsOverride = options.dealStepMs;
     this.callWindowMs = options.callWindowMs ?? 10000;
     this.counterWindowMs = options.counterWindowMs ?? 10000;
     this.reCounterWindowMs = options.reCounterWindowMs ?? 5000;
@@ -221,6 +237,7 @@ export class GameRoom {
       debugOpenHands: this.debugOpenHands,
       allyBotDifficulty: this.allyBotDifficulty,
       opponentBotDifficulty: this.opponentBotDifficulty,
+      dealSpeed: this.dealSpeed,
       hostSeat: this.hostSeat,
       seats: seatsInfo,
       roundNumber: this.gameState?.roundNumber ?? 0,
@@ -551,6 +568,22 @@ export class GameRoom {
     this.allyBotDifficulty = allyDifficulty;
     this.opponentBotDifficulty = opponentDifficulty;
     this.broadcastRoomSummary();
+  }
+
+  setDealSpeed(actorSeat: Seat, dealSpeed: DealSpeed): void {
+    if (actorSeat !== this.hostSeat) {
+      this.sendError(this.seats[actorSeat].ws, 'NOT_HOST', '只有房主可以调整发牌速度');
+      return;
+    }
+    this.dealSpeed = dealSpeed;
+    this.broadcastRoomSummary();
+    if (this.status === 'IN_GAME' && this.gameState?.phase === 'DEALING') {
+      this.scheduleActivities();
+    }
+  }
+
+  private getEffectiveDealStepMs(): number {
+    return this.dealStepMsOverride ?? DEAL_SPEED_MS[this.dealSpeed];
   }
 
   private resolveBotDifficulty(seat: Seat): BotDifficulty {
@@ -1001,7 +1034,7 @@ export class GameRoom {
       this.dealTimer = setTimeout(() => {
         this.dealTimer = null;
         this.executeDealStep();
-      }, this.dealStepMs);
+      }, this.getEffectiveDealStepMs());
       return;
     }
 
