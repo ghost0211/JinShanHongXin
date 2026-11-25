@@ -161,4 +161,65 @@ describe('LocalHostController (offline single-player & multi-peer LAN)', () => {
     assert.ok(rejoinState && rejoinState.type === 'GAME_STATE');
     assert.equal(rejoinState.view.viewerSeat, 1);
   });
+
+  it('supports independent ally and opponent bot difficulties on room create and mid-game host updates', (t) => {
+    const host = new LocalHostController({
+      withDealing: false,
+      botDelayMs: 50,
+      trickIntervalMs: 0,
+    });
+    t.after(() => host.dispose());
+
+    const hostPeer = createVirtualPeer();
+    const guest = createVirtualPeer();
+    host.connectPeer('local-host', hostPeer.socket);
+    host.connectPeer('lan:g1', guest.socket);
+
+    host.handleMessage('local-host', {
+      type: 'CREATE_ROOM',
+      playerName: '房主',
+      mode: 'hongxin',
+      debugMode: false,
+      fillBots: false,
+      allyBotDifficulty: 'low',
+      opponentBotDifficulty: 'medium',
+    });
+
+    const joined = hostPeer.messages.find((m) => m.type === 'ROOM_JOINED');
+    assert.ok(joined && joined.type === 'ROOM_JOINED');
+    assert.equal(joined.room.allyBotDifficulty, 'low');
+    assert.equal(joined.room.opponentBotDifficulty, 'medium');
+
+    host.handleMessage('lan:g1', {
+      type: 'JOIN_ROOM',
+      roomId: joined.roomId,
+      playerName: '客座牌友',
+    });
+
+    // Non-host cannot modify bot difficulty
+    host.handleMessage('lan:g1', {
+      type: 'SET_BOT_DIFFICULTY',
+      allyDifficulty: 'high',
+      opponentDifficulty: 'low',
+    });
+    const guestErr = guest.messages.findLast((m) => m.type === 'ACTION_ERROR');
+    assert.ok(guestErr && guestErr.type === 'ACTION_ERROR');
+    assert.equal(guestErr.code, 'NOT_HOST');
+
+    // Fill remaining seats with bots, start game, then host updates difficulty mid-game
+    host.handleMessage('lan:g1', { type: 'SET_READY', ready: true });
+    host.handleMessage('local-host', { type: 'SET_SEAT_BOT', seat: 2, isBot: true });
+    host.handleMessage('local-host', { type: 'SET_SEAT_BOT', seat: 3, isBot: true });
+    host.handleMessage('local-host', { type: 'START_GAME' });
+
+    host.handleMessage('local-host', {
+      type: 'SET_BOT_DIFFICULTY',
+      allyDifficulty: 'high',
+      opponentDifficulty: 'low',
+    });
+    const updated = hostPeer.messages.findLast((m) => m.type === 'ROOM_UPDATED');
+    assert.ok(updated && updated.type === 'ROOM_UPDATED');
+    assert.equal(updated.room.allyBotDifficulty, 'high');
+    assert.equal(updated.room.opponentBotDifficulty, 'low');
+  });
 });

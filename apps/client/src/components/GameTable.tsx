@@ -29,6 +29,7 @@ import {
 import { HandArea } from './HandArea.js';
 import { BottomDeckStack, OpponentHandFan } from './OpponentHandFan.js';
 import { PlayingCard } from './PlayingCard.js';
+import { SuitGlyph } from './CardArt.js';
 import { SettlementModal } from './SettlementModal.js';
 import { LastTrickModal } from './LastTrickModal.js';
 import { ScoreDetailModal } from './ScoreDetailModal.js';
@@ -519,6 +520,12 @@ export const GameTable: React.FC<GameTableProps> = ({
     view.phase === 'BIDDING' ||
     view.phase === 'CHOOSE_TRUMP';
   const trumpRed = view.trumpSuit ? isRedSuit(view.trumpSuit) : false;
+  const calledSuit = view.callState.calledSuit;
+  const showCallSuitDock =
+    view.mode === 'hongxin' &&
+    (view.phase === 'DEALING' || view.phase === 'CALLING') &&
+    (calledSuit !== null ||
+      (canCallNow && (callOptions.length > 0 || view.phase === 'CALLING')));
   const meTeammateLabel =
     view.mode === 'hongxin' ? `${getSeatTeam(meSeat)}队` : view.dealer === meSeat ? '庄家' : '闲家';
 
@@ -758,7 +765,7 @@ export const GameTable: React.FC<GameTableProps> = ({
 
       <div className="table-dock">
       {/* Phase contextual action bar */}
-      <div className="action-bar">
+      <div className={`action-bar ${showCallSuitDock ? 'has-call-dock' : ''}`}>
         <div className="action-bar-group action-status">
           <span className={`me-chip ${isMyActionNow ? 'is-turn' : ''}`}>
             <span className="me-chip-avatar">{avatarChar(meRoomSeat.name || '我')}</span>
@@ -811,8 +818,66 @@ export const GameTable: React.FC<GameTableProps> = ({
             </span>
           )}
 
-          {statusText && <span className="action-hint">{statusText}</span>}
+          {!showCallSuitDock && statusText && <span className="action-hint">{statusText}</span>}
         </div>
+
+        {showCallSuitDock && (
+          calledSuit !== null ? (
+            <div
+              className="call-suit-dock"
+              role="status"
+              aria-live="polite"
+              aria-label={`已亮主 ${getSuitName(calledSuit)}`}
+            >
+              <div
+                className={`call-suit-btn is-called-highlight ${isRedSuit(calledSuit) ? 'is-red-suit' : 'is-black-suit'}`}
+              >
+                <span className="call-suit-glyph-wrap">
+                  <SuitGlyph suit={calledSuit} className="call-suit-glyph" />
+                </span>
+                <span className="call-suit-meta">
+                  <strong>{getSuitName(calledSuit)}主</strong>
+                  <small>{view.callState.callerSeat === meSeat ? '你已亮主' : '已亮主'}</small>
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="call-suit-dock" role="group" aria-label="亮主花色选择">
+              {callOptions.map((opt, idx) => (
+                <button
+                  key={`${opt.suit}-${opt.count}-${idx}`}
+                  type="button"
+                  className={`call-suit-btn is-callable ${isRedSuit(opt.suit) ? 'is-red-suit' : 'is-black-suit'}`}
+                  title={opt.label}
+                  onClick={() =>
+                    onSendAction({
+                      type: 'CALL_TRUMP',
+                      seat: meSeat,
+                      suit: opt.suit,
+                      cardIds: opt.cardIds,
+                    })
+                  }
+                >
+                  <span className="call-suit-glyph-wrap">
+                    <SuitGlyph suit={opt.suit} className="call-suit-glyph" />
+                  </span>
+                  <span className="call-suit-meta">
+                    <strong>{view.isFirstRound ? `${opt.count}张2` : `亮${view.levelRank}`}</strong>
+                  </span>
+                </button>
+              ))}
+              {view.phase === 'CALLING' && canCallNow && (
+                <button
+                  type="button"
+                  className="btn call-suit-pass-btn"
+                  onClick={() => onSendAction({ type: 'PASS_CALL', seat: meSeat })}
+                >
+                  不叫
+                </button>
+              )}
+            </div>
+          )
+        )}
 
         <div className="action-bar-group action-buttons">
           {view.phase === 'PLAYING' &&
@@ -828,35 +893,6 @@ export const GameTable: React.FC<GameTableProps> = ({
                 看底牌
               </button>
             )}
-
-          {(view.phase === 'DEALING' || view.phase === 'CALLING') &&
-            canCallNow &&
-            callOptions.map((opt, idx) => (
-              <button
-                key={`${opt.suit}-${opt.count}-${idx}`}
-                type="button"
-                className="btn btn-gold"
-                onClick={() =>
-                  onSendAction({
-                    type: 'CALL_TRUMP',
-                    seat: meSeat,
-                    suit: opt.suit,
-                    cardIds: opt.cardIds,
-                  })
-                }
-              >
-                {opt.label}
-              </button>
-            ))}
-          {view.phase === 'CALLING' && canCallNow && (
-            <button
-              type="button"
-              className="btn"
-              onClick={() => onSendAction({ type: 'PASS_CALL', seat: meSeat })}
-            >
-              不叫
-            </button>
-          )}
 
           {view.phase === 'COUNTER_BIDDING' && canCounterNow && (
             <>

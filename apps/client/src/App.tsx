@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useGameClient } from './hooks/useGameClient.js';
 import { LobbyScreen } from './components/LobbyScreen.js';
 import { WaitingRoom } from './components/WaitingRoom.js';
@@ -14,7 +14,6 @@ import {
 import { soundFX } from './utils/sound.js';
 
 export const App: React.FC = () => {
-  const client = useGameClient();
   const [settings, setSettings] = useState<AppSettings>(() => {
     const initial = loadAppSettings();
     soundFX.setVolume(initial.soundVolume);
@@ -22,17 +21,34 @@ export const App: React.FC = () => {
     soundFX.setMuted(!initial.soundEnabled);
     return initial;
   });
+  const settingsRef = useRef<AppSettings>(settings);
+  settingsRef.current = settings;
+
+  const client = useGameClient({
+    allyBotDifficulty: settings.allyBotDifficulty,
+    opponentBotDifficulty: settings.opponentBotDifficulty,
+  });
   const [showSplash, setShowSplash] = useState<boolean>(() => settings.splashEnabled);
   const [showSettings, setShowSettings] = useState(false);
   const [showRules, setShowRules] = useState(false);
 
-  const updateSettings = useCallback((patch: Partial<AppSettings>) => {
-    setSettings((prev) => {
-      const next: AppSettings = { ...prev, ...patch };
+  const updateSettings = useCallback(
+    (patch: Partial<AppSettings>) => {
+      const next: AppSettings = { ...settingsRef.current, ...patch };
+      settingsRef.current = next;
+      setSettings(next);
       saveAppSettings(next);
-      return next;
-    });
-  }, []);
+      if (
+        (patch.allyBotDifficulty !== undefined || patch.opponentBotDifficulty !== undefined) &&
+        client.room &&
+        client.session &&
+        client.room.hostSeat === client.session.seat
+      ) {
+        client.setBotDifficulty(next.allyBotDifficulty, next.opponentBotDifficulty);
+      }
+    },
+    [client.room, client.session, client.setBotDifficulty],
+  );
 
   useEffect(() => {
     soundFX.setVolume(settings.soundVolume);

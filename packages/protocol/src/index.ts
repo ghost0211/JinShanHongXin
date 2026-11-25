@@ -4,6 +4,8 @@ export type TeamId = 'A' | 'B';
 
 export type GameMode = 'hongxin' | 'heixin';
 
+export type BotDifficulty = 'low' | 'medium' | 'high';
+
 export type StandardSuit = 'S' | 'H' | 'C' | 'D';
 
 export type Suit = StandardSuit | 'J';
@@ -268,17 +270,30 @@ export interface RoomSummary {
   status: 'WAITING' | 'IN_GAME' | 'FINISHED';
   debugMode: boolean;
   debugOpenHands: boolean;
+  allyBotDifficulty: BotDifficulty;
+  opponentBotDifficulty: BotDifficulty;
   hostSeat: Seat;
   seats: RoomSeatInfo[];
   roundNumber: number;
 }
 
 export type ClientMessage =
-  | { type: 'CREATE_ROOM'; playerName: string; authToken?: string; mode?: GameMode; debugMode?: boolean; fillBots?: boolean; autoStart?: boolean }
+  | {
+      type: 'CREATE_ROOM';
+      playerName: string;
+      authToken?: string;
+      mode?: GameMode;
+      debugMode?: boolean;
+      fillBots?: boolean;
+      autoStart?: boolean;
+      allyBotDifficulty?: BotDifficulty;
+      opponentBotDifficulty?: BotDifficulty;
+    }
   | { type: 'JOIN_ROOM'; roomId: string; playerName: string; authToken?: string; playerId?: string; preferredSeat?: Seat }
   | { type: 'RECONNECT'; roomId: string; playerId: string; authToken?: string }
   | { type: 'LEAVE_ROOM' }
   | { type: 'SET_ROOM_MODE'; mode: GameMode }
+  | { type: 'SET_BOT_DIFFICULTY'; allyDifficulty: BotDifficulty; opponentDifficulty: BotDifficulty }
   | { type: 'SET_SEAT_BOT'; seat: Seat; isBot: boolean }
   | { type: 'SWAP_SEAT'; targetSeat: Seat }
   | { type: 'SET_READY'; ready: boolean }

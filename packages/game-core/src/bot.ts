@@ -1,5 +1,6 @@
 import type {
   AtomicPattern,
+  BotDifficulty,
   Card,
   CardCategory,
   GameAction,
@@ -707,12 +708,16 @@ function chooseCounterResponseAction(state: GameState, seat: Seat): GameAction {
 export function chooseBotDealingCallAction(
   state: GameState,
   seat: Seat,
+  difficulty: BotDifficulty = 'high',
 ): GameAction | null {
+  // Low-tier bots let human players call first during dealing
+  if (difficulty === 'low') return null;
+  const minDealt = difficulty === 'medium' ? 28 : 24;
   if (
     state.mode !== 'hongxin' ||
     state.phase !== 'DEALING' ||
     state.callState.callerSeat !== null ||
-    state.dealtCount < 24
+    state.dealtCount < minDealt
   ) {
     return null;
   }
@@ -738,7 +743,7 @@ export function chooseBotDealingCallAction(
     }
     return null;
   }
-  if (state.dealtCount < 31) return null;
+  if (state.dealtCount < (difficulty === 'medium' ? 34 : 31)) return null;
   let bestSuit: StandardSuit | null = null;
   let bestScore = -1;
   for (const s of STANDARD_SUITS) {
@@ -751,7 +756,7 @@ export function chooseBotDealingCallAction(
       }
     }
   }
-  if (bestSuit && bestScore >= 115) {
+  if (bestSuit && bestScore >= (difficulty === 'medium' ? 128 : 115)) {
     return {
       type: 'CALL_TRUMP',
       seat,
@@ -2185,28 +2190,239 @@ export function chooseHeuristicPlayCards(state: GameState, seat: Seat): number[]
     : chooseFollowCards(state, seat);
 }
 
-export function chooseBotAction(state: GameState, seat: Seat): GameAction {
+/** Deterministic public-info hash in [0, 1) so lower-tier bots stay fair and reproducible. */
+function publicStateRoll(state: GameState, seat: Seat, salt: number): number {
+  let h =
+    2166136261 ^
+    (state.roundNumber * 131 + seat * 37 + state.completedTricks.length * 19 + salt * 97);
+  const hand = state.hands[seat];
+  for (let i = 0; i < hand.length; i++) {
+    h = Math.imul(h ^ hand[i].id, 16777619);
+  }
+  for (let i = 0; i < state.currentTrick.length; i++) {
+    const cards = state.currentTrick[i].cards;
+    for (let j = 0; j < cards.length; j++) {
+      h = Math.imul(h ^ (cards[j].id + 521), 16777619);
+    }
+  }
+  h ^= h >>> 13;
+  h = Math.imul(h, 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+/**
+ * Medium-tier ("中") card play: fast heuristic without Monte Carlo lookahead,
+ * plus light human-like suboptimality on non-trivial decisions.
+ */
+function chooseMediumPlayCards(state: GameState, seat: Seat): number[] {
+  const isLead = state.currentTrick.length === 0;
+  const ranked = isLead ? rankLeadCandidates(state, seat) : rankFollowCandidates(state, seat);
+  if (ranked.length <= 1) return ranked[0].map((c) => c.id);
+
+  const roll = publicStateRoll(state, seat, 11);
+  if (isLead) {
+    if (ranked.length >= 3 && roll < 0.14) return ranked[2].map((c) => c.id);
+    if (ranked.length >= 2 && roll < 0.36) return ranked[1].map((c) => c.id);
+    return ranked[0].map((c) => c.id);
+  }
+
+  // Follow: avoid obvious catastrophic blunders on last trick, otherwise occasionally play #2 option
+  const isLastTrick = state.hands[seat].length === state.currentTrick[0].cards.length;
+  if (!isLastTrick && ranked.length >= 2 && roll < 0.28) {
+    return ranked[1].map((c) => c.id);
+  }
+  return ranked[0].map((c) => c.id);
+}
+
+/**
+ * Low-tier ("低") beginner bury: keeps trumps and Aces, buries lowest non-trump cards
+ * without void engineering or pair/triple/510K preservation (respects heixin no-bury-10).
+ */
+function chooseLowBuryAction(state: GameState, seat: Seat): GameAction {
+  const hand = state.hands[seat];
+  const { trumpSuit, levelRank, mode } = state;
+  const pool = mode === 'heixin' ? hand.filter((c) => c.rank !== '10') : hand;
+  const scored = pool.map((card) => {
+    const cat = getCardCategory(card, trumpSuit, levelRank);
+    const ord = getCardOrder(card, trumpSuit, levelRank);
+    let keep = ord * 2;
+    if (cat === 'TRUMP') keep += 200 + ord * 3;
+    else if (card.rank === 'A') keep += 60;
+    else if (getCardPoints(card) > 0) keep += 8;
+    return { card, keep };
+  });
+  scored.sort((a, b) => a.keep - b.keep || a.card.id - b.card.id);
+  return {
+    type: 'BURY_BOTTOM',
+    seat,
+    cardIds: scored.slice(0, 10).map((x) => x.card.id),
+  };
+}
+
+/**
+ * Low-tier ("低") beginner card play: no search, no card-counting/void tracking,
+ * no advanced teammate tactics; plays simple legal combos with casual instincts.
+ */
+function chooseLowPlayCards(state: GameState, seat: Seat): number[] {
+  const hand = state.hands[seat];
+  const { trumpSuit, levelRank } = state;
+
+  if (state.currentTrick.length === 0) {
+    // Simple beginner leads: single cards, pairs, or triples from own hand (no slings / tractors / void tracking)
+    const groups = groupCardsByKey(hand, trumpSuit, levelRank);
+    const leads: { cards: Card[]; score: number }[] = [];
+    for (const g of groups) {
+      const cat = getCardCategory(g.cards[0], trumpSuit, levelRank);
+      const isT = cat === 'TRUMP';
+      const pts = g.cards.reduce((s, c) => s + getCardPoints(c), 0);
+      if (g.cards.length >= 2) {
+        leads.push({
+          cards: g.cards,
+          score: (isT ? 24 : 38) + g.order * 0.75 + (g.cards.length === 3 ? 14 : 0),
+        });
+      } else {
+        const card = g.cards[0];
+        let sc = isT ? 16 - g.order * 0.35 : 32 - g.order * 0.25 - pts * 0.6;
+        if (card.rank === 'A' && !isT) sc += 14;
+        if (isRedFive(card) && hand.length > 5) sc -= 40;
+        leads.push({ cards: [card], score: sc });
+      }
+    }
+    leads.sort((a, b) => b.score - a.score);
+    const topK = Math.min(leads.length, 3);
+    const pickIdx = Math.floor(publicStateRoll(state, seat, 23) * topK);
+    return (leads[pickIdx]?.cards ?? [hand[0]]).map((c) => c.id);
+  }
+
+  // Beginner follow: legal plays with natural casual instincts (minimal card counting, occasional slips)
+  const leadPlay = state.currentTrick[0].parsed;
+  const legal = findLegalFollowCards(hand, leadPlay, trumpSuit, levelRank);
+  if (legal.length <= 1) {
+    return (legal[0] ?? hand.slice(0, leadPlay.cards.length)).map((c) => c.id);
+  }
+
+  const currentBest = resolveTrickWinner(state.currentTrick, trumpSuit, levelRank);
+  const allyWinning = isSameSide(state, seat, currentBest.winnerSeat);
+  const roll = publicStateRoll(state, seat, 31);
+
+  const beating: Card[][] = [];
+  const nonBeating: Card[][] = [];
+  for (const cand of legal) {
+    const parsed = parsePlay(cand, trumpSuit, levelRank) ?? {
+      patternType: 'SLING' as const,
+      category: leadPlay.category,
+      cards: cand,
+      components: [],
+    };
+    const sim = resolveTrickWinner(
+      [...state.currentTrick, { seat, cards: cand, parsed }],
+      trumpSuit,
+      levelRank,
+    );
+    if (sim.winnerSeat === seat) beating.push(cand);
+    else nonBeating.push(cand);
+  }
+
+  const ptsOf = (cards: readonly Card[]) =>
+    cards.reduce((s, c) => s + getCardPoints(c), 0);
+  const costOf = (cards: readonly Card[]) =>
+    cards.reduce((s, c) => s + getCardValueCost(c, trumpSuit, levelRank), 0);
+  const hasRed5 = (cards: readonly Card[]) => cards.some((c) => isRedFive(c));
+
+  if (allyWinning) {
+    // Beginner feeds points to winning teammate ~68% of the time (avoids throwing ♥5), else plays low safe card
+    const pool = nonBeating.length > 0 ? nonBeating : legal;
+    if (roll < 0.68) {
+      const byFeed = [...pool].sort(
+        (a, b) =>
+          (hasRed5(a) ? 1 : 0) - (hasRed5(b) ? 1 : 0) ||
+          ptsOf(b) - ptsOf(a) ||
+          costOf(a) - costOf(b),
+      );
+      return byFeed[0].map((c) => c.id);
+    }
+    const byCheap = [...pool].sort((a, b) => costOf(a) - costOf(b));
+    const idx = Math.floor(publicStateRoll(state, seat, 37) * Math.min(byCheap.length, 3));
+    return byCheap[idx].map((c) => c.id);
+  }
+
+  // Enemy winning: contest point tricks ~72% of the time using one of the cheaper winning plays
+  if (beating.length > 0 && (currentBest.pointsInTrick >= 10 ? roll < 0.72 : roll < 0.30)) {
+    const byCheapBeat = [...beating].sort((a, b) => costOf(a) - costOf(b));
+    const topK = Math.min(byCheapBeat.length, 2);
+    const idx = Math.floor(publicStateRoll(state, seat, 41) * topK);
+    // Avoid burning ♥5 on a tiny 0-point early trick even for beginner bots
+    if (
+      currentBest.pointsInTrick === 0 &&
+      hand.length > leadPlay.cards.length * 2 &&
+      hasRed5(byCheapBeat[idx])
+    ) {
+      const alt = nonBeating.length > 0 ? nonBeating : legal;
+      const byLow = [...alt].sort((a, b) => ptsOf(a) - ptsOf(b) || costOf(a) - costOf(b));
+      return byLow[0].map((c) => c.id);
+    }
+    return byCheapBeat[idx].map((c) => c.id);
+  }
+
+  // Losing: dodge points ~72% of the time, with occasional casual beginner point-slips (~28%)
+  const losePool = nonBeating.length > 0 ? nonBeating : legal;
+  if (roll < 0.72) {
+    const byLow = [...losePool].sort((a, b) => ptsOf(a) - ptsOf(b) || costOf(a) - costOf(b));
+    const topK = Math.min(byLow.length, 2);
+    const idx = Math.floor(publicStateRoll(state, seat, 43) * topK);
+    return byLow[idx].map((c) => c.id);
+  }
+  const byCost = [...losePool].sort((a, b) => costOf(a) - costOf(b));
+  const idx = Math.floor(publicStateRoll(state, seat, 47) * Math.min(byCost.length, 4));
+  return byCost[idx].map((c) => c.id);
+}
+
+export function chooseBotAction(
+  state: GameState,
+  seat: Seat,
+  difficulty: BotDifficulty = 'high',
+): GameAction {
   switch (state.phase) {
     case 'DEALING':
       return { type: 'DEAL_STEP' };
-    case 'BIDDING':
+    case 'BIDDING': {
+      if (difficulty === 'low') {
+        const act = chooseBidAction(state, seat);
+        if (act.type === 'BID_SCORE' && publicStateRoll(state, seat, 5) < 0.35) {
+          return { type: 'PASS_BID', seat };
+        }
+        return act;
+      }
       return chooseBidAction(state, seat);
+    }
     case 'CHOOSE_TRUMP':
       return chooseTrumpSuitAction(state, seat);
     case 'CALLING':
       return chooseCallingAction(state, seat);
-    case 'COUNTER_BIDDING':
+    case 'COUNTER_BIDDING': {
+      if (difficulty === 'low' && publicStateRoll(state, seat, 7) < 0.65) {
+        return { type: 'PASS_COUNTER', seat };
+      }
       return chooseCounterAction(state, seat);
+    }
     case 'COUNTER_RESPONSE':
       return chooseCounterResponseAction(state, seat);
     case 'BURYING':
-      return chooseBuryAction(state, seat);
-    case 'PLAYING':
+      return difficulty === 'low' ? chooseLowBuryAction(state, seat) : chooseBuryAction(state, seat);
+    case 'PLAYING': {
+      const cardIds =
+        difficulty === 'low'
+          ? chooseLowPlayCards(state, seat)
+          : difficulty === 'medium'
+            ? chooseMediumPlayCards(state, seat)
+            : searchPlayCards(state, seat);
       return {
         type: 'PLAY_CARDS',
         seat,
-        cardIds: searchPlayCards(state, seat),
+        cardIds,
       };
+    }
     case 'ROUND_OVER':
       return { type: 'NEXT_ROUND' };
     case 'MATCH_OVER':

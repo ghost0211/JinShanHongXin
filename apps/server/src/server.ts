@@ -349,9 +349,24 @@ export function createGameServer(
             const fillBots = msg.fillBots === undefined ? false : requireBoolean(msg.fillBots);
             const autoStart = msg.autoStart === undefined ? false : requireBoolean(msg.autoStart);
             if (autoStart && !fillBots) badRoomMessage();
+            const allyBotDifficulty =
+              msg.allyBotDifficulty === undefined ? 'high' : msg.allyBotDifficulty;
+            const opponentBotDifficulty =
+              msg.opponentBotDifficulty === undefined ? 'high' : msg.opponentBotDifficulty;
+            if (
+              (allyBotDifficulty !== 'low' && allyBotDifficulty !== 'medium' && allyBotDifficulty !== 'high') ||
+              (opponentBotDifficulty !== 'low' && opponentBotDifficulty !== 'medium' && opponentBotDifficulty !== 'high')
+            ) {
+              badRoomMessage();
+            }
             const user = authenticate(msg.authToken);
             const displayName = user?.nickname ?? playerName(msg.playerName);
-            const room = roomManager.createRoom({ mode, debugMode });
+            const room = roomManager.createRoom({
+              mode,
+              debugMode,
+              allyBotDifficulty,
+              opponentBotDifficulty,
+            });
             const joined = room.addHuman(displayName, ws, 0, user?.id ?? null);
             if (fillBots) {
               room.fillEmptySeatsWithBots();
@@ -398,6 +413,15 @@ export function createGameServer(
           case 'SET_ROOM_MODE':
             if (!isGameMode(msg.mode)) badRoomMessage();
             room.setRoomMode(actorSeat, msg.mode);
+            break;
+          case 'SET_BOT_DIFFICULTY':
+            if (
+              (msg.allyDifficulty !== 'low' && msg.allyDifficulty !== 'medium' && msg.allyDifficulty !== 'high') ||
+              (msg.opponentDifficulty !== 'low' && msg.opponentDifficulty !== 'medium' && msg.opponentDifficulty !== 'high')
+            ) {
+              badRoomMessage();
+            }
+            room.setBotDifficulty(actorSeat, msg.allyDifficulty, msg.opponentDifficulty);
             break;
           case 'SET_SEAT_BOT':
             if (!isSeat(msg.seat)) badRoomMessage();

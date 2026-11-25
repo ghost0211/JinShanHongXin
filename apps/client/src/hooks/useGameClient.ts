@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  BotDifficulty,
   GameAction,
   GameMode,
   PlayerView,
@@ -215,7 +216,10 @@ function saveAuthToken(serverUrl: string, token: string | null): void {
   }
 }
 
-export function useGameClient() {
+export function useGameClient(options?: {
+  allyBotDifficulty?: BotDifficulty;
+  opponentBotDifficulty?: BotDifficulty;
+}) {
   const [serverUrl, setServerUrl] = useState<string>(() => getSavedServerUrl());
   const [initialIntent] = useState<InitialLaunchIntent>(() =>
     resolveInitialLaunchIntent(serverUrl),
@@ -261,6 +265,8 @@ export function useGameClient() {
   const lanRoleRef = useRef<LanRole>(lanRole);
   const lanTargetUrlRef = useRef<string>(lanTargetUrl);
   const playerNameRef = useRef<string>(playerName);
+  const allyBotDifficultyRef = useRef<BotDifficulty>(options?.allyBotDifficulty ?? 'high');
+  const opponentBotDifficultyRef = useRef<BotDifficulty>(options?.opponentBotDifficulty ?? 'high');
   const authGeneration = useRef(0);
   const [initialAuthToken] = useState(() => loadAuthToken(serverUrl));
   const authTokenRef = useRef<string | null>(initialAuthToken);
@@ -277,6 +283,8 @@ export function useGameClient() {
   lanRoleRef.current = lanRole;
   lanTargetUrlRef.current = lanTargetUrl;
   playerNameRef.current = playerName;
+  allyBotDifficultyRef.current = options?.allyBotDifficulty ?? 'high';
+  opponentBotDifficultyRef.current = options?.opponentBotDifficulty ?? 'high';
 
   const localStats = useMemo(() => summarizeLocalStats(localHistory), [localHistory]);
 
@@ -509,6 +517,8 @@ export function useGameClient() {
               debugMode: pending.debugMode,
               fillBots: pending.fillBots,
               autoStart: pending.autoStart,
+              allyBotDifficulty: allyBotDifficultyRef.current,
+              opponentBotDifficulty: opponentBotDifficultyRef.current,
             });
           }
         } else if (mode === 'lan' && role === 'guest') {
@@ -972,7 +982,14 @@ export function useGameClient() {
   }, []);
 
   const createRoom = useCallback(
-    (opts: { mode: GameMode; debugMode: boolean; fillBots: boolean; autoStart?: boolean }) => {
+    (opts: {
+      mode: GameMode;
+      debugMode: boolean;
+      fillBots: boolean;
+      autoStart?: boolean;
+      allyBotDifficulty?: BotDifficulty;
+      opponentBotDifficulty?: BotDifficulty;
+    }) => {
       if (leavingRef.current || reconnectingRef.current) return;
       const isOnline = playModeRef.current === 'online';
       clientRef.current?.send({
@@ -983,6 +1000,8 @@ export function useGameClient() {
         debugMode: opts.debugMode,
         fillBots: opts.fillBots,
         autoStart: opts.autoStart,
+        allyBotDifficulty: opts.allyBotDifficulty ?? allyBotDifficultyRef.current,
+        opponentBotDifficulty: opts.opponentBotDifficulty ?? opponentBotDifficultyRef.current,
       });
     },
     [playerName, currentUser],
@@ -1067,6 +1086,17 @@ export function useGameClient() {
     clientRef.current?.send({ type: 'TOGGLE_DEBUG_OPEN_HANDS', enabled });
   }, []);
 
+  const setBotDifficulty = useCallback(
+    (allyDifficulty: BotDifficulty, opponentDifficulty: BotDifficulty) => {
+      clientRef.current?.send({
+        type: 'SET_BOT_DIFFICULTY',
+        allyDifficulty,
+        opponentDifficulty,
+      });
+    },
+    [],
+  );
+
   return {
     playMode,
     setPlayMode,
@@ -1121,5 +1151,6 @@ export function useGameClient() {
     sendAction,
     setAutoBot,
     toggleDebugOpenHands,
+    setBotDifficulty,
   };
 }
