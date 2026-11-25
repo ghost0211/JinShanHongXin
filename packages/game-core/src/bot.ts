@@ -38,6 +38,110 @@ import { searchPlayCards } from './botSearch.js';
 
 const ALL_SEATS: readonly Seat[] = [0, 1, 2, 3];
 const ALL_CATEGORIES: readonly CardCategory[] = ['TRUMP', 'S', 'H', 'C', 'D'];
+const THREE_DECKS: readonly Card[] = createThreeDecks();
+const CAT_BIT: Record<CardCategory, number> = {
+  TRUMP: 1,
+  S: 2,
+  H: 4,
+  C: 8,
+  D: 16,
+};
+const SUIT_INDEX: Record<StandardSuit, number> = { S: 0, H: 1, C: 2, D: 3 };
+
+interface CompletedTricksSummary {
+  trumpSuit: StandardSuit | null;
+  levelRank: LevelRank;
+  playedMask: Uint8Array;
+  voidMasks: Uint8Array; // length 4, bitmask by CAT_BIT
+  offSuitDiscards: Uint8Array; // length 16: seat * 4 + SUIT_INDEX[suit]
+}
+
+const completedTricksCache = new WeakMap<
+  GameState['completedTricks'],
+  CompletedTricksSummary
+>();
+
+function getCompletedTricksSummary(
+  state: GameState,
+): CompletedTricksSummary {
+  const { trumpSuit, levelRank, completedTricks } = state;
+  const cached = completedTricksCache.get(completedTricks);
+  if (
+    cached &&
+    cached.trumpSuit === trumpSuit &&
+    cached.levelRank === levelRank
+  ) {
+    return cached;
+  }
+
+  const playedMask = new Uint8Array(162);
+  const voidMasks = new Uint8Array(4);
+  const offSuitDiscards = new Uint8Array(16);
+
+  for (let idx = 0; idx < completedTricks.length; idx++) {
+    const plays = completedTricks[idx].plays;
+    if (plays.length === 0) continue;
+    const leadPlay = plays[0];
+    const leadCat = leadPlay.parsed.category;
+    const leadCount = leadPlay.cards.length;
+    const leadBit = CAT_BIT[leadCat];
+    let lead510KUnits = 0;
+    for (const comp of leadPlay.parsed.components) {
+      if (comp.type === 'F510K') lead510KUnits += comp.length;
+    }
+
+    for (let i = 0; i < plays.length; i++) {
+      const p = plays[i];
+      for (let j = 0; j < p.cards.length; j++) {
+        const id = p.cards[j].id;
+        if (id >= 0 && id < 162) playedMask[id] = 1;
+      }
+      if (i === 0) continue;
+
+      let inCatCount = 0;
+      for (let j = 0; j < p.cards.length; j++) {
+        if (getCardCategory(p.cards[j], trumpSuit, levelRank) === leadCat) {
+          inCatCount += 1;
+        }
+      }
+      if (inCatCount < leadCount) {
+        if (leadCat !== 'TRUMP' && lead510KUnits > 0) {
+          let samePhysical = 0;
+          for (let j = 0; j < p.cards.length; j++) {
+            if (p.cards[j].suit === leadCat) samePhysical += 1;
+          }
+          if (samePhysical < leadCount) {
+            voidMasks[p.seat] |= leadBit;
+          }
+        } else {
+          voidMasks[p.seat] |= leadBit;
+        }
+
+        const isTrumpRuff = leadCat !== 'TRUMP' && p.parsed.category === 'TRUMP';
+        if (!isTrumpRuff) {
+          const baseOff = p.seat * 4;
+          for (let j = 0; j < p.cards.length; j++) {
+            const c = p.cards[j];
+            const cCat = getCardCategory(c, trumpSuit, levelRank);
+            if (cCat !== 'TRUMP' && cCat !== leadCat && getCardPoints(c) === 0) {
+              offSuitDiscards[baseOff + SUIT_INDEX[cCat]] += 1;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const summary: CompletedTricksSummary = {
+    trumpSuit,
+    levelRank,
+    playedMask,
+    voidMasks,
+    offSuitDiscards,
+  };
+  completedTricksCache.set(completedTricks, summary);
+  return summary;
+}
 
 export interface PublicCardTracker {
   unseenByCat: Map<CardCategory, Card[]>;
@@ -75,103 +179,111 @@ export function buildPublicCardTracker(
   includeSearchSignals = false,
 ): PublicCardTracker {
   const { trumpSuit, levelRank } = state;
-  const knownIds = new Set<number>();
+  const summary = getCompletedTricksSummary(state);
 
-  for (const c of state.hands[seat]) {
-    knownIds.add(c.id);
+  const knownMask = new Uint8Array(summary.playedMask);
+  const voidMasks = new Uint8Array(summary.voidMasks);
+  const offSuitDiscards = new Uint8Array(summary.offSuitDiscards);
+
+  const myHand = state.hands[seat];
+  for (let i = 0; i < myHand.length; i++) {
+    const id = myHand[i].id;
+    if (id >= 0 && id < 162) knownMask[id] = 1;
   }
   if (state.dealer === seat && state.phase === 'PLAYING') {
-    for (const c of state.bottomCards) {
-      knownIds.add(c.id);
+    for (let i = 0; i < state.bottomCards.length; i++) {
+      const id = state.bottomCards[i].id;
+      if (id >= 0 && id < 162) knownMask[id] = 1;
     }
   }
 
-  const voidSeatsByCat = new Map<CardCategory, Set<Seat>>();
-  for (const cat of ALL_CATEGORIES) {
-    voidSeatsByCat.set(cat, new Set<Seat>());
+  // Apply currentTrick incrementally on top of cached completedTricks summary
+  const curPlays = state.currentTrick;
+  if (curPlays.length > 0) {
+    const leadPlay = curPlays[0];
+    const leadCat = leadPlay.parsed.category;
+    const leadCount = leadPlay.cards.length;
+    const leadBit = CAT_BIT[leadCat];
+    let lead510KUnits = 0;
+    for (const comp of leadPlay.parsed.components) {
+      if (comp.type === 'F510K') lead510KUnits += comp.length;
+    }
+    for (let i = 0; i < curPlays.length; i++) {
+      const p = curPlays[i];
+      for (let j = 0; j < p.cards.length; j++) {
+        const id = p.cards[j].id;
+        if (id >= 0 && id < 162) knownMask[id] = 1;
+      }
+      if (i === 0) continue;
+      let inCatCount = 0;
+      for (let j = 0; j < p.cards.length; j++) {
+        if (getCardCategory(p.cards[j], trumpSuit, levelRank) === leadCat) {
+          inCatCount += 1;
+        }
+      }
+      if (inCatCount < leadCount) {
+        if (leadCat !== 'TRUMP' && lead510KUnits > 0) {
+          let samePhysical = 0;
+          for (let j = 0; j < p.cards.length; j++) {
+            if (p.cards[j].suit === leadCat) samePhysical += 1;
+          }
+          if (samePhysical < leadCount) voidMasks[p.seat] |= leadBit;
+        } else {
+          voidMasks[p.seat] |= leadBit;
+        }
+        const isTrumpRuff = leadCat !== 'TRUMP' && p.parsed.category === 'TRUMP';
+        if (!isTrumpRuff) {
+          const baseOff = p.seat * 4;
+          for (let j = 0; j < p.cards.length; j++) {
+            const c = p.cards[j];
+            const cCat = getCardCategory(c, trumpSuit, levelRank);
+            if (cCat !== 'TRUMP' && cCat !== leadCat && getCardPoints(c) === 0) {
+              offSuitDiscards[baseOff + SUIT_INDEX[cCat]] += 1;
+            }
+          }
+        }
+      }
+    }
   }
 
   const trumpsPlayedBySeat: Record<Seat, number> = { 0: 0, 1: 0, 2: 0, 3: 0 };
   const voluntaryTrumpLeadsBySeat: Record<Seat, number> = { 0: 0, 1: 0, 2: 0, 3: 0 };
-  const offSuitDiscardsBySeat: Record<Seat, Record<StandardSuit, number>> = {
-    0: { S: 0, H: 0, C: 0, D: 0 },
-    1: { S: 0, H: 0, C: 0, D: 0 },
-    2: { S: 0, H: 0, C: 0, D: 0 },
-    3: { S: 0, H: 0, C: 0, D: 0 },
-  };
   const failedOrderBySeat = includeSearchSignals
     ? new Map<Seat, Map<CardCategory, number>>()
     : null;
+
   if (failedOrderBySeat) {
     for (const s of ALL_SEATS) {
       failedOrderBySeat.set(s, new Map<CardCategory, number>());
     }
-  }
-
-  const inspectTrick = (
-    plays: ReadonlyArray<{ seat: Seat; cards: Card[]; parsed: ParsedPlay }>,
-    trickIndex: number,
-  ) => {
-    if (plays.length === 0) return;
-    const leadPlay = plays[0];
-    const leadCat = leadPlay.parsed.category;
-    const leadCount = leadPlay.cards.length;
-    const lead510KUnits = leadPlay.parsed.components
-      .filter((c) => c.type === 'F510K')
-      .reduce((sum, c) => sum + c.length, 0);
-
-    // Voluntary trump lead in early/mid-game signals trump strength
-    if (includeSearchSignals && leadCat === 'TRUMP' && trickIndex < 22) {
-      voluntaryTrumpLeadsBySeat[leadPlay.seat] += 1;
-    }
-
-    for (let i = 0; i < plays.length; i++) {
-      const p = plays[i];
-      for (const c of p.cards) {
-        knownIds.add(c.id);
-        if (includeSearchSignals && getCardCategory(c, trumpSuit, levelRank) === 'TRUMP') {
-          trumpsPlayedBySeat[p.seat] += 1;
+    const inspectSignals = (
+      plays: ReadonlyArray<{ seat: Seat; cards: Card[]; parsed: ParsedPlay }>,
+      trickIndex: number,
+    ) => {
+      if (plays.length === 0) return;
+      const leadPlay = plays[0];
+      const leadCat = leadPlay.parsed.category;
+      if (leadCat === 'TRUMP' && trickIndex < 22) {
+        voluntaryTrumpLeadsBySeat[leadPlay.seat] += 1;
+      }
+      for (let i = 0; i < plays.length; i++) {
+        const p = plays[i];
+        for (let j = 0; j < p.cards.length; j++) {
+          if (getCardCategory(p.cards[j], trumpSuit, levelRank) === 'TRUMP') {
+            trumpsPlayedBySeat[p.seat] += 1;
+          }
         }
       }
-      if (i === 0) continue;
-
-      const inCatCount = p.cards.filter(
-        (c) => getCardCategory(c, trumpSuit, levelRank) === leadCat,
-      ).length;
-      if (inCatCount < leadCount) {
-        // Account for off-suit borrowed 510K (e.g. ♥5 or level 10/K played as part of off-suit 510K)
-        if (leadCat !== 'TRUMP' && lead510KUnits > 0) {
-          const samePhysicalSuitCount = p.cards.filter((c) => c.suit === leadCat).length;
-          if (samePhysicalSuitCount < leadCount) {
-            voidSeatsByCat.get(leadCat)!.add(p.seat);
-          }
-        } else {
-          voidSeatsByCat.get(leadCat)!.add(p.seat);
-        }
-
-        // Discard signal: sloughing 0-point off-suit cards when void (not trump-killing)
-        // signals intent to void that suit or short trash in that suit.
-        const isTrumpRuff = leadCat !== 'TRUMP' && p.parsed.category === 'TRUMP';
-        if (!isTrumpRuff) {
-          for (const c of p.cards) {
-            const cCat = getCardCategory(c, trumpSuit, levelRank);
-            if (cCat !== 'TRUMP' && cCat !== leadCat && getCardPoints(c) === 0) {
-              offSuitDiscardsBySeat[p.seat][cCat] += 1;
-            }
-          }
-        }
-      } else if (
-        failedOrderBySeat &&
-        i === 3 &&
+      if (
         plays.length === 4 &&
         leadPlay.parsed.patternType === 'SINGLE' &&
-        p.cards.length === 1
+        plays[3].cards.length === 1 &&
+        getCardCategory(plays[3].cards[0], trumpSuit, levelRank) === leadCat
       ) {
-        // Fast O(1) negative high-card inference (no resolveTrickWinner allocation):
-        // 4th seat followed in leadCat on a >=10-pt trick where an enemy won in leadCat without trump-ruff.
+        const p3 = plays[3];
         let winSeat = leadPlay.seat;
         let winOrd = getCardOrder(leadPlay.cards[0], trumpSuit, levelRank);
-        let ptsOnTable = getCardPoints(leadPlay.cards[0]) + getCardPoints(p.cards[0]);
+        let ptsOnTable = getCardPoints(leadPlay.cards[0]) + getCardPoints(p3.cards[0]);
         let ruffed = false;
         for (let k = 1; k < 3; k++) {
           const pk = plays[k];
@@ -190,10 +302,10 @@ export function buildPublicCardTracker(
             }
           }
         }
-        if (!ruffed && ptsOnTable >= 10 && !isSameSide(state, p.seat, winSeat)) {
-          const myOrd = getCardOrder(p.cards[0], trumpSuit, levelRank);
+        if (!ruffed && ptsOnTable >= 10 && !isSameSide(state, p3.seat, winSeat)) {
+          const myOrd = getCardOrder(p3.cards[0], trumpSuit, levelRank);
           if (myOrd <= winOrd) {
-            const seatMap = failedOrderBySeat.get(p.seat)!;
+            const seatMap = failedOrderBySeat.get(p3.seat)!;
             const prev = seatMap.get(leadCat);
             if (prev === undefined || winOrd < prev) {
               seatMap.set(leadCat, winOrd);
@@ -201,41 +313,84 @@ export function buildPublicCardTracker(
           }
         }
       }
+    };
+    for (let idx = 0; idx < state.completedTricks.length; idx++) {
+      inspectSignals(state.completedTricks[idx].plays, idx);
     }
+    inspectSignals(curPlays, state.completedTricks.length);
+  }
+
+  const unseenTrump: Card[] = [];
+  const unseenS: Card[] = [];
+  const unseenH: Card[] = [];
+  const unseenC: Card[] = [];
+  const unseenD: Card[] = [];
+  let maxTrump = -1;
+  let maxS = -1;
+  let maxH = -1;
+  let maxC = -1;
+  let maxD = -1;
+
+  for (let i = 0; i < THREE_DECKS.length; i++) {
+    const card = THREE_DECKS[i];
+    if (knownMask[card.id]) continue;
+    const cat = getCardCategory(card, trumpSuit, levelRank);
+    const ord = getCardOrder(card, trumpSuit, levelRank);
+    if (cat === 'TRUMP') {
+      unseenTrump.push(card);
+      if (ord > maxTrump) maxTrump = ord;
+    } else if (cat === 'S') {
+      unseenS.push(card);
+      if (ord > maxS) maxS = ord;
+    } else if (cat === 'H') {
+      unseenH.push(card);
+      if (ord > maxH) maxH = ord;
+    } else if (cat === 'C') {
+      unseenC.push(card);
+      if (ord > maxC) maxC = ord;
+    } else {
+      unseenD.push(card);
+      if (ord > maxD) maxD = ord;
+    }
+  }
+
+  const unseenByCat = new Map<CardCategory, Card[]>([
+    ['TRUMP', unseenTrump],
+    ['S', unseenS],
+    ['H', unseenH],
+    ['C', unseenC],
+    ['D', unseenD],
+  ]);
+  const maxOrderByCat = new Map<CardCategory, number>([
+    ['TRUMP', maxTrump],
+    ['S', maxS],
+    ['H', maxH],
+    ['C', maxC],
+    ['D', maxD],
+  ]);
+
+  const voidSeatsByCat = new Map<CardCategory, Set<Seat>>();
+  for (const cat of ALL_CATEGORIES) {
+    const set = new Set<Seat>();
+    const bit = CAT_BIT[cat];
+    for (const s of ALL_SEATS) {
+      if ((voidMasks[s] & bit) !== 0) set.add(s);
+    }
+    voidSeatsByCat.set(cat, set);
+  }
+
+  const offSuitDiscardsBySeat: Record<Seat, Record<StandardSuit, number>> = {
+    0: { S: offSuitDiscards[0], H: offSuitDiscards[1], C: offSuitDiscards[2], D: offSuitDiscards[3] },
+    1: { S: offSuitDiscards[4], H: offSuitDiscards[5], C: offSuitDiscards[6], D: offSuitDiscards[7] },
+    2: { S: offSuitDiscards[8], H: offSuitDiscards[9], C: offSuitDiscards[10], D: offSuitDiscards[11] },
+    3: { S: offSuitDiscards[12], H: offSuitDiscards[13], C: offSuitDiscards[14], D: offSuitDiscards[15] },
   };
 
-  for (let idx = 0; idx < state.completedTricks.length; idx++) {
-    inspectTrick(state.completedTricks[idx].plays, idx);
-  }
-  inspectTrick(state.currentTrick, state.completedTricks.length);
-
-  const unseenByCat = new Map<CardCategory, Card[]>();
-  for (const cat of ALL_CATEGORIES) {
-    unseenByCat.set(cat, []);
-  }
-
-  for (const card of createThreeDecks()) {
-    if (knownIds.has(card.id)) continue;
-    const cat = getCardCategory(card, trumpSuit, levelRank);
-    unseenByCat.get(cat)!.push(card);
-  }
-
-  const maxOrderByCat = new Map<CardCategory, number>();
-  for (const cat of ALL_CATEGORIES) {
-    const list = unseenByCat.get(cat)!;
-    let best = -1;
-    for (const c of list) {
-      const ord = getCardOrder(c, trumpSuit, levelRank);
-      if (ord > best) best = ord;
-    }
-    maxOrderByCat.set(cat, best);
-  }
-
-  const unseenTrumps = unseenByCat.get('TRUMP')?.length ?? 0;
+  const unseenTrumps = unseenTrump.length;
   const isSeatVoidFn = (targetSeat: Seat, cat: CardCategory) =>
-    voidSeatsByCat.get(cat)?.has(targetSeat) ?? false;
+    (voidMasks[targetSeat] & CAT_BIT[cat]) !== 0;
   const hasPossibleTrumpFn = (targetSeat: Seat) =>
-    unseenTrumps > 0 && !isSeatVoidFn(targetSeat, 'TRUMP');
+    unseenTrumps > 0 && (voidMasks[targetSeat] & CAT_BIT.TRUMP) === 0;
 
   return {
     unseenByCat,
@@ -256,7 +411,7 @@ export function buildPublicCardTracker(
     trumpsPlayed: (targetSeat) => trumpsPlayedBySeat[targetSeat] ?? 0,
     voluntaryTrumpLeads: (targetSeat) => voluntaryTrumpLeadsBySeat[targetSeat] ?? 0,
     offSuitDiscardCount: (targetSeat, suit) =>
-      offSuitDiscardsBySeat[targetSeat]?.[suit] ?? 0,
+      offSuitDiscards[targetSeat * 4 + SUIT_INDEX[suit]] ?? 0,
     failedHighOrder: (targetSeat, cat) =>
       failedOrderBySeat?.get(targetSeat)?.get(cat) ?? null,
   };
@@ -1440,11 +1595,16 @@ function estimateRearAllyRuffConfidence(
   return bestConf;
 }
 
-export function buildSmartFollowCandidates(
+interface FollowCandidate {
+  cards: Card[];
+  parsed: ParsedPlay;
+}
+
+function buildSmartFollowCandidatesWithParsed(
   state: GameState,
   seat: Seat,
   trackerArg?: PublicCardTracker,
-): Card[][] {
+): FollowCandidate[] {
   const hand = state.hands[seat];
   const { trumpSuit, levelRank } = state;
   const leadPlay = state.currentTrick[0].parsed;
@@ -1465,50 +1625,6 @@ export function buildSmartFollowCandidates(
     : estimateRearAllyRuffConfidence(tracker, state, seat, currentBestPlay);
   const allowPointFeed = currentWinningAlly || rearAllyRuffConf >= 0.62;
 
-  const base = findLegalFollowCards(hand, leadPlay, trumpSuit, levelRank);
-  const candidates: Card[][] = [];
-  const seen = new Set<string>();
-
-  const pushIfValid = (cards: readonly Card[]) => {
-    if (cards.length !== N) return;
-    const ids = cards.map((c) => c.id);
-    const sig = [...ids].sort((a, b) => a - b).join(',');
-    if (seen.has(sig)) return;
-    const res = validateFollowPlay(hand, ids, leadPlay, trumpSuit, levelRank);
-    if (res.valid) {
-      seen.add(sig);
-      candidates.push([...cards]);
-    }
-  };
-
-  const hasTrump510KLead =
-    leadPlay.category === 'TRUMP' &&
-    leadPlay.components.some((comp) => comp.type === 'F510K');
-
-  for (const c of base) {
-    if (allowPointFeed || hasTrump510KLead) {
-      pushIfValid(c);
-    } else {
-      // When enemy is currently winning, keep all beating plays from `base`,
-      // but don't blindly import max-point feeding dumps (which cause noisy PIMC blunders);
-      // losing discards are constructed cleanly below by low/balanced/void-making rankers.
-      const parsed = parsePlay(c, trumpSuit, levelRank) ?? {
-        patternType: 'SLING' as const,
-        category: leadPlay.category,
-        cards: c,
-        components: [],
-      };
-      const sim = resolveTrickWinner(
-        [...state.currentTrick, { seat, cards: c, parsed }],
-        trumpSuit,
-        levelRank,
-      );
-      if (sim.winnerSeat === seat) {
-        pushIfValid(c);
-      }
-    }
-  }
-
   const inCatHand = hand.filter(
     (c) => getCardCategory(c, trumpSuit, levelRank) === leadPlay.category,
   );
@@ -1516,99 +1632,193 @@ export function buildSmartFollowCandidates(
     (c) => getCardCategory(c, trumpSuit, levelRank) !== leadPlay.category,
   );
 
-  // Compute multiplicity map to preserve pairs/triples/tractors when discarding or feeding
+  // Fast path: for 1-card SINGLE leads, every card in inCatHand (or any card when void) is
+  // guaranteed legal without calling findLegalFollowCards/validateFollowPlay 15 times!
+  const isSingleLead = leadPlay.patternType === 'SINGLE' && N === 1;
+  if (isSingleLead && inCatHand.length === 1) {
+    const only = [inCatHand[0]];
+    return [{ cards: only, parsed: parsePlay(only, trumpSuit, levelRank)! }];
+  }
+  const base = isSingleLead
+    ? []
+    : findLegalFollowCards(hand, leadPlay, trumpSuit, levelRank);
+  const candidates: FollowCandidate[] = [];
+  const seen = new Set<string>();
+
+  const makeSig = (cards: readonly Card[]): string => {
+    if (cards.length === 1) return String(cards[0].id);
+    if (cards.length === 2) {
+      return cards[0].id < cards[1].id
+        ? `${cards[0].id},${cards[1].id}`
+        : `${cards[1].id},${cards[0].id}`;
+    }
+    return cards
+      .map((c) => c.id)
+      .sort((a, b) => a - b)
+      .join(',');
+  };
+
+  const makeFallbackParsed = (cards: Card[]): ParsedPlay =>
+    parsePlay(cards, trumpSuit, levelRank) ?? {
+      patternType: 'SLING',
+      category: leadPlay.category,
+      cards,
+      components: [],
+    };
+
+  const pushPrevalidated = (cards: Card[], parsed?: ParsedPlay) => {
+    if (cards.length !== N) return;
+    const sig = makeSig(cards);
+    if (seen.has(sig)) return;
+    seen.add(sig);
+    candidates.push({ cards, parsed: parsed ?? makeFallbackParsed(cards) });
+  };
+
+  const pushIfValid = (cards: readonly Card[]) => {
+    if (cards.length !== N) return;
+    const sig = makeSig(cards);
+    if (seen.has(sig)) return;
+    if (isSingleLead) {
+      const c = cards[0];
+      const ok =
+        inCatHand.length === 0 ||
+        getCardCategory(c, trumpSuit, levelRank) === leadPlay.category;
+      if (ok) {
+        seen.add(sig);
+        const copy = [c];
+        candidates.push({ cards: copy, parsed: makeFallbackParsed(copy) });
+      }
+      return;
+    }
+    const ids = cards.map((c) => c.id);
+    const res = validateFollowPlay(hand, ids, leadPlay, trumpSuit, levelRank);
+    if (res.valid) {
+      seen.add(sig);
+      const copy = [...cards];
+      candidates.push({ cards: copy, parsed: res.parsed ?? makeFallbackParsed(copy) });
+    }
+  };
+
+  const hasTrump510KLead =
+    leadPlay.category === 'TRUMP' &&
+    leadPlay.components.some((comp) => comp.type === 'F510K');
+
+  if (isSingleLead && inCatHand.length > 0) {
+    // Emit every distinct in-category card (or beating ones + smart discards when enemy winning)
+    const seenKey = new Set<string>();
+    for (const c of inCatHand) {
+      const k = getCardKey(c);
+      if (seenKey.has(k)) continue;
+      seenKey.add(k);
+      if (allowPointFeed) {
+        pushPrevalidated([c]);
+      } else {
+        const parsed = makeFallbackParsed([c]);
+        const sim = resolveTrickWinner(
+          [...state.currentTrick, { seat, cards: [c], parsed }],
+          trumpSuit,
+          levelRank,
+        );
+        if (sim.winnerSeat === seat) {
+          pushPrevalidated([c], parsed);
+        }
+      }
+    }
+  } else {
+    // `base` comes directly from `findLegalFollowCards` (already validated by `validateFollowPlay`!)
+    for (const c of base) {
+      if (allowPointFeed || hasTrump510KLead) {
+        pushPrevalidated(c);
+      } else {
+        // When enemy is currently winning, keep all beating plays from `base`,
+        // but don't blindly import max-point feeding dumps (which cause noisy PIMC blunders);
+        // losing discards are constructed cleanly below by low/balanced/void-making rankers.
+        const parsed = makeFallbackParsed(c);
+        const sim = resolveTrickWinner(
+          [...state.currentTrick, { seat, cards: c, parsed }],
+          trumpSuit,
+          levelRank,
+        );
+        if (sim.winnerSeat === seat) {
+          pushPrevalidated(c, parsed);
+        }
+      }
+    }
+  }
+
+  // Precompute per-card metrics ONCE (avoids O(N log N) repeated calls inside discard sorters!)
   const allGroups = groupCardsByKey(hand, trumpSuit, levelRank);
   const keyMult = new Map(allGroups.map((g) => [g.key, g.cards.length]));
   const offSuitLens = new Map<CardCategory, number>();
   for (const cat of ALL_CATEGORIES) offSuitLens.set(cat, 0);
+  interface CardMeta {
+    card: Card;
+    cat: CardCategory;
+    isTrump: number;
+    pts: number;
+    mult: number;
+    cost: number;
+    suitLen: number;
+    red5: boolean;
+  }
+  const metaById = new Map<number, CardMeta>();
   for (const c of hand) {
     const cat = getCardCategory(c, trumpSuit, levelRank);
     offSuitLens.set(cat, (offSuitLens.get(cat) ?? 0) + 1);
   }
+  for (const c of hand) {
+    const cat = getCardCategory(c, trumpSuit, levelRank);
+    metaById.set(c.id, {
+      card: c,
+      cat,
+      isTrump: cat === 'TRUMP' ? 1 : 0,
+      pts: getCardPoints(c),
+      mult: keyMult.get(getCardKey(c)) ?? 1,
+      cost: getCardValueCost(c, trumpSuit, levelRank),
+      suitLen: offSuitLens.get(cat) ?? 99,
+      red5: isRedFive(c),
+    });
+  }
+
+  const sortByScore = (pool: readonly Card[], scoreFn: (m: CardMeta) => number): Card[] =>
+    pool
+      .map((c) => ({ c, sc: scoreFn(metaById.get(c.id)!) }))
+      .sort((a, b) => a.sc - b.sc || a.c.id - b.c.id)
+      .map((x) => x.c);
 
   const rankForLowSafeDiscard = (pool: readonly Card[]): Card[] =>
-    [...pool].sort((a, b) => {
-      const aT = getCardCategory(a, trumpSuit, levelRank) === 'TRUMP' ? 1 : 0;
-      const bT = getCardCategory(b, trumpSuit, levelRank) === 'TRUMP' ? 1 : 0;
-      if (aT !== bT) return aT - bT;
-      const ptsDiff = getCardPoints(a) - getCardPoints(b);
-      if (ptsDiff !== 0) return ptsDiff;
-      const mA = keyMult.get(getCardKey(a)) ?? 1;
-      const mB = keyMult.get(getCardKey(b)) ?? 1;
-      if (mA !== mB) return mA - mB;
-      const costDiff =
-        getCardValueCost(a, trumpSuit, levelRank) -
-        getCardValueCost(b, trumpSuit, levelRank);
-      if (costDiff !== 0) return costDiff;
-      return a.id - b.id;
-    });
+    sortByScore(
+      pool,
+      (m) => m.isTrump * 100000 + m.pts * 1000 + m.mult * 100 + m.cost,
+    );
 
   const rankForVoidMakingDiscard = (pool: readonly Card[]): Card[] =>
-    [...pool].sort((a, b) => {
-      const catA = getCardCategory(a, trumpSuit, levelRank);
-      const catB = getCardCategory(b, trumpSuit, levelRank);
-      const aT = catA === 'TRUMP' ? 1 : 0;
-      const bT = catB === 'TRUMP' ? 1 : 0;
-      if (aT !== bT) return aT - bT;
-      const ptsDiff = getCardPoints(a) - getCardPoints(b);
-      if (ptsDiff !== 0) return ptsDiff;
-      const lenA = offSuitLens.get(catA) ?? 99;
-      const lenB = offSuitLens.get(catB) ?? 99;
-      if (lenA !== lenB) return lenA - lenB;
-      return (
-        getCardValueCost(a, trumpSuit, levelRank) -
-        getCardValueCost(b, trumpSuit, levelRank)
-      );
-    });
+    sortByScore(
+      pool,
+      (m) => m.isTrump * 100000 + m.pts * 1000 + m.suitLen * 100 + m.cost,
+    );
 
   const rankForBalancedDiscard = (
     pool: readonly Card[],
     ptWeight: number,
     keepPairs: boolean,
   ): Card[] =>
-    [...pool].sort((a, b) => {
-      const aT = getCardCategory(a, trumpSuit, levelRank) === 'TRUMP' ? 1 : 0;
-      const bT = getCardCategory(b, trumpSuit, levelRank) === 'TRUMP' ? 1 : 0;
-      if (aT !== bT) return aT - bT;
-      const mA = keyMult.get(getCardKey(a)) ?? 1;
-      const mB = keyMult.get(getCardKey(b)) ?? 1;
-      const aCost = getCardValueCost(a, trumpSuit, levelRank);
-      const bCost = getCardValueCost(b, trumpSuit, levelRank);
-      const aStruct =
-        mA >= 3 ? 20 : keepPairs && mA === 2 ? (aCost >= 16 ? 12 : 4) : 0;
-      const bStruct =
-        mB >= 3 ? 20 : keepPairs && mB === 2 ? (bCost >= 16 ? 12 : 4) : 0;
-      const aScore = getCardPoints(a) * ptWeight + aCost + aStruct;
-      const bScore = getCardPoints(b) * ptWeight + bCost + bStruct;
-      if (aScore !== bScore) return aScore - bScore;
-      return a.id - b.id;
+    sortByScore(pool, (m) => {
+      const struct =
+        m.mult >= 3 ? 20 : keepPairs && m.mult === 2 ? (m.cost >= 16 ? 12 : 4) : 0;
+      return m.isTrump * 100000 + m.pts * ptWeight + m.cost + struct;
     });
 
   const rankForSafePointFeed = (pool: readonly Card[]): Card[] =>
-    [...pool].sort((a, b) => {
-      const catA = getCardCategory(a, trumpSuit, levelRank);
-      const catB = getCardCategory(b, trumpSuit, levelRank);
-      const aT = catA === 'TRUMP' ? 1 : 0;
-      const bT = catB === 'TRUMP' ? 1 : 0;
-      const mA = keyMult.get(getCardKey(a)) ?? 1;
-      const mB = keyMult.get(getCardKey(b)) ?? 1;
-      const aVoidBonus = !aT && (offSuitLens.get(catA) ?? 99) === 1 ? 8 : 0;
-      const bVoidBonus = !bT && (offSuitLens.get(catB) ?? 99) === 1 ? 8 : 0;
-      // Prefer feeding off-suit lone points (especially void-creating ones!) before breaking pairs/triples or spending trumps
-      const aFeedVal =
-        getCardPoints(a) * 10 +
-        aVoidBonus -
-        (isRedFive(a) ? 200 : aT * 45) -
-        (mA >= 3 ? 35 : mA === 2 ? 12 : 0) -
-        getCardValueCost(a, trumpSuit, levelRank) * 0.4;
-      const bFeedVal =
-        getCardPoints(b) * 10 +
-        bVoidBonus -
-        (isRedFive(b) ? 200 : bT * 45) -
-        (mB >= 3 ? 35 : mB === 2 ? 12 : 0) -
-        getCardValueCost(b, trumpSuit, levelRank) * 0.4;
-      if (bFeedVal !== aFeedVal) return bFeedVal - aFeedVal;
-      return a.id - b.id;
+    sortByScore(pool, (m) => {
+      const voidBonus = !m.isTrump && m.suitLen === 1 ? 8 : 0;
+      const feedVal =
+        m.pts * 10 +
+        voidBonus -
+        (m.red5 ? 200 : m.isTrump * 45) -
+        (m.mult >= 3 ? 35 : m.mult === 2 ? 12 : 0) -
+        m.cost * 0.4;
+      return -feedVal;
     });
 
   if (inCatHand.length === 0) {
@@ -1710,11 +1920,21 @@ export function buildSmartFollowCandidates(
   // Fallback for special forced-rule plays (e.g. trump 510K top-trump surrender or exact inCatHand.length === N)
   if (candidates.length === 0) {
     for (const c of base) {
-      pushIfValid(c);
+      pushPrevalidated(c);
     }
   }
 
   return candidates;
+}
+
+export function buildSmartFollowCandidates(
+  state: GameState,
+  seat: Seat,
+  trackerArg?: PublicCardTracker,
+): Card[][] {
+  return buildSmartFollowCandidatesWithParsed(state, seat, trackerArg).map(
+    (item) => item.cards,
+  );
 }
 
 function estimateWinHoldConfidence(
@@ -1792,10 +2012,12 @@ export function rankFollowCandidates(state: GameState, seat: Seat): Card[][] {
   const { trumpSuit, levelRank } = state;
   const leadPlay = state.currentTrick[0].parsed;
   const tracker = buildPublicCardTracker(state, seat);
-  const candidates = buildSmartFollowCandidates(state, seat, tracker);
+  const candidates = buildSmartFollowCandidatesWithParsed(state, seat, tracker);
 
   if (candidates.length <= 1) {
-    return candidates.length === 1 ? candidates : [hand.slice(0, leadPlay.cards.length)];
+    return candidates.length === 1
+      ? [candidates[0].cards]
+      : [hand.slice(0, leadPlay.cards.length)];
   }
 
   const currentBest = resolveTrickWinner(
@@ -1856,13 +2078,7 @@ export function rankFollowCandidates(state: GameState, seat: Seat): Card[][] {
 
   const scoredCands: { cards: Card[]; score: number }[] = [];
 
-  for (const cards of candidates) {
-    const parsed = parsePlay(cards, trumpSuit, levelRank) ?? {
-      patternType: 'SLING' as const,
-      category: leadPlay.category,
-      cards,
-      components: [],
-    };
+  for (const { cards, parsed } of candidates) {
     const simulatedTrick = [...state.currentTrick, { seat, cards, parsed }];
     const simResult = resolveTrickWinner(simulatedTrick, trumpSuit, levelRank);
     const iWin = simResult.winnerSeat === seat;

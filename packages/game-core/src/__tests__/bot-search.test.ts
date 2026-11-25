@@ -73,4 +73,27 @@ describe('bot search (sampled lookahead)', () => {
     });
     configureBotSearch({ enabled: true });
   });
+
+  it('supports two-stage successive halving deterministically and legally', () => {
+    configureBotSearch({ enabled: true, timeBudgetMs: 1e9 });
+    const s = advanceToPlaying(55);
+    const seat = s.currentTurn!;
+    const a = searchPlayCards(s, seat, {
+      worlds: 16,
+      maxCandidates: 14,
+      stage1Worlds: 4,
+      stage2Keep: 4,
+      timeBudgetMs: 1e9,
+    });
+    const b = searchPlayCards(s, seat, {
+      worlds: 16,
+      maxCandidates: 14,
+      stage1Worlds: 4,
+      stage2Keep: 4,
+      timeBudgetMs: 1e9,
+    });
+    assert.deepEqual(a, b);
+    const res = applyAction(s, { type: 'PLAY_CARDS', seat, cardIds: a });
+    assert.equal(res.ok, true, !res.ok ? res.error : '');
+  });
 });
