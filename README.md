@@ -11,8 +11,9 @@
 - `packages/protocol`：前后端共享 WebSocket 协议与脱敏视图类型
 - `packages/game-core`：纯函数权威规则引擎、状态机、`510K` 校验与 Bot 机器人 AI
 - `apps/server`：Node.js HTTP + WebSocket 联机房服与 `node:sqlite` 战绩库
-- `apps/client`：React + Vite 响应式安卓手机/平板横屏牌桌（支持 PWA）
+- `apps/client`：React + Vite 响应式安卓手机/平板/桌面横屏牌桌（支持 PWA）
 - `apps/android`：原生 Android 沉浸式横屏 WebView APK 壳与一键打包脚本
+- `apps/windows`：基于 Tauri 2（WebView2）的轻量 Windows 桌面客户端与 NSIS 安装包配置
 
 ---
 
@@ -44,3 +45,13 @@ npm run build:apk
 - 首次运行会自动缓存官方 Android API 35 `android.jar` 并生成本地调试签名证书；
 - 安装到安卓手机或平板后，点击大厅右上角 **「服务器」** 填写局域网服务端地址（如 `http://192.168.x.x:3001`），如果在本机 Termux 同步启动了服务端，则默认直连 `127.0.0.1:3001`；
 - `apps/android` 同时附带标准 Gradle 工程配置，可直接用 Android Studio 打开构建。
+
+### 4. 构建 Windows 桌面客户端（Tauri 2）
+```bash
+# 开发模式运行（单机人机开箱即玩；如需在线联机，另开终端运行 npm run start:server）
+npm run dev:win
+
+# 在 Windows 10/11 上构建轻量安装包（NSIS .exe）与单文件可执行程序
+npm run build:win
+```
+详细说明与 GitHub Actions 自动出包流程见 [apps/windows/README.md](apps/windows/README.md)。

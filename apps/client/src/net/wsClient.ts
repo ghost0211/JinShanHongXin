@@ -13,12 +13,31 @@ export interface GameTransport {
 const SERVER_URL_KEY = 'jinshan_server_url';
 const APK_VIRTUAL_HOST = 'appassets.jinshan.local';
 
+export function isRunningInTauriDesktop(): boolean {
+  if (typeof window === 'undefined') return false;
+  const win = window as unknown as {
+    __TAURI__?: unknown;
+    __TAURI_INTERNALS__?: unknown;
+  };
+  return (
+    Boolean(win.__TAURI_INTERNALS__) ||
+    Boolean(win.__TAURI__) ||
+    window.location.protocol === 'tauri:' ||
+    window.location.hostname === 'tauri.localhost' ||
+    window.location.hostname.endsWith('.tauri.localhost')
+  );
+}
+
 export function isRunningInAndroidApk(): boolean {
   if (typeof window === 'undefined') return false;
   return (
     window.location.hostname === APK_VIRTUAL_HOST ||
     Boolean((window as unknown as { JinshanAndroid?: unknown }).JinshanAndroid)
   );
+}
+
+export function isRunningInNativeShell(): boolean {
+  return isRunningInAndroidApk() || isRunningInTauriDesktop();
 }
 
 export function getSavedServerUrl(): string {
@@ -57,7 +76,7 @@ export function resolveHttpBase(customUrl: string): string {
   }
   if (
     typeof window !== 'undefined' &&
-    window.location.hostname !== APK_VIRTUAL_HOST &&
+    !isRunningInNativeShell() &&
     (window.location.protocol === 'http:' || window.location.protocol === 'https:')
   ) {
     return '';
@@ -72,7 +91,7 @@ export function resolveWsUrl(customUrl: string): string {
   }
   if (
     typeof window !== 'undefined' &&
-    window.location.hostname !== APK_VIRTUAL_HOST &&
+    !isRunningInNativeShell() &&
     (window.location.protocol === 'http:' || window.location.protocol === 'https:')
   ) {
     const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -92,8 +111,11 @@ export class ManagedWsClient implements GameTransport {
 
   private readonly messageListeners = new Set<(msg: ServerMessage) => void>();
   private readonly statusListeners = new Set<(status: ConnectionStatus) => void>();
-  constructor(initialUrl: string, private readonly onSeatReplaced?: () => void) {
+  private readonly onSeatReplaced?: () => void;
+
+  constructor(initialUrl: string, onSeatReplaced?: () => void) {
     this.wsUrl = resolveWsUrl(initialUrl);
+    this.onSeatReplaced = onSeatReplaced;
   }
 
   onMessage(cb: (msg: ServerMessage) => void): () => void {

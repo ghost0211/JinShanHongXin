@@ -8,6 +8,7 @@ import { getTrickPlayLabel } from '../utils/cardHints.js';
 interface LastTrickModalProps {
   room: RoomSummary;
   view: PlayerView;
+  isPeeking?: boolean;
   onClose: () => void;
 }
 
@@ -16,6 +17,7 @@ const ORDER_LABELS = ['领出', '跟二', '跟三', '尾家'] as const;
 export const LastTrickModal: React.FC<LastTrickModalProps> = ({
   room,
   view,
+  isPeeking = false,
   onClose,
 }) => {
   const trick = view.lastTrick;
@@ -28,6 +30,7 @@ export const LastTrickModal: React.FC<LastTrickModalProps> = ({
           <div className="modal-title-group">
             <h3>上一轮回顾</h3>
             {trick && <span className="pill">第 {trick.trickNumber} 轮</span>}
+            {isPeeking && <span className="pill pill-gold">松开 Tab 关闭</span>}
           </div>
           <button type="button" className="btn btn-xs btn-ghost modal-close" onClick={onClose}>
             <Icon name="close" />

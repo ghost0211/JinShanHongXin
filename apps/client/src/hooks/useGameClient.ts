@@ -11,11 +11,11 @@ import type {
 } from '@jinshan/protocol';
 import {
   buildLanHostBridgeWsUrl,
-  getNativeLanHostStatus,
+  getNativeLanHostStatusAsync,
   isNativeLanHostSupported,
-  pollDiscoveredLanHosts,
-  startNativeLanDiscovery,
-  startNativeLanHost,
+  pollDiscoveredLanHostsAsync,
+  startNativeLanDiscoveryAsync,
+  startNativeLanHostAsync,
   stopNativeLanDiscovery,
   stopNativeLanHost,
   type DiscoveredLanHost,
@@ -27,7 +27,7 @@ import {
 } from '../net/localTransport.js';
 import {
   getSavedServerUrl,
-  isRunningInAndroidApk,
+  isRunningInNativeShell,
   ManagedWsClient,
   resolveHttpBase,
   resolveWsUrl,
@@ -132,8 +132,8 @@ function resolveInitialLaunchIntent(savedServerUrl: string): InitialLaunchIntent
     }
   }
 
-  // First launch inside Android APK with no custom server URL -> default to pure offline!
-  if (isRunningInAndroidApk() && !savedServerUrl) {
+  // First launch inside Android APK or Windows Desktop with no custom server URL -> default to pure offline!
+  if (isRunningInNativeShell() && !savedServerUrl) {
     return {
       playMode: 'offline',
       lanRole: 'idle',
@@ -328,9 +328,9 @@ export function useGameClient(options?: {
     setSavedSession(null);
   }, []);
 
-  // Auto-detect when a browser page was served directly by an Android LAN Host APK
+  // Auto-detect when a browser page was served directly by a LAN Host (Android APK or Windows Desktop)
   useEffect(() => {
-    if (initialIntent.explicitQuery || isRunningInAndroidApk()) return;
+    if (initialIntent.explicitQuery || isRunningInNativeShell()) return;
     if (typeof window === 'undefined') return;
     if (window.location.protocol !== 'http:' && window.location.protocol !== 'https:') return;
     let cancelled = false;
@@ -415,18 +415,24 @@ export function useGameClient(options?: {
     });
   }, []);
 
-  // Poll UDP-discovered LAN hosts on Android APK while in LAN idle view
+  // Poll UDP-discovered LAN hosts on Android APK / Windows Desktop while in LAN idle view
   useEffect(() => {
     if (playMode !== 'lan' || lanRole !== 'idle' || !lanHostSupported) {
       return;
     }
-    startNativeLanDiscovery();
+    let cancelled = false;
+    void startNativeLanDiscoveryAsync();
     const refresh = () => {
-      setDiscoveredLanHosts(pollDiscoveredLanHosts().filter((h) => !h.isSelf));
+      void pollDiscoveredLanHostsAsync().then((hosts) => {
+        if (!cancelled) {
+          setDiscoveredLanHosts(hosts.filter((h) => !h.isSelf));
+        }
+      });
     };
     refresh();
     const timer = window.setInterval(refresh, 1200);
     return () => {
+      cancelled = true;
       clearInterval(timer);
       stopNativeLanDiscovery();
     };
@@ -435,21 +441,26 @@ export function useGameClient(options?: {
   // Periodically refresh LAN host guest count & IP list while hosting
   useEffect(() => {
     if (playMode !== 'lan' || lanRole !== 'host' || !lanHostInfo) return;
+    let cancelled = false;
     const timer = window.setInterval(() => {
-      const status = getNativeLanHostStatus();
-      if (status && status.running) {
-        setLanHostInfo((prev) =>
-          prev
-            ? {
-                ...prev,
-                ips: status.ips,
-                primaryIp: status.primaryIp || prev.primaryIp,
-              }
-            : prev,
-        );
-      }
+      void getNativeLanHostStatusAsync().then((status) => {
+        if (!cancelled && status && status.running) {
+          setLanHostInfo((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  ips: status.ips,
+                  primaryIp: status.primaryIp || prev.primaryIp,
+                }
+              : prev,
+          );
+        }
+      });
     }, 3000);
-    return () => clearInterval(timer);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, [playMode, lanRole, lanHostInfo !== null]);
 
   // Core transport effect: switches cleanly between Offline Worker, LAN Host Worker, LAN Guest WS, and Online WS
@@ -719,51 +730,53 @@ export function useGameClient(options?: {
       dealSpeed?: DealSpeed;
     }) => {
       const displayName = playerNameRef.current.trim() || '金山房主';
-      const result = startNativeLanHost(3001, displayName);
-      if (!result.ok) {
-        pushToast(result.error || '启动局域网房主失败', true);
-        return;
-      }
-      clearActiveRoom();
-      pendingLanHostCreateRef.current = {
-        mode: opts.mode,
-        debugMode: opts.debugMode ?? false,
-        fillBots: false,
-        autoStart: false,
-        allyBotDifficulty: opts.allyBotDifficulty ?? allyBotDifficultyRef.current,
-        opponentBotDifficulty: opts.opponentBotDifficulty ?? opponentBotDifficultyRef.current,
-        dealSpeed: opts.dealSpeed ?? dealSpeedRef.current,
-      };
-      setPlayModeState('lan');
-      setLanHostInfo(result);
-      setLanRole('host');
-      if (result.primaryIp) {
-        pushToast(`局域网房主已开启：${result.primaryIp}:${result.port}`);
-      } else {
-        pushToast(`局域网房主已监听端口 ${result.port}，请开启热点或连接 Wi-Fi`);
-      }
+      void startNativeLanHostAsync(3001, displayName).then((result) => {
+        if (!result.ok) {
+          pushToast(result.error || '启动局域网房主失败', true);
+          return;
+        }
+        clearActiveRoom();
+        pendingLanHostCreateRef.current = {
+          mode: opts.mode,
+          debugMode: opts.debugMode ?? false,
+          fillBots: false,
+          autoStart: false,
+          allyBotDifficulty: opts.allyBotDifficulty ?? allyBotDifficultyRef.current,
+          opponentBotDifficulty: opts.opponentBotDifficulty ?? opponentBotDifficultyRef.current,
+          dealSpeed: opts.dealSpeed ?? dealSpeedRef.current,
+        };
+        setPlayModeState('lan');
+        setLanHostInfo(result);
+        setLanRole('host');
+        if (result.primaryIp) {
+          pushToast(`局域网房主已开启：${result.primaryIp}:${result.port}`);
+        } else {
+          pushToast(`局域网房主已监听端口 ${result.port}，请开启热点或连接 Wi-Fi`);
+        }
+      });
     },
     [clearActiveRoom, pushToast],
   );
 
   const refreshLanHostInfo = useCallback(() => {
-    const status = getNativeLanHostStatus();
-    if (!status || !status.running) {
-      pushToast('局域网房主未运行', true);
-      return;
-    }
-    setLanHostInfo((prev) => ({
-      ok: true,
-      port: status.port,
-      hostToken: status.hostToken || prev?.hostToken || '',
-      ips: status.ips,
-      primaryIp: status.primaryIp || status.ips[0] || '',
-    }));
-    if (status.primaryIp) {
-      pushToast(`已刷新本机地址：${status.primaryIp}:${status.port}`);
-    } else {
-      pushToast('仍未检测到局域网 IP，请确认已开启热点或连上 Wi-Fi', true);
-    }
+    void getNativeLanHostStatusAsync().then((status) => {
+      if (!status || !status.running) {
+        pushToast('局域网房主未运行', true);
+        return;
+      }
+      setLanHostInfo((prev) => ({
+        ok: true,
+        port: status.port,
+        hostToken: status.hostToken || prev?.hostToken || '',
+        ips: status.ips,
+        primaryIp: status.primaryIp || status.ips[0] || '',
+      }));
+      if (status.primaryIp) {
+        pushToast(`已刷新本机地址：${status.primaryIp}:${status.port}`);
+      } else {
+        pushToast('仍未检测到局域网 IP，请确认已开启热点或连上 Wi-Fi', true);
+      }
+    });
   }, [pushToast]);
 
   const joinDiscoveredLanHost = useCallback(

@@ -165,12 +165,19 @@
   --shadow-3: 0 18px 48px rgba(0, 0, 0, 0.55);
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 
-  --card-w: 62px;
-  --card-h: 88px;
-  --card-sm-w: 46px;
-  --card-sm-h: 65px;
-  --card-xs-w: 34px;
-  --card-xs-h: 48px;
+  --card-scale: 1;
+  --card-base-w: 62px;
+  --card-base-h: 88px;
+  --card-base-sm-w: 46px;
+  --card-base-sm-h: 65px;
+  --card-base-xs-w: 34px;
+  --card-base-xs-h: 48px;
+  --card-w: calc(var(--card-base-w) * var(--card-scale));
+  --card-h: calc(var(--card-base-h) * var(--card-scale));
+  --card-sm-w: calc(var(--card-base-sm-w) * var(--card-scale));
+  --card-sm-h: calc(var(--card-base-sm-h) * var(--card-scale));
+  --card-xs-w: calc(var(--card-base-xs-w) * var(--card-scale));
+  --card-xs-h: calc(var(--card-base-xs-h) * var(--card-scale));
 
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
@@ -185,22 +192,33 @@
 
 @media (min-width: 920px) and (min-height: 540px) {
   :root {
-    --card-w: 76px;
-    --card-h: 108px;
-    --card-sm-w: 56px;
-    --card-sm-h: 79px;
-    --card-xs-w: 42px;
-    --card-xs-h: 59px;
+    --card-base-w: 76px;
+    --card-base-h: 108px;
+    --card-base-sm-w: 56px;
+    --card-base-sm-h: 79px;
+    --card-base-xs-w: 42px;
+    --card-base-xs-h: 59px;
+  }
+}
+
+@media (min-width: 1280px) and (min-height: 720px) {
+  :root {
+    --card-base-w: 84px;
+    --card-base-h: 118px;
+    --card-base-sm-w: 62px;
+    --card-base-sm-h: 88px;
+    --card-base-xs-w: 46px;
+    --card-base-xs-h: 65px;
   }
 }
 
 @media (max-height: 450px) {
   :root {
-    --card-w: 52px;
-    --card-h: 74px;
-    --card-sm-w: 40px;
-    --card-sm-h: 56px;
-    --card-xs-w: 30px;
-    --card-xs-h: 42px;
+    --card-base-w: 52px;
+    --card-base-h: 74px;
+    --card-base-sm-w: 40px;
+    --card-base-sm-h: 56px;
+    --card-base-xs-w: 30px;
+    --card-base-xs-h: 42px;
   }
 }
