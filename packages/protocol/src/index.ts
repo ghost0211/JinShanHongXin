@@ -4,6 +4,10 @@ export type TeamId = 'A' | 'B';
 
 export type GameMode = 'hongxin' | 'heixin';
 
+export type BotDifficulty = 'low' | 'medium' | 'high';
+
+export type DealSpeed = 1 | 2 | 3 | 4 | 5;
+
 export type StandardSuit = 'S' | 'H' | 'C' | 'D';
 
 export type Suit = StandardSuit | 'J';
@@ -252,6 +256,7 @@ export interface RoomSeatInfo {
   seat: Seat;
   team: TeamId;
   occupied: boolean;
+  /** Reserved for compatibility; public room summaries always set this to null. */
   playerId: string | null;
   userId: number | null;
   name: string;
@@ -267,16 +272,33 @@ export interface RoomSummary {
   status: 'WAITING' | 'IN_GAME' | 'FINISHED';
   debugMode: boolean;
   debugOpenHands: boolean;
+  allyBotDifficulty: BotDifficulty;
+  opponentBotDifficulty: BotDifficulty;
+  dealSpeed: DealSpeed;
   hostSeat: Seat;
   seats: RoomSeatInfo[];
   roundNumber: number;
 }
 
 export type ClientMessage =
-  | { type: 'CREATE_ROOM'; playerName: string; authToken?: string; mode?: GameMode; debugMode?: boolean; fillBots?: boolean; autoStart?: boolean }
+  | {
+      type: 'CREATE_ROOM';
+      playerName: string;
+      authToken?: string;
+      mode?: GameMode;
+      debugMode?: boolean;
+      fillBots?: boolean;
+      autoStart?: boolean;
+      allyBotDifficulty?: BotDifficulty;
+      opponentBotDifficulty?: BotDifficulty;
+      dealSpeed?: DealSpeed;
+    }
   | { type: 'JOIN_ROOM'; roomId: string; playerName: string; authToken?: string; playerId?: string; preferredSeat?: Seat }
-  | { type: 'RECONNECT'; roomId: string; playerId: string }
+  | { type: 'RECONNECT'; roomId: string; playerId: string; authToken?: string }
+  | { type: 'LEAVE_ROOM' }
   | { type: 'SET_ROOM_MODE'; mode: GameMode }
+  | { type: 'SET_BOT_DIFFICULTY'; allyDifficulty: BotDifficulty; opponentDifficulty: BotDifficulty }
+  | { type: 'SET_DEAL_SPEED'; dealSpeed: DealSpeed }
   | { type: 'SET_SEAT_BOT'; seat: Seat; isBot: boolean }
   | { type: 'SWAP_SEAT'; targetSeat: Seat }
   | { type: 'SET_READY'; ready: boolean }
@@ -289,6 +311,7 @@ export type ClientMessage =
 export type ServerMessage =
   | { type: 'ROOM_JOINED'; roomId: string; playerId: string; seat: Seat; room: RoomSummary }
   | { type: 'ROOM_UPDATED'; room: RoomSummary }
+  | { type: 'ROOM_LEFT' }
   | { type: 'GAME_STATE'; view: PlayerView }
   | { type: 'ACTION_ERROR'; code: string; message: string }
   | { type: 'PONG'; ts: number; serverTs: number };

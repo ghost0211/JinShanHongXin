@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -62,8 +62,38 @@ function mapUserRow(row: UserRow): UserProfile {
   };
 }
 
-function hashPassword(password: string, salt: string): string {
-  return scryptSync(password, salt, 32).toString('hex');
+export const DEFAULT_DB_PATH = './apps/server/data/jinshan.db';
+export const DEFAULT_INVITE_TTL_HOURS = 24;
+export const MAX_INVITE_TTL_HOURS = 30 * 24;
+const INVITE_CODE_BYTES = 24;
+const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+const DUMMY_PASSWORD_SALT = '00000000000000000000000000000000';
+const DUMMY_PASSWORD_HASH = Buffer.alloc(32);
+
+function isValidPassword(password: unknown): password is string {
+  // Match the UI's JS string length, without trimming or normalizing passwords.
+  return typeof password === 'string' && password.length >= 4 && password.length <= 64;
+}
+
+function hashPassword(password: string, salt: string): Buffer {
+  // Keep using the original hex salt string as the scrypt input for existing hashes.
+  return scryptSync(password, salt, 32);
+}
+
+function isHex(value: unknown, length: number): value is string {
+  return typeof value === 'string' && value.length === length && !/[^0-9a-f]/i.test(value);
+}
+
+function isSessionToken(token: unknown): token is string {
+  return typeof token === 'string' && token.length === 64 && !/[^0-9a-f]/.test(token);
+}
+
+function secretDigest(secret: string): string {
+  return createHash('sha256').update(secret).digest('hex');
+}
+
+function invalidInvite(): AuthError {
+  return new AuthError(403, 'INVALID_INVITE', '邀请码无效、已使用或已过期，请向管理员索取新码');
 }
 
 export class AuthError extends Error {
@@ -85,7 +115,30 @@ export class HistoryStore {
       mkdirSync(dirname(dbPath), { recursive: true });
     }
     this.db = new DatabaseSync(dbPath);
-    this.initSchema();
+    try {
+      // Issuance may run in a separate process against a live server's database.
+      this.db.exec('PRAGMA busy_timeout = 1000');
+      this.inTransaction(() => this.initSchema());
+    } catch (err) {
+      this.db.close();
+      throw err;
+    }
+  }
+
+  private inTransaction<T>(write: () => T): T {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = write();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {
+        // Some SQLite errors already roll back the transaction. Keep the original error.
+      }
+      throw err;
+    }
   }
 
   private initSchema(): void {
@@ -104,13 +157,11 @@ export class HistoryStore {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
 
-      CREATE TABLE IF NOT EXISTS user_sessions (
-        token TEXT PRIMARY KEY,
-        user_id INTEGER NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      CREATE TABLE IF NOT EXISTS registration_invites (
+        code_hash TEXT NOT NULL PRIMARY KEY,
+        expires_at INTEGER NOT NULL
       );
+      CREATE INDEX IF NOT EXISTS registration_invites_expires_at ON registration_invites(expires_at);
 
       CREATE TABLE IF NOT EXISTS matches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,13 +186,61 @@ export class HistoryStore {
         FOREIGN KEY (match_id) REFERENCES matches(id)
       );
     `);
+
+    // Legacy tokens were stored as bearer credentials. Revoke only those sessions
+    // on upgrade instead of copying them; accounts and history remain untouched.
+    const sessionColumns = this.db.prepare('PRAGMA table_info(user_sessions)').all();
+    if (sessionColumns.some((column) => column.name === 'token')) {
+      this.db.exec('PRAGMA secure_delete = ON; DROP TABLE user_sessions;');
+    }
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS user_sessions (
+        token_hash TEXT NOT NULL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        expires_at INTEGER NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS user_sessions_expires_at ON user_sessions(expires_at);
+    `);
+    this.deleteExpiredSessions();
+  }
+
+  createRegistrationInvite(ttlHours = DEFAULT_INVITE_TTL_HOURS): { code: string; expiresAt: string } {
+    if (!Number.isInteger(ttlHours) || ttlHours < 1 || ttlHours > MAX_INVITE_TTL_HOURS) {
+      throw new RangeError(`邀请码有效期须为 1~${MAX_INVITE_TTL_HOURS} 小时（整数）`);
+    }
+    const code = randomBytes(INVITE_CODE_BYTES).toString('base64url');
+    return this.inTransaction(() => {
+      this.db.prepare('DELETE FROM registration_invites WHERE expires_at <= unixepoch()').run();
+      const expiry = this.db.prepare(`
+        INSERT INTO registration_invites (code_hash, expires_at)
+        VALUES (?, unixepoch() + ?) RETURNING expires_at
+      `).get(secretDigest(code), ttlHours * 3600) as { expires_at: number };
+      return { code, expiresAt: new Date(expiry.expires_at * 1000).toISOString() };
+    });
   }
 
   registerUser(
     rawUsername: string,
     password: string,
+    rawInviteCode: unknown,
     rawNickname?: string,
   ): { user: UserProfile; token: string } {
+    const code = typeof rawInviteCode === 'string' ? rawInviteCode.trim() : rawInviteCode;
+    if (code === undefined || code === '') {
+      throw new AuthError(403, 'INVITE_REQUIRED', '注册需要邀请码，请向管理员索取');
+    }
+    if (typeof code !== 'string' || !/^[A-Za-z0-9_-]{32}$/.test(code)) throw invalidInvite();
+
+    const inviteHash = secretDigest(code);
+    // Skip username lookup and password hashing for invalid codes. This read is
+    // only a precheck; the transaction below enforces expiry and single use.
+    const available = this.db.prepare(`
+      SELECT 1 FROM registration_invites WHERE code_hash = ? AND expires_at > unixepoch()
+    `).get(inviteHash);
+    if (!available) throw invalidInvite();
+
     const username = rawUsername.trim();
     const nickname = (rawNickname?.trim() || username).slice(0, 16);
 
@@ -151,7 +250,7 @@ export class HistoryStore {
     if (!/^[\u4e00-\u9fa5a-zA-Z0-9_-]+$/.test(username)) {
       throw new AuthError(400, 'INVALID_USERNAME', '用户名仅支持中英文、数字、下划线和短横线');
     }
-    if (password.length < 4 || password.length > 64) {
+    if (!isValidPassword(password)) {
       throw new AuthError(400, 'INVALID_PASSWORD', '密码长度需为 4~64 位');
     }
 
@@ -163,18 +262,25 @@ export class HistoryStore {
     }
 
     const salt = randomBytes(16).toString('hex');
-    const hash = hashPassword(password, salt);
+    const hash = hashPassword(password, salt).toString('hex');
 
-    const res = this.db
-      .prepare(
-        `INSERT INTO users (username, nickname, password_salt, password_hash)
-         VALUES (?, ?, ?, ?)`,
-      )
-      .run(username, nickname, salt, hash);
-    const userId = Number(res.lastInsertRowid);
-    const token = this.createSession(userId);
-    const user = this.getUserById(userId)!;
-    return { user, token };
+    return this.inTransaction(() => {
+      const used = this.db.prepare(`
+        DELETE FROM registration_invites WHERE code_hash = ? AND expires_at > unixepoch()
+      `).run(inviteHash);
+      if (used.changes !== 1) throw invalidInvite();
+
+      const row = this.db
+        .prepare(
+          `INSERT INTO users (username, nickname, password_salt, password_hash)
+           VALUES (?, ?, ?, ?) ON CONFLICT(username) DO NOTHING RETURNING *`,
+        )
+        .get(username, nickname, salt, hash) as UserRow | undefined;
+      if (!row) {
+        throw new AuthError(409, 'USERNAME_TAKEN', '该用户名已被注册');
+      }
+      return { user: mapUserRow(row), token: this.createSession(row.id) };
+    });
   }
 
   loginUser(
@@ -182,33 +288,40 @@ export class HistoryStore {
     password: string,
   ): { user: UserProfile; token: string } {
     const username = rawUsername.trim();
+    if (username.length < 2 || username.length > 20 || !isValidPassword(password)) {
+      throw new AuthError(401, 'INVALID_CREDENTIALS', '用户名或密码错误');
+    }
     const row = this.db
       .prepare('SELECT * FROM users WHERE username = ?')
       .get(username) as UserRow | undefined;
 
-    if (!row) {
+    // Missing users and corrupt credentials still take the same scrypt path.
+    const credentials = row && isHex(row.password_salt, 32) && isHex(row.password_hash, 64)
+      ? row
+      : null;
+    const actual = hashPassword(password, credentials?.password_salt ?? DUMMY_PASSWORD_SALT);
+    const expected = credentials ? Buffer.from(credentials.password_hash, 'hex') : DUMMY_PASSWORD_HASH;
+    if (!timingSafeEqual(actual, expected) || !credentials) {
       throw new AuthError(401, 'INVALID_CREDENTIALS', '用户名或密码错误');
     }
 
-    const candidateHex = hashPassword(password, row.password_salt);
-    const expectedBuf = Buffer.from(row.password_hash, 'hex');
-    const actualBuf = Buffer.from(candidateHex, 'hex');
-    if (
-      expectedBuf.length !== actualBuf.length ||
-      !timingSafeEqual(expectedBuf, actualBuf)
-    ) {
-      throw new AuthError(401, 'INVALID_CREDENTIALS', '用户名或密码错误');
-    }
+    const token = this.createSession(credentials.id);
+    return { user: mapUserRow(credentials), token };
+  }
 
-    const token = this.createSession(row.id);
-    return { user: mapUserRow(row), token };
+  private deleteExpiredSessions(): void {
+    this.db.prepare('DELETE FROM user_sessions WHERE expires_at <= unixepoch()').run();
   }
 
   private createSession(userId: number): string {
+    this.deleteExpiredSessions();
     const token = randomBytes(32).toString('hex');
     this.db
-      .prepare('INSERT INTO user_sessions (token, user_id) VALUES (?, ?)')
-      .run(token, userId);
+      .prepare(
+        `INSERT INTO user_sessions (token_hash, user_id, expires_at)
+         VALUES (?, ?, unixepoch() + ?)`,
+      )
+      .run(secretDigest(token), userId, SESSION_TTL_SECONDS);
     return token;
   }
 
@@ -220,23 +333,20 @@ export class HistoryStore {
   }
 
   getUserByToken(token: string | undefined | null): UserProfile | null {
-    if (!token) return null;
+    if (!isSessionToken(token)) return null;
     const row = this.db
       .prepare(
         `SELECT u.* FROM user_sessions s
          JOIN users u ON u.id = s.user_id
-         WHERE s.token = ?`,
+         WHERE s.token_hash = ? AND s.expires_at > unixepoch()`,
       )
-      .get(token) as UserRow | undefined;
-    if (!row) return null;
-    this.db
-      .prepare(`UPDATE user_sessions SET last_seen_at = datetime('now') WHERE token = ?`)
-      .run(token);
-    return mapUserRow(row);
+      .get(secretDigest(token)) as UserRow | undefined;
+    return row ? mapUserRow(row) : null;
   }
 
   logoutToken(token: string): void {
-    this.db.prepare('DELETE FROM user_sessions WHERE token = ?').run(token);
+    if (!isSessionToken(token)) return;
+    this.db.prepare('DELETE FROM user_sessions WHERE token_hash = ?').run(secretDigest(token));
   }
 
   updateNickname(userId: number, rawNickname: string): UserProfile {
@@ -255,6 +365,11 @@ export class HistoryStore {
   }
 
   recordPlayerRoundStats(entries: readonly PlayerRoundStatUpdate[]): void {
+    if (entries.length === 0) return;
+    this.inTransaction(() => this.updatePlayerRoundStats(entries));
+  }
+
+  private updatePlayerRoundStats(entries: readonly PlayerRoundStatUpdate[]): void {
     const stmtHongxin = this.db.prepare(`
       UPDATE users
       SET hongxin_games = hongxin_games + 1,
@@ -296,21 +411,29 @@ export class HistoryStore {
     return Number(res.lastInsertRowid);
   }
 
-  recordRound(matchId: number, settlement: RoundSettlement): void {
-    const stmt = this.db.prepare(`
-      INSERT INTO round_records (
-        match_id, round_number, mode, dealer_seat, challenger_total, banker_won, summary_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run(
-      matchId,
-      settlement.roundNumber,
-      settlement.mode,
-      settlement.dealer,
-      settlement.totalChallengerScore,
-      settlement.bankerWon ? 1 : 0,
-      JSON.stringify(settlement),
-    );
+  recordRound(
+    matchId: number,
+    settlement: RoundSettlement,
+    stats: readonly PlayerRoundStatUpdate[] = [],
+    winnerSummary?: string,
+  ): void {
+    this.inTransaction(() => {
+      this.db.prepare(`
+        INSERT INTO round_records (
+          match_id, round_number, mode, dealer_seat, challenger_total, banker_won, summary_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        matchId,
+        settlement.roundNumber,
+        settlement.mode,
+        settlement.dealer,
+        settlement.totalChallengerScore,
+        settlement.bankerWon ? 1 : 0,
+        JSON.stringify(settlement),
+      );
+      if (stats.length > 0) this.updatePlayerRoundStats(stats);
+      if (winnerSummary !== undefined) this.finishMatch(matchId, winnerSummary);
+    });
   }
 
   finishMatch(matchId: number, winnerSummary: string): void {

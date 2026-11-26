@@ -10,6 +10,8 @@ import type {
 import { PlayingCard } from './PlayingCard.js';
 import { soundFX } from '../utils/sound.js';
 
+import type { HandLayoutMode } from '../utils/settings.js';
+
 interface HandAreaProps {
   cards: readonly Card[];
   trumpSuit: StandardSuit | null;
@@ -18,6 +20,9 @@ interface HandAreaProps {
   phase: GamePhase;
   selectedIds: readonly number[];
   hintedIds: readonly number[];
+  defaultLayout?: HandLayoutMode;
+  showCardBadges?: boolean;
+  showPointPips?: boolean;
   onApplySelection: (ids: number[], mode: 'select' | 'deselect') => void;
 }
 
@@ -50,6 +55,9 @@ export const HandArea: React.FC<HandAreaProps> = ({
   phase,
   selectedIds,
   hintedIds,
+  defaultLayout = 'double',
+  showCardBadges = true,
+  showPointPips = true,
   onApplySelection,
 }) => {
   const zoneRef = useRef<HTMLDivElement | null>(null);
@@ -57,7 +65,13 @@ export const HandArea: React.FC<HandAreaProps> = ({
     typeof window !== 'undefined' ? window.innerWidth - 16 : 800,
   );
   const [cardWidth, setCardWidth] = useState<number>(() => getResponsiveCardWidth());
-  const [forceSingleRow, setForceSingleRow] = useState(false);
+  const [forceSingleRow, setForceSingleRow] = useState(
+    () => defaultLayout === 'single',
+  );
+
+  useEffect(() => {
+    setForceSingleRow(defaultLayout === 'single');
+  }, [defaultLayout]);
 
   const dragRef = useRef<{
     active: boolean;
@@ -148,14 +162,14 @@ export const HandArea: React.FC<HandAreaProps> = ({
     >
       {cards.length > 18 && (
         <div className="hand-meta-bar">
-          <span>手牌 {cards.length} 张（可左右滑动连续选牌）</span>
+          <span className="hand-count">{cards.length} 张 · 可滑动连选</span>
           <button
             type="button"
             className="btn btn-xs btn-ghost"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={() => setForceSingleRow((v) => !v)}
           >
-            {forceSingleRow ? '切为双排(主/副)' : '切为单排'}
+            {forceSingleRow ? '双排' : '单排'}
           </button>
         </div>
       )}
@@ -178,6 +192,8 @@ export const HandArea: React.FC<HandAreaProps> = ({
                 phase={phase}
                 selected={selectedSet.has(card.id)}
                 hinted={hintedSet.has(card.id)}
+                showBadges={showCardBadges}
+                showPointPip={showPointPips}
                 interactive
                 // Strictly preserve physical left-to-right stacking even when selected
                 style={{ zIndex: cardIdx + 1 }}

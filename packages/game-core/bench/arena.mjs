@@ -68,8 +68,8 @@ function playRound(core, state, policyForSeat, maxSteps = 600) {
   return { state, think };
 }
 
-/** Value of the finished round from team `xTeam`'s perspective. */
-function evaluate(state, xTeam) {
+/** Value of the finished round from team `xTeam`'s perspective (hongxin 2v2). */
+function evaluateHongxin(state, xTeam) {
   const st = state.settlement;
   const sign = st.earningTeam === xTeam ? 1 : -1;
   const xIsChallenger = st.challengerTeam === xTeam;
@@ -82,6 +82,38 @@ function evaluate(state, xTeam) {
     bottomKilledByX: st.bottomKilled && xIsChallenger ? 1 : 0,
     bottomKilledVsX: st.bottomKilled && !xIsChallenger ? 1 : 0,
   };
+}
+
+/** Value of the finished round from X's perspective in heixin 1v3 (role = 'DEALER' | 'CHALLENGERS'). */
+function evaluateHeixin(state, role) {
+  const st = state.settlement;
+  const bid = st.bidScore ?? state.bidState?.highestBid ?? 150;
+  const target = 300 - bid;
+  const pts = st.totalChallengerScore;
+  const xIsChallenger = role === 'CHALLENGERS';
+  const xWon = xIsChallenger ? !st.bankerWon : st.bankerWon;
+  return {
+    steps: xWon ? bid : -bid,
+    // Sum of DEALER + CHALLENGERS margins = pts(X_CHALLENGERS) - pts(Y_CHALLENGERS)
+    margin: xIsChallenger ? pts - target : target - pts,
+    win: xWon ? 1 : 0,
+    bottomKilledByX: st.bottomKilled && xIsChallenger ? 1 : 0,
+    bottomKilledVsX: st.bottomKilled && !xIsChallenger ? 1 : 0,
+  };
+}
+
+function advanceHeixinToBurying(core, state, Y) {
+  let s = state;
+  let steps = 0;
+  while (s.phase !== 'BURYING' && s.phase !== 'PLAYING' && steps < 200) {
+    const seat = s.currentTurn;
+    const action = seat === null || seat === undefined ? { type: 'DEAL_STEP' } : Y(s, seat);
+    const res = core.applyAction(s, action);
+    if (!res.ok) throw new Error(`illegal heixin setup ${action.type}: ${res.error}`);
+    s = res.state;
+    steps += 1;
+  }
+  return s;
 }
 
 async function worker() {
@@ -98,13 +130,29 @@ async function worker() {
         if (state.phase === 'MATCH_OVER') break;
         base = core.startNextRound(state, seed * 7919 + r);
       }
-      const row = { seed, X: {}, thinkX: 0, thinkY: 0 };
-      for (const xTeam of ['A', 'B']) {
-        const policy = (seat) => (teamOf(seat) === xTeam ? { fn: X, tag: 'X' } : { fn: Y, tag: 'Y' });
-        const { state, think } = playRound(core, base, policy);
-        row[xTeam] = evaluate(state, xTeam);
-        row.thinkX += think.X;
-        row.thinkY += think.Y;
+      const row = { seed, A: {}, B: {}, thinkX: 0, thinkY: 0 };
+      if (job.mode === 'heixin') {
+        // Fix identical bidding/trump via Y, then play duplicate 1v3 (X=dealer vs Y=3 challengers, then swapped)
+        const ready = advanceHeixinToBurying(core, base, Y);
+        const dealer = ready.dealer;
+        for (const [slot, role] of [['A', 'DEALER'], ['B', 'CHALLENGERS']]) {
+          const policy = (seat) => {
+            const xPlays = role === 'DEALER' ? seat === dealer : seat !== dealer;
+            return xPlays ? { fn: X, tag: 'X' } : { fn: Y, tag: 'Y' };
+          };
+          const { state, think } = playRound(core, ready, policy);
+          row[slot] = evaluateHeixin(state, role);
+          row.thinkX += think.X;
+          row.thinkY += think.Y;
+        }
+      } else {
+        for (const xTeam of ['A', 'B']) {
+          const policy = (seat) => (teamOf(seat) === xTeam ? { fn: X, tag: 'X' } : { fn: Y, tag: 'Y' });
+          const { state, think } = playRound(core, base, policy);
+          row[xTeam] = evaluateHongxin(state, xTeam);
+          row.thinkX += think.X;
+          row.thinkY += think.Y;
+        }
       }
       rows.push(row);
     }

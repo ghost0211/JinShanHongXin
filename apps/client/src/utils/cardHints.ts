@@ -3,12 +3,12 @@ import {
   findLegalFollowCards,
   getCardCategory,
   getCardOrder,
-  getCardPoints,
   getSameColorSuit,
   groupCardsByKey,
   isRedFive,
   parsePlay,
   STANDARD_SUITS,
+  suggestBuryCards,
   validateFollowPlay,
 } from '@jinshan/game-core';
 import type {
@@ -418,33 +418,14 @@ export function getMandatoryFollowSelection(
 
 export function getHintOptions(view: PlayerView): number[][] {
   if (view.phase === 'BURYING' && view.dealer === view.viewerSeat) {
-    const pool =
-      view.mode === 'heixin'
-        ? view.myHand.filter((c) => c.rank !== '10')
-        : view.myHand;
-    const suitCounts = new Map<StandardSuit, number>();
-    for (const s of STANDARD_SUITS) suitCounts.set(s, 0);
-    for (const c of view.myHand) {
-      const cat = getCardCategory(c, view.trumpSuit, view.levelRank);
-      if (cat !== 'TRUMP') suitCounts.set(cat, (suitCounts.get(cat) ?? 0) + 1);
-    }
-    const sorted = [...pool].sort((a, b) => {
-      const catA = getCardCategory(a, view.trumpSuit, view.levelRank);
-      const catB = getCardCategory(b, view.trumpSuit, view.levelRank);
-      const trumpA = catA === 'TRUMP' ? 1 : 0;
-      const trumpB = catB === 'TRUMP' ? 1 : 0;
-      if (trumpA !== trumpB) return trumpA - trumpB;
-      const ptsDiff = getCardPoints(a) - getCardPoints(b);
-      if (ptsDiff !== 0) return ptsDiff;
-      const lenA = catA === 'TRUMP' ? 99 : suitCounts.get(catA) ?? 0;
-      const lenB = catB === 'TRUMP' ? 99 : suitCounts.get(catB) ?? 0;
-      if (lenA !== lenB) return lenA - lenB;
-      return (
-        getCardOrder(a, view.trumpSuit, view.levelRank) -
-        getCardOrder(b, view.trumpSuit, view.levelRank)
-      );
-    });
-    return [sorted.slice(0, 10).map((c) => c.id)];
+    return [
+      suggestBuryCards(
+        view.myHand,
+        view.trumpSuit,
+        view.levelRank,
+        view.mode,
+      ),
+    ];
   }
 
   if (view.phase !== 'PLAYING' || view.currentTurn !== view.viewerSeat) {

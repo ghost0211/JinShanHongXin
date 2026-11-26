@@ -2,11 +2,12 @@ import { existsSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_DB_PATH } from './db.js';
 import { createGameServer } from './server.js';
 
 const port = Number(process.env.PORT ?? 3001);
 const host = process.env.HOST ?? '0.0.0.0';
-const dbPath = process.env.DB_PATH ?? './apps/server/data/jinshan.db';
+const dbPath = process.env.DB_PATH ?? DEFAULT_DB_PATH;
 const botDelayMs = Number(process.env.BOT_DELAY_MS ?? 450);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

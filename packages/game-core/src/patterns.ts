@@ -563,6 +563,78 @@ export function parsePlay(
   trumpSuit: StandardSuit | null,
   levelRank: LevelRank,
 ): ParsedPlay | null {
+  const n = cards.length;
+  if (n === 0) return null;
+  if (n === 1) {
+    const c = cards[0];
+    const cat = getCardCategory(c, trumpSuit, levelRank);
+    const ord = getCardOrder(c, trumpSuit, levelRank);
+    return {
+      patternType: 'SINGLE',
+      category: cat,
+      cards: [c],
+      components: [
+        {
+          type: 'SINGLE',
+          cards: [c],
+          cardKeys: [getCardKey(c)],
+          length: 1,
+          topOrder: ord,
+          usedLowAce: false,
+        },
+      ],
+    };
+  }
+  if (n === 2) {
+    const a = cards[0];
+    const b = cards[1];
+    const catA = getCardCategory(a, trumpSuit, levelRank);
+    const catB = getCardCategory(b, trumpSuit, levelRank);
+    if (catA !== catB) return null;
+    const ordA = getCardOrder(a, trumpSuit, levelRank);
+    const keyA = getCardKey(a);
+    if (a.suit === b.suit && a.rank === b.rank) {
+      return {
+        patternType: 'PAIR',
+        category: catA,
+        cards: [a, b],
+        components: [
+          {
+            type: 'PAIR',
+            cards: [a, b],
+            cardKeys: [keyA],
+            length: 1,
+            topOrder: ordA,
+            usedLowAce: false,
+          },
+        ],
+      };
+    }
+    const ordB = getCardOrder(b, trumpSuit, levelRank);
+    const keyB = getCardKey(b);
+    const compA: AtomicPattern = {
+      type: 'SINGLE',
+      cards: [a],
+      cardKeys: [keyA],
+      length: 1,
+      topOrder: ordA,
+      usedLowAce: false,
+    };
+    const compB: AtomicPattern = {
+      type: 'SINGLE',
+      cards: [b],
+      cardKeys: [keyB],
+      length: 1,
+      topOrder: ordB,
+      usedLowAce: false,
+    };
+    return {
+      patternType: 'SLING',
+      category: catA,
+      cards: [a, b],
+      components: ordA >= ordB ? [compA, compB] : [compB, compA],
+    };
+  }
   const decompositions = enumeratePlayDecompositions(cards, trumpSuit, levelRank);
   return decompositions[0] ?? null;
 }
@@ -615,6 +687,8 @@ export function sortComponentsCanonical(
   components: readonly AtomicPattern[],
 ): AtomicPattern[] {
   return [...components].sort((a, b) => {
+    const sizeDiff = b.cards.length - a.cards.length;
+    if (sizeDiff !== 0) return sizeDiff;
     const pDiff = PATTERN_PRIORITY[b.type] - PATTERN_PRIORITY[a.type];
     if (pDiff !== 0) return pDiff;
     if (b.length !== a.length) return b.length - a.length;
@@ -631,18 +705,74 @@ function getComponentStrengthTuple(comp: AtomicPattern): [number, number] {
   return [1, comp.topOrder];
 }
 
+function compareStrengthTuple(a: [number, number], b: [number, number]): number {
+  if (a[0] !== b[0]) return a[0] - b[0];
+  return a[1] - b[1];
+}
+
+function getDecisiveFamilyKey(comp: AtomicPattern): string {
+  switch (comp.type) {
+    case 'SINGLE':
+      return '1x1';
+    case 'PAIR':
+      return '2x1';
+    case 'TRACTOR':
+      return `2x${comp.length}`;
+    case 'TRIPLE':
+      return '3x1';
+    case 'TRIPLE_TRACTOR':
+    case 'F510K':
+      return `3x${comp.length}`;
+  }
+}
+
+/**
+ * Compare two matched sling component sets (candidate `a` vs current best `b`):
+ * 1. Only components with the largest single-group card count decide the winner
+ *    (e.g. 4-card tractor > 3-card triple/510K > 2-card pair > 1-card single).
+ * 2. Within the same pattern family (e.g. multiple singles or multiple pairs),
+ *    only the strongest single group is compared; ties return 0 (first-played wins).
+ * 3. If multiple incomparable families share the exact same max card count
+ *    (e.g. 6-card 3-pair tractor + 6-card 2-triple tractor), `a` beats `b` iff
+ *    `a` is >= `b` in every such family and strictly > in at least one.
+ */
 export function compareMatchedComponents(
   a: readonly AtomicPattern[],
   b: readonly AtomicPattern[],
 ): number {
-  const len = Math.min(a.length, b.length);
-  for (let i = 0; i < len; i++) {
-    const [tierA, ordA] = getComponentStrengthTuple(a[i]);
-    const [tierB, ordB] = getComponentStrengthTuple(b[i]);
-    if (tierA !== tierB) return tierA - tierB;
-    if (ordA !== ordB) return ordA - ordB;
+  if (a.length === 0 || b.length === 0) return 0;
+
+  let maxSize = 0;
+  for (const comp of a) {
+    if (comp.cards.length > maxSize) maxSize = comp.cards.length;
   }
-  return 0;
+
+  const bestByFamily = (comps: readonly AtomicPattern[]) => {
+    const map = new Map<string, [number, number]>();
+    for (const comp of comps) {
+      if (comp.cards.length !== maxSize) continue;
+      const fam = getDecisiveFamilyKey(comp);
+      const strength = getComponentStrengthTuple(comp);
+      const cur = map.get(fam);
+      if (!cur || compareStrengthTuple(strength, cur) > 0) {
+        map.set(fam, strength);
+      }
+    }
+    return map;
+  };
+
+  const mapA = bestByFamily(a);
+  const mapB = bestByFamily(b);
+
+  let hasGreater = false;
+  for (const [fam, strA] of mapA) {
+    const strB = mapB.get(fam);
+    if (!strB) continue;
+    const cmp = compareStrengthTuple(strA, strB);
+    if (cmp < 0) return -1;
+    if (cmp > 0) hasGreater = true;
+  }
+  return hasGreater ? 1 : 0;
 }
 
 export function canMatchSlingStructure(

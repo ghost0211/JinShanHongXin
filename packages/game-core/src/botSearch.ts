@@ -11,7 +11,15 @@
  * The bot never peeks at real hidden hands: worlds are drawn only from public information.
  */
 import type { Card, CardCategory, Seat } from '@jinshan/protocol';
-import { createThreeDecks, getCardCategory, getSeatTeam } from './cards.js';
+import {
+  createThreeDecks,
+  getCardCategory,
+  getCardKey,
+  getCardOrder,
+  getCardPoints,
+  getSeatTeam,
+  STANDARD_SUITS,
+} from './cards.js';
 import { applyAction } from './engine.js';
 import type { GameState } from './types.js';
 import {
@@ -19,6 +27,7 @@ import {
   chooseHeuristicPlayCards,
   getCardValueCost,
   isSameSide,
+  type PublicCardTracker,
   rankFollowCandidates,
   rankLeadCandidates,
 } from './bot.js';
@@ -28,6 +37,10 @@ export interface SearchOptions {
   worlds: number;
   /** Max candidate plays examined (heuristic best-first). */
   maxCandidates: number;
+  /** Screening worlds in Stage 1 before pruning dominated candidates (0 disables pruning). */
+  stage1Worlds: number;
+  /** Minimum finalists kept for Stage 2 full-world evaluation. */
+  stage2Keep: number;
   /** Tricks simulated beyond the current one in the midgame (0 = finish current trick only). */
   extraTricks: number;
   /** When our hand has at most this many cards, roll out to the end of the round. */
@@ -42,14 +55,16 @@ export interface SearchOptions {
 }
 
 export const DEFAULT_SEARCH_OPTIONS: SearchOptions = {
-  worlds: 12,
-  maxCandidates: 10,
+  worlds: 24,
+  maxCandidates: 14,
+  stage1Worlds: 6,
+  stage2Keep: 5,
   extraTricks: 0,
-  fullRolloutCards: 8,
+  fullRolloutCards: 11,
   alpha: 0.35,
   leadBonus: 4,
-  timeBudgetMs: 200,
-  minWorlds: 4,
+  timeBudgetMs: 220,
+  minWorlds: 6,
 };
 
 let activeOptions: SearchOptions = { ...DEFAULT_SEARCH_OPTIONS };
@@ -67,6 +82,7 @@ export function getBotSearchOptions(): SearchOptions & { enabled: boolean } {
 }
 
 const SEATS: readonly Seat[] = [0, 1, 2, 3];
+const THREE_DECKS: readonly Card[] = createThreeDecks();
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -99,7 +115,7 @@ interface World {
 function sampleWorld(
   state: GameState,
   seat: Seat,
-  voids: (s: Seat, cat: CardCategory) => boolean,
+  tracker: PublicCardTracker,
   rng: () => number,
   respectVoids: boolean,
 ): World | null {
@@ -131,7 +147,7 @@ function sampleWorld(
     }
   }
 
-  const pool = createThreeDecks().filter((c) => !known.has(c.id));
+  const pool = THREE_DECKS.filter((c) => !known.has(c.id));
   const totalCap = cap.reduce((a, b) => a + b, 0);
   if (totalCap !== pool.length) return null;
 
@@ -140,7 +156,7 @@ function sampleWorld(
     if (slot === BOTTOM) return !(state.mode === 'heixin' && card.rank === '10');
     if (slot === seat) return false;
     if (!respectVoids) return true;
-    return !voids(slot as Seat, getCardCategory(card, trumpSuit, levelRank));
+    return !tracker.isSeatVoid(slot as Seat, getCardCategory(card, trumpSuit, levelRank));
   };
 
   // Shuffle, then place the most constrained cards first
@@ -153,15 +169,62 @@ function sampleWorld(
     .map((card) => ({ card, freedom: slotsFor(card) }))
     .sort((a, b) => a.freedom - b.freedom);
 
+  // Bayesian public-info slot weight:
+  // - dealers almost never bury trumps or Aces
+  // - dealer/caller & voluntary trump leaders tend to hold more trumps; heavy non-caller trump spenders fewer
+  // - players who repeatedly slough non-point cards of a side suit are likely short/void-seeking in that suit
+  // - 4th-seat players who failed to overtake an enemy on a >=10pt trick are unlikely to hold higher cards in that category
+  const slotWeight = (card: Card, sl: number): number => {
+    const cat = getCardCategory(card, trumpSuit, levelRank);
+    if (sl === BOTTOM) {
+      if (cat === 'TRUMP') return 0.06;
+      if (card.rank === 'A') return 0.2;
+      if (getCardPoints(card) > 0) return 0.7;
+      return 1.35;
+    }
+    const targetSeat = sl as Seat;
+    let w = 1.0;
+
+    if (cat === 'TRUMP') {
+      const isTrumpRole =
+        targetSeat === state.dealer || targetSeat === state.callState.callerSeat;
+      if (isTrumpRole) {
+        w *= state.mode === 'heixin' && targetSeat === state.dealer ? 1.45 : 1.35;
+      }
+      if (tracker.voluntaryTrumpLeads(targetSeat) >= 1) {
+        w *= 1.18;
+      }
+      const spent = tracker.trumpsPlayed(targetSeat);
+      if (!isTrumpRole && spent >= 13) {
+        w *= Math.max(0.6, 1 - (spent - 12) * 0.06);
+      }
+    } else {
+      const disc = tracker.offSuitDiscardCount(targetSeat, cat);
+      if (disc >= 1) {
+        w *= Math.max(0.45, 1 - disc * 0.2);
+      }
+    }
+
+    const failedOrd = tracker.failedHighOrder(targetSeat, cat);
+    if (failedOrd !== null) {
+      const ord = getCardOrder(card, trumpSuit, levelRank);
+      if (ord > failedOrd) {
+        w *= cat === 'TRUMP' ? 0.35 : 0.18;
+      }
+    }
+
+    return w;
+  };
+
   for (const { card } of order) {
     const options = [0, 1, 2, 3, BOTTOM].filter((sl) => eligible(card, sl));
     if (options.length === 0) return null;
     let total = 0;
-    for (const sl of options) total += cap[sl];
+    for (const sl of options) total += cap[sl] * slotWeight(card, sl);
     let r = rng() * total;
     let pick = options[options.length - 1];
     for (const sl of options) {
-      r -= cap[sl];
+      r -= cap[sl] * slotWeight(card, sl);
       if (r < 0) {
         pick = sl;
         break;
@@ -184,28 +247,139 @@ function isChallengerSide(state: GameState, seat: Seat): boolean {
   return state.mode === 'heixin' ? seat !== state.dealer : getSeatTeam(seat) !== state.bankerTeam;
 }
 
+function handResourceStrength(
+  hand: readonly Card[],
+  trumpSuit: GameState['trumpSuit'],
+  levelRank: GameState['levelRank'],
+): number {
+  let strength = 0;
+  const keyCounts = new Map<string, number>();
+  const keyHigh = new Map<string, boolean>();
+  let trumpCount = 0;
+  let suitMask = 0;
+
+  for (const c of hand) {
+    const cost = getCardValueCost(c, trumpSuit, levelRank);
+    strength += cost;
+    const cat = getCardCategory(c, trumpSuit, levelRank);
+    if (cat === 'TRUMP') {
+      trumpCount += 1;
+    } else {
+      const idx = STANDARD_SUITS.indexOf(cat);
+      if (idx >= 0) suitMask |= 1 << idx;
+    }
+    const k = getCardKey(c);
+    keyCounts.set(k, (keyCounts.get(k) ?? 0) + 1);
+    if (cost >= 16) keyHigh.set(k, true);
+  }
+
+  for (const [k, cnt] of keyCounts) {
+    const high = keyHigh.get(k) === true;
+    if (cnt === 3) strength += high ? 24 : 16;
+    else if (cnt === 2) strength += high ? 10 : 6;
+  }
+
+  if (trumpCount >= 2 && hand.length >= 4) {
+    for (let i = 0; i < STANDARD_SUITS.length; i++) {
+      const s = STANDARD_SUITS[i];
+      if (s === trumpSuit) continue;
+      if ((suitMask & (1 << i)) === 0) {
+        strength += 4;
+      }
+    }
+  }
+
+  return strength;
+}
+
+function smoothRamp(val: number, lo: number, hi: number, weight: number): number {
+  if (val <= lo) return 0;
+  if (val >= hi) return weight;
+  return ((val - lo) / (hi - lo)) * weight;
+}
+
+/**
+ * Nonlinear strategic value of the challenger score, capturing exact game thresholds:
+ * - Hongxin: 5 (break shutout), 40 (2-step vs 1-step), 120 (pass line!), 180 / 240 (60-pt steps)
+ * - Heixin: exact bid threshold (300 - bidScore + 5) deciding ±3×bidScore payout
+ */
+function challengerThresholdPotential(state: GameState, challengerScore: number): number {
+  if (state.mode === 'heixin') {
+    const bid = state.bidState?.highestBid ?? 150;
+    const target = 300 - bid + 5;
+    const scale = Math.max(0.85, Math.min(1.45, bid / 150));
+    const bonus =
+      smoothRamp(challengerScore, target - 30, target, 14 * scale) +
+      (challengerScore >= target ? 38 * scale : 0);
+    // Excess points beyond the winning target carry little extra payout value in Heixin
+    const excessDiscount = Math.max(0, challengerScore - target) * 0.45;
+    return bonus - excessDiscount;
+  }
+
+  return (
+    (challengerScore >= 5 ? 6 : 0) +
+    smoothRamp(challengerScore, 20, 40, 5) +
+    (challengerScore >= 40 ? 10 : 0) +
+    smoothRamp(challengerScore, 90, 120, 12) +
+    (challengerScore >= 120 ? 24 : 0) +
+    smoothRamp(challengerScore, 155, 180, 5) +
+    (challengerScore >= 180 ? 10 : 0) +
+    smoothRamp(challengerScore, 215, 240, 5) +
+    (challengerScore >= 240 ? 10 : 0)
+  );
+}
+
 function evaluateOutcome(
   start: GameState,
   end: GameState,
   seat: Seat,
   opts: SearchOptions,
 ): number {
-  let dCh = end.challengerPoints - start.challengerPoints;
+  const startCh = start.challengerPoints;
+  const endCh = end.settlement
+    ? end.settlement.totalChallengerScore
+    : end.challengerPoints;
+  const dCh = endCh - startCh;
   const dBk = end.bankerPoints - start.bankerPoints;
-  if (end.settlement) {
-    dCh += end.settlement.totalChallengerScore - end.settlement.tableChallengerPoints;
-  }
-  let v = isChallengerSide(start, seat) ? dCh - dBk : dBk - dCh;
+
+  // Apply score-threshold potential ONLY at full round settlement (endgame rollout) or
+  // lightly weighted in late game so 1-trick midgame lookahead never suffers horizon artifacts
+  // (like burning ♥5 midgame just to cross 120 two tricks early).
+  const cardsLeft = end.phase === 'PLAYING' ? end.hands[seat].length : 0;
+  const thresholdWeight = end.settlement
+    ? 1.0
+    : cardsLeft <= 10
+      ? ((11 - cardsLeft) / 11) * 0.45
+      : 0;
+  const dThreshold =
+    thresholdWeight > 0
+      ? (challengerThresholdPotential(start, endCh) -
+          challengerThresholdPotential(start, startCh)) *
+        thresholdWeight
+      : 0;
+
+  const challenger = isChallengerSide(start, seat);
+  let v = challenger ? dCh - dBk + dThreshold : dBk - dCh - dThreshold;
 
   if (end.phase === 'PLAYING') {
     const { trumpSuit, levelRank } = end;
+    // Subtract per-card baseline (4.5) so 1v3 Heixin multi-card leads don't suffer a 3N vs 1N
+    // phantom card-count bias (cancels identically to 0 in 2v2 Hongxin where both sides have 2 seats).
     for (const s of SEATS) {
-      let strength = 0;
-      for (const c of end.hands[s]) strength += getCardValueCost(c, trumpSuit, levelRank);
+      const hand = end.hands[s];
+      const strength = handResourceStrength(hand, trumpSuit, levelRank) - 4.5 * hand.length;
       v += (isSameSide(start, seat, s) ? 1 : -1) * opts.alpha * strength;
     }
+    const iAmDealer = start.dealer === seat;
+    const knownBottomPts = iAmDealer
+      ? start.bottomCards.reduce((sum, c) => sum + getCardPoints(c), 0)
+      : 0;
+    const isEndgame = end.hands[seat].length <= 10;
+
     if (end.currentTrick.length === 0 && end.currentTurn !== null) {
-      v += (isSameSide(start, seat, end.currentTurn) ? 1 : -1) * opts.leadBonus;
+      const extraLead =
+        iAmDealer && isEndgame && knownBottomPts >= 15 ? knownBottomPts * 0.14 : 0;
+      v += (isSameSide(start, seat, end.currentTurn) ? 1 : -1) * (opts.leadBonus + extraLead);
     }
   }
   return v;
@@ -258,27 +432,60 @@ export function searchPlayCards(
   const deterministic = seatsAfterMe === 0 && horizon === 1;
   const maxWorlds = deterministic ? 1 : opts.worlds;
 
-  const tracker = buildPublicCardTracker(state, seat);
+  const tracker = buildPublicCardTracker(state, seat, true);
   const rng = mulberry32(decisionSeed(state, seat));
   const base: GameState = { ...state, events: [] };
   const totals = new Array<number>(candidates.length).fill(0);
+  const evalCounts = new Array<number>(candidates.length).fill(0);
   const ids = candidates.map((cards) => cards.map((c) => c.id));
   const t0 = Date.now();
   let worldsDone = 0;
 
+  // Two-stage successive halving: evaluate all candidates on `stage1Worlds`, then prune clearly
+  // dominated candidates so the top contenders get full `worlds` (e.g. 24) precision at ~half the cost!
+  let activeIndices: number[] = Array.from({ length: candidates.length }, (_, i) => i);
+  const useHalving =
+    !deterministic &&
+    opts.stage1Worlds > 0 &&
+    opts.stage1Worlds < maxWorlds &&
+    candidates.length > opts.stage2Keep;
+  let pruned = false;
+
   for (let w = 0; w < maxWorlds; w++) {
     if (worldsDone >= opts.minWorlds && Date.now() - t0 > opts.timeBudgetMs) break;
+
+    if (useHalving && !pruned && worldsDone >= opts.stage1Worlds) {
+      pruned = true;
+      const rankedByMean = [...activeIndices].sort(
+        (a, b) =>
+          totals[b] / Math.max(1, evalCounts[b]) -
+          totals[a] / Math.max(1, evalCounts[a]) || a - b,
+      );
+      const bestMean = totals[rankedByMean[0]] / Math.max(1, evalCounts[rankedByMean[0]]);
+      const maxFinalists = Math.min(candidates.length, Math.max(opts.stage2Keep, 7));
+      const kept: number[] = [];
+      for (let k = 0; k < rankedByMean.length; k++) {
+        const idx = rankedByMean[k];
+        const mean = totals[idx] / Math.max(1, evalCounts[idx]);
+        if (k < opts.stage2Keep || (kept.length < maxFinalists && bestMean - mean <= 5.0)) {
+          kept.push(idx);
+        }
+      }
+      activeIndices = kept;
+    }
+
     let world: World | null = null;
     for (let attempt = 0; attempt < 12 && !world; attempt++) {
-      world = sampleWorld(state, seat, tracker.isSeatVoid, rng, attempt < 8);
+      world = sampleWorld(state, seat, tracker, rng, attempt < 8);
     }
     if (!world) break;
     const worldState: GameState = { ...base, hands: world.hands, bottomCards: world.bottom };
 
     const values: number[] = [];
     let failed = false;
-    for (let i = 0; i < candidates.length; i++) {
-      const end = simulate(worldState, seat, ids[i], horizon);
+    for (let j = 0; j < activeIndices.length; j++) {
+      const idx = activeIndices[j];
+      const end = simulate(worldState, seat, ids[idx], horizon);
       if (!end) {
         failed = true;
         break;
@@ -286,15 +493,25 @@ export function searchPlayCards(
       values.push(evaluateOutcome(worldState, end, seat, opts));
     }
     if (failed) continue;
-    for (let i = 0; i < values.length; i++) totals[i] += values[i];
+    for (let j = 0; j < activeIndices.length; j++) {
+      const idx = activeIndices[j];
+      totals[idx] += values[j];
+      evalCounts[idx] += 1;
+    }
     worldsDone += 1;
   }
 
   if (worldsDone === 0) return ids[0];
-  let best = 0;
-  for (let i = 1; i < candidates.length; i++) {
+  let best = activeIndices[0];
+  let bestScore = totals[best] / Math.max(1, evalCounts[best]) - best * 1e-6;
+  for (let j = 1; j < activeIndices.length; j++) {
+    const idx = activeIndices[j];
     // tiny tie-break toward the heuristic's preference order
-    if (totals[i] - i * 1e-6 > totals[best] - best * 1e-6) best = i;
+    const sc = totals[idx] / Math.max(1, evalCounts[idx]) - idx * 1e-6;
+    if (sc > bestScore) {
+      best = idx;
+      bestScore = sc;
+    }
   }
   return ids[best];
 }

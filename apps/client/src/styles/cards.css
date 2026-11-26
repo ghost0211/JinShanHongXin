@@ -1,0 +1,486 @@
+/* ==========================================================================
+   Playing cards & card backs
+   ========================================================================== */
+
+.pcard {
+  position: relative;
+  width: var(--card-w);
+  height: var(--card-h);
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: 7px;
+  color: var(--card-black);
+  background:
+    radial-gradient(120% 70% at 20% 0%, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0) 55%),
+    linear-gradient(172deg, var(--paper) 0%, var(--paper) 55%, var(--paper-2) 100%);
+  border: 1px solid var(--paper-edge);
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.42),
+    -1px 0 2px rgba(0, 0, 0, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  transition: transform 140ms var(--ease-out), box-shadow 140ms ease, border-color 140ms ease, filter 140ms ease;
+}
+
+.pcard-inner-frame {
+  position: absolute;
+  inset: 2.5px;
+  border-radius: 5px;
+  border: 0.75px solid color-mix(in srgb, var(--paper-edge) 55%, transparent);
+  pointer-events: none;
+}
+
+.pcard-sm {
+  width: var(--card-sm-w);
+  height: var(--card-sm-h);
+  border-radius: 5px;
+}
+.pcard-sm .pcard-inner-frame {
+  inset: 2px;
+  border-radius: 3.5px;
+}
+
+.pcard-xs {
+  width: var(--card-xs-w);
+  height: var(--card-xs-h);
+  border-radius: 4px;
+}
+.pcard-xs .pcard-inner-frame {
+  display: none;
+}
+
+.pcard.is-red {
+  color: var(--card-red);
+}
+
+.pcard.is-red5-card {
+  background:
+    radial-gradient(70% 50% at 50% 50%, rgba(255, 205, 120, 0.42) 0%, rgba(255, 255, 255, 0) 70%),
+    linear-gradient(170deg, #fffaf0 0%, #fbe9cc 100%);
+  border-color: #d39b3c;
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.42),
+    inset 0 0 0 1px rgba(214, 155, 60, 0.45);
+}
+
+.pcard.is-joker-bj {
+  background: linear-gradient(165deg, #fffaf0 0%, #f9e6c6 100%);
+  color: #bf2a22;
+  border-color: #d09a3c;
+}
+
+.pcard.is-joker-sj {
+  background: linear-gradient(165deg, #f8fbff 0%, #e3ebf7 100%);
+  color: #1f3562;
+  border-color: #8aa2c8;
+}
+
+/* IMPORTANT: never raise z-index on selection so right-side cards keep stacking order */
+.pcard.is-selected {
+  transform: translateY(-18px);
+  border-color: var(--gold);
+  box-shadow:
+    0 0 0 2px var(--gold-hi),
+    0 -4px 14px color-mix(in srgb, var(--gold) 55%, transparent),
+    0 10px 18px rgba(0, 0, 0, 0.5);
+}
+
+.pcard.is-selected::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--gold-hi) 22%, transparent), transparent 45%);
+  pointer-events: none;
+  z-index: 4;
+}
+
+@media (max-height: 450px) {
+  .pcard.is-selected {
+    transform: translateY(-13px);
+  }
+}
+
+.pcard.is-hinted:not(.is-selected) {
+  border-color: var(--jade);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--jade) 80%, white),
+    0 3px 8px rgba(0, 0, 0, 0.4);
+}
+
+.pcard.is-forbidden {
+  filter: saturate(0.4) brightness(0.82);
+}
+
+.pcard.is-deal-in {
+  animation: cardDealIn 200ms var(--ease-out);
+}
+
+@keyframes cardDealIn {
+  from {
+    opacity: 0;
+    transform: translateY(-28px) rotate(-4deg) scale(0.86);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Corner indices */
+.pcard-corner {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  width: 18px;
+  line-height: 1;
+  font-weight: 800;
+  pointer-events: none;
+}
+
+.pcard-corner-tl {
+  top: 4px;
+  left: 2.5px;
+}
+
+.pcard-corner-br {
+  bottom: 4px;
+  right: 2.5px;
+  transform: rotate(180deg);
+}
+
+.pcard-rank {
+  font-family: var(--font-num);
+  font-size: 17px;
+  font-weight: 900;
+  letter-spacing: -0.5px;
+  line-height: 0.95;
+}
+
+.pcard-rank.is-ten {
+  font-size: 15px;
+  letter-spacing: -1.6px;
+  transform: scaleX(0.88);
+}
+
+.pcard-corner-suit {
+  display: block;
+  width: 12px;
+  height: 12px;
+  margin-top: 2px;
+}
+
+.pcard-sm .pcard-corner {
+  width: 14px;
+}
+.pcard-sm .pcard-corner-tl {
+  top: 3px;
+  left: 2px;
+}
+.pcard-sm .pcard-corner-br {
+  bottom: 3px;
+  right: 2px;
+}
+.pcard-sm .pcard-rank {
+  font-size: 13px;
+}
+.pcard-sm .pcard-rank.is-ten {
+  font-size: 11.5px;
+  letter-spacing: -1.4px;
+}
+.pcard-sm .pcard-corner-suit {
+  width: 9.5px;
+  height: 9.5px;
+  margin-top: 1px;
+}
+
+.pcard-xs .pcard-corner {
+  width: 12px;
+}
+.pcard-xs .pcard-corner-tl {
+  top: 2px;
+  left: 2px;
+}
+.pcard-xs .pcard-rank {
+  font-size: 11.5px;
+}
+.pcard-xs .pcard-rank.is-ten {
+  font-size: 10px;
+  letter-spacing: -1.3px;
+}
+.pcard-xs .pcard-corner-suit {
+  width: 8.5px;
+  height: 8.5px;
+  margin-top: 1px;
+}
+
+/* Vertical J-O-K-E-R index */
+.pcard-corner.is-joker-corner {
+  width: 14px;
+  gap: 0.5px;
+}
+.pcard-joker-crown {
+  font-size: 8px;
+  line-height: 1;
+  margin-bottom: 1px;
+}
+.pcard-joker-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-family: var(--font-num);
+  font-size: 7.5px;
+  font-weight: 900;
+  line-height: 1.04;
+}
+.pcard-sm .pcard-corner.is-joker-corner {
+  width: 11px;
+}
+.pcard-sm .pcard-joker-crown {
+  font-size: 6.5px;
+}
+.pcard-sm .pcard-joker-stack {
+  font-size: 6px;
+  line-height: 1;
+}
+.pcard-xs .pcard-joker-crown {
+  font-size: 6px;
+}
+.pcard-xs .pcard-joker-stack {
+  font-size: 5px;
+  line-height: 0.95;
+}
+
+/* Face art */
+.pcard-face {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.pcard-art-svg {
+  display: block;
+  width: 78%;
+  height: 92%;
+}
+.pcard-art-svg.is-compact {
+  width: 82%;
+  height: 90%;
+}
+
+.pcard-ace-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pcard-ace-filigree {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.pcard-ace-glyph {
+  width: 34px;
+  height: 34px;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.14));
+}
+.pcard-sm .pcard-ace-glyph {
+  width: 22px;
+  height: 22px;
+}
+.pcard-xs .pcard-ace-glyph {
+  width: 15px;
+  height: 15px;
+}
+
+.pcard-mini-center {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 0 0 6px;
+}
+.pcard-mini-suit {
+  width: 21px;
+  height: 21px;
+  opacity: 0.92;
+}
+.pcard-xs .pcard-mini-suit {
+  width: 14px;
+  height: 14px;
+}
+
+/* 2–10 pip layout */
+.pcard-pips {
+  position: absolute;
+  top: 9%;
+  bottom: 9%;
+  left: 21%;
+  right: 21%;
+}
+.pcard-pip {
+  position: absolute;
+  width: 13px;
+  height: 13px;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pcard-pips.is-dense .pcard-pip {
+  width: 11px;
+  height: 11px;
+}
+@media (max-height: 450px) {
+  .pcard-pip {
+    width: 10px;
+    height: 10px;
+  }
+  .pcard-pips.is-dense .pcard-pip {
+    width: 8.5px;
+    height: 8.5px;
+  }
+}
+.pcard-pip.is-flipped {
+  transform: translate(-50%, -50%) rotate(180deg);
+}
+.pcard-pip.is-red5-core {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(250, 196, 70, 0.5) 0%, rgba(250, 196, 70, 0) 72%);
+  filter: drop-shadow(0 0 2px rgba(200, 110, 10, 0.6));
+}
+.pcard-pip-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Point marker (5 / 10 / K) — sits in the always-visible left strip */
+.pcard-pts-pip {
+  position: absolute;
+  z-index: 3;
+  top: 36px;
+  left: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #ffe58a 0%, #d18a12 100%);
+  box-shadow: 0 0 0 1px rgba(110, 58, 0, 0.5);
+  pointer-events: none;
+}
+.pcard-sm .pcard-pts-pip {
+  top: 27px;
+  left: 6px;
+  width: 4.5px;
+  height: 4.5px;
+}
+.pcard-xs .pcard-pts-pip {
+  top: 22px;
+  left: 5px;
+  width: 4px;
+  height: 4px;
+}
+@media (max-height: 450px) {
+  .pcard-md .pcard-pts-pip,
+  .pcard:not(.pcard-sm):not(.pcard-xs) .pcard-pts-pip {
+    top: 31px;
+    left: 6.5px;
+    width: 5px;
+    height: 5px;
+  }
+}
+
+/* Role badge – vertical seal in the left strip, visible when cards overlap */
+.pcard-badge {
+  position: absolute;
+  z-index: 3;
+  top: 46px;
+  left: 2px;
+  padding: 2px 1px;
+  border-radius: 2px;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  font-family: var(--font-serif);
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: -0.5px;
+  color: #fff2d6;
+  background: #2f5d4f;
+  box-shadow: inset 0 0 0 1px rgba(255, 240, 210, 0.35), 0 1px 2px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+.pcard-badge.badge-red5 {
+  background: #b8261c;
+  color: #ffe9a8;
+}
+.pcard-badge.badge-ban {
+  background: #4b5262;
+  color: #f2f4f8;
+}
+@media (min-width: 920px) and (min-height: 540px) {
+  .pcard-badge {
+    top: 50px;
+    font-size: 10px;
+    left: 3px;
+  }
+}
+@media (max-height: 450px) {
+  .pcard-badge {
+    top: 39px;
+    font-size: 8px;
+    left: 1.5px;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Card backs (opponent fans, bottom deck)
+   -------------------------------------------------------------------------- */
+.card-back-mini {
+  position: absolute;
+  border-radius: 4px;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 50%, var(--back-ink) 0 14%, transparent 15%),
+    repeating-linear-gradient(45deg, transparent 0 3px, color-mix(in srgb, var(--back-ink) 45%, transparent) 3px 4px),
+    repeating-linear-gradient(-45deg, transparent 0 3px, color-mix(in srgb, var(--back-ink) 45%, transparent) 3px 4px),
+    linear-gradient(150deg, var(--back-1) 0%, var(--back-2) 100%);
+  border: 1.5px solid var(--paper);
+  box-shadow:
+    inset 0 0 0 1px var(--back-frame),
+    0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.card-back-mini.is-rotated {
+  background:
+    radial-gradient(circle at 50% 50%, var(--back-ink) 0 14%, transparent 15%),
+    repeating-linear-gradient(45deg, transparent 0 3px, color-mix(in srgb, var(--back-ink) 45%, transparent) 3px 4px),
+    repeating-linear-gradient(-45deg, transparent 0 3px, color-mix(in srgb, var(--back-ink) 45%, transparent) 3px 4px),
+    linear-gradient(60deg, var(--back-1) 0%, var(--back-2) 100%);
+}
+
+/* Large decorative back (splash / bottom deck) */
+.card-back-full {
+  position: relative;
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 50% 50%, transparent 0 17%, var(--back-ink) 17.5% 19%, transparent 19.5%),
+    radial-gradient(circle at 50% 50%, var(--back-ink) 0 6%, transparent 6.5%),
+    repeating-linear-gradient(45deg, transparent 0 5px, color-mix(in srgb, var(--back-ink) 40%, transparent) 5px 6px),
+    repeating-linear-gradient(-45deg, transparent 0 5px, color-mix(in srgb, var(--back-ink) 40%, transparent) 5px 6px),
+    linear-gradient(150deg, var(--back-1), var(--back-2));
+  border: 3px solid var(--paper);
+  box-shadow: inset 0 0 0 1.5px var(--back-frame), inset 0 0 0 5px transparent, 0 6px 16px rgba(0, 0, 0, 0.5);
+}

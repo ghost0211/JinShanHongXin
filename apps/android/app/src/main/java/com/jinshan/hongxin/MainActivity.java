@@ -25,10 +25,14 @@ import android.widget.Toast;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -40,6 +44,8 @@ public class MainActivity extends Activity {
     private WebView webView;
     private long lastBackPressMs = 0L;
     private OnBackInvokedCallback backCallback;
+    private LanDiscoveryManager lanDiscovery;
+    private LanHostServer lanHostServer;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -53,6 +59,9 @@ public class MainActivity extends Activity {
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             getWindow().setAttributes(lp);
         }
+
+        lanDiscovery = new LanDiscoveryManager(this);
+        lanHostServer = new LanHostServer(this, roomsJson -> lanDiscovery.updateRoomsSnapshot(roomsJson));
 
         webView = new WebView(this);
         webView.setBackgroundColor(0xFF061D16);
@@ -70,7 +79,7 @@ public class MainActivity extends Activity {
         settings.setTextZoom(100);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
 
-        webView.addJavascriptInterface(new AndroidBridge(this), "JinshanAndroid");
+        webView.addJavascriptInterface(new AndroidBridge(this, lanHostServer, lanDiscovery), "JinshanAndroid");
         webView.setWebChromeClient(new WebChromeClient());
         webView.setWebViewClient(new LocalAssetWebViewClient());
 
@@ -142,6 +151,15 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && backCallback != null) {
             getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);
         }
+        if (lanHostServer != null) {
+            lanHostServer.stop();
+            lanHostServer = null;
+        }
+        if (lanDiscovery != null) {
+            lanDiscovery.dispose();
+            lanDiscovery = null;
+        }
+        LanForegroundService.stop(this);
         if (webView != null) {
             webView.removeJavascriptInterface("JinshanAndroid");
             webView.destroy();
@@ -245,20 +263,111 @@ public class MainActivity extends Activity {
         if (lower.endsWith(".json")) return "application/json";
         if (lower.endsWith(".webmanifest")) return "application/manifest+json";
         if (lower.endsWith(".png")) return "image/png";
+        if (lower.endsWith(".webp")) return "image/webp";
         if (lower.endsWith(".ico")) return "image/x-icon";
         return "application/octet-stream";
     }
 
     private static final class AndroidBridge {
         private final Context context;
+        private final LanHostServer hostServer;
+        private final LanDiscoveryManager discovery;
 
-        AndroidBridge(Context context) {
+        AndroidBridge(Context context, LanHostServer hostServer, LanDiscoveryManager discovery) {
             this.context = context.getApplicationContext();
+            this.hostServer = hostServer;
+            this.discovery = discovery;
         }
 
         @JavascriptInterface
         public boolean isAndroidApk() {
             return true;
+        }
+
+        @JavascriptInterface
+        public boolean isLanSupported() {
+            return true;
+        }
+
+        @JavascriptInterface
+        public String getLocalIpsJson() {
+            JSONArray arr = new JSONArray();
+            for (String ip : discovery.getLocalIpv4Addresses()) {
+                arr.put(ip);
+            }
+            return arr.toString();
+        }
+
+        @JavascriptInterface
+        public String startLanHost(int preferredPort, String hostName) {
+            JSONObject res = new JSONObject();
+            try {
+                int port = hostServer.start(preferredPort > 0 ? preferredPort : 3001);
+                discovery.startBroadcast(port, hostName);
+                List<String> ips = discovery.getLocalIpv4Addresses();
+                String primaryIp = ips.isEmpty() ? "" : ips.get(0);
+                String summary = primaryIp.isEmpty()
+                    ? "监听端口 " + port + " · 等待同局域网牌友加入"
+                    : "地址 " + primaryIp + ":" + port + " · 保持前台避免休眠";
+                LanForegroundService.start(context, summary);
+
+                res.put("ok", true);
+                res.put("port", port);
+                res.put("hostToken", hostServer.getHostToken());
+                res.put("primaryIp", primaryIp);
+                JSONArray ipsArr = new JSONArray();
+                for (String ip : ips) ipsArr.put(ip);
+                res.put("ips", ipsArr);
+            } catch (Throwable t) {
+                try {
+                    res.put("ok", false);
+                    res.put("error", t.getMessage() != null ? t.getMessage() : "启动局域网房主失败");
+                } catch (Throwable ignored) {
+                    // ignore
+                }
+            }
+            return res.toString();
+        }
+
+        @JavascriptInterface
+        public void stopLanHost() {
+            discovery.stopBroadcast();
+            hostServer.stop();
+            LanForegroundService.stop(context);
+        }
+
+        @JavascriptInterface
+        public String getLanHostStatusJson() {
+            JSONObject res = new JSONObject();
+            try {
+                List<String> ips = discovery.getLocalIpv4Addresses();
+                res.put("running", hostServer.isRunning());
+                res.put("port", hostServer.getPort());
+                res.put("hostToken", hostServer.getHostToken());
+                res.put("primaryIp", ips.isEmpty() ? "" : ips.get(0));
+                res.put("guestCount", hostServer.getGuestCount());
+                JSONArray ipsArr = new JSONArray();
+                for (String ip : ips) ipsArr.put(ip);
+                res.put("ips", ipsArr);
+            } catch (Throwable ignored) {
+                // ignore
+            }
+            return res.toString();
+        }
+
+        @JavascriptInterface
+        public boolean startLanDiscovery() {
+            return discovery.startDiscovery();
+        }
+
+        @JavascriptInterface
+        public void stopLanDiscovery() {
+            discovery.stopDiscovery();
+        }
+
+        @JavascriptInterface
+        public String getDiscoveredLanHostsJson() {
+            return discovery.getDiscoveredHostsJson();
         }
 
         @JavascriptInterface

@@ -1573,7 +1573,9 @@ export function getPlayerView(
   debugOpenHands = false,
 ): PlayerView {
   const showBottom =
-    state.phase === 'ROUND_OVER' || state.phase === 'MATCH_OVER';
+    state.phase === 'ROUND_OVER' ||
+    state.phase === 'MATCH_OVER' ||
+    (state.phase === 'PLAYING' && state.dealer === seat);
 
   const debugView: DebugView | undefined = debugOpenHands
     ? {
