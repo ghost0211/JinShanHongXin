@@ -24,6 +24,17 @@ export const TABLE_SKIN_OPTIONS = [
 
 export type TableSkin = (typeof TABLE_SKIN_OPTIONS)[number]['id'];
 export type HandLayoutMode = 'double' | 'single';
+export type RightClickMode = 'clear' | 'play';
+
+export const MIN_CARD_SCALE = 0.85;
+export const MAX_CARD_SCALE = 1.3;
+export const CARD_SCALE_STEP = 0.05;
+
+export function clampCardScale(value: unknown, fallback = 1.0): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  const clamped = Math.min(MAX_CARD_SCALE, Math.max(MIN_CARD_SCALE, value));
+  return Math.round(clamped * 20) / 20;
+}
 export type BotDifficulty = 'low' | 'medium' | 'high';
 export type DealSpeed = 1 | 2 | 3 | 4 | 5;
 export type BgmTrackId = 'jiangnan' | 'haipai' | 'guqin';
@@ -94,6 +105,11 @@ export interface AppSettings {
   dealSpeed: DealSpeed;
   allyBotDifficulty: BotDifficulty;
   opponentBotDifficulty: BotDifficulty;
+  rightClickMode: RightClickMode;
+  doubleClickPlay: boolean;
+  cardScale: number; // 0.85..1.30
+  flashTaskbarOnTurn: boolean;
+  confirmExitInGame: boolean;
 }
 
 const SETTINGS_KEY = 'jinshan.settings.v1';
@@ -117,6 +133,11 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   dealSpeed: 5,
   allyBotDifficulty: 'high',
   opponentBotDifficulty: 'high',
+  rightClickMode: 'clear',
+  doubleClickPlay: true,
+  cardScale: 1.0,
+  flashTaskbarOnTurn: true,
+  confirmExitInGame: true,
 };
 
 export function isTableSkin(value: unknown): value is TableSkin {
@@ -179,6 +200,19 @@ export function loadAppSettings(): AppSettings {
       }
       if (isBotDifficulty(parsed.opponentBotDifficulty)) {
         base.opponentBotDifficulty = parsed.opponentBotDifficulty;
+      }
+      if (parsed.rightClickMode === 'clear' || parsed.rightClickMode === 'play') {
+        base.rightClickMode = parsed.rightClickMode;
+      }
+      if (typeof parsed.doubleClickPlay === 'boolean') {
+        base.doubleClickPlay = parsed.doubleClickPlay;
+      }
+      base.cardScale = clampCardScale(parsed.cardScale, base.cardScale);
+      if (typeof parsed.flashTaskbarOnTurn === 'boolean') {
+        base.flashTaskbarOnTurn = parsed.flashTaskbarOnTurn;
+      }
+      if (typeof parsed.confirmExitInGame === 'boolean') {
+        base.confirmExitInGame = parsed.confirmExitInGame;
       }
     }
   } catch {

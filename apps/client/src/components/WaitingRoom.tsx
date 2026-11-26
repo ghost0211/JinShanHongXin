@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type {
   BotDifficulty,
   DealSpeed,
@@ -80,6 +80,61 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
 
   const [selectedIp, setSelectedIp] = useState<string>('');
   const [showSetupModal, setShowSetupModal] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (showSetupModal) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setShowSetupModal(false);
+        }
+        return;
+      }
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.key === 'c' || e.key === 'C') {
+        e.preventDefault();
+        onCopyRoomId(room.roomId);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === ' ') {
+        if (target && (target.tagName === 'BUTTON' || target.tagName === 'A')) {
+          return;
+        }
+        if (isHost) {
+          if (allOccupied && allOnline && allReady) {
+            e.preventDefault();
+            onStartGame();
+          }
+        } else {
+          e.preventDefault();
+          onSetReady(!me.ready);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    showSetupModal,
+    isHost,
+    allOccupied,
+    allOnline,
+    allReady,
+    me.ready,
+    room.roomId,
+    onCopyRoomId,
+    onStartGame,
+    onSetReady,
+  ]);
 
   const dealSpeedLabel =
     DEAL_SPEED_OPTIONS.find((d) => d.id === room.dealSpeed)?.label ?? '极速';
@@ -249,9 +304,11 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
               type="button"
               className="btn btn-xs btn-ghost"
               onClick={() => onCopyRoomId(room.roomId)}
+              title="复制房号 (C)"
             >
               <Icon name="copy" />
               复制房号
+              <kbd className="btn-kbd">C</kbd>
             </button>
           )}
           <span className={`pill ${isHongxin ? 'pill-red' : 'pill-gold'}`}>
@@ -342,6 +399,7 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
                   onClick={() => onSetReady(!me.ready)}
                 >
                   {me.ready ? '取消准备' : '准备就绪'}
+                  <kbd className="btn-kbd">Enter</kbd>
                 </button>
               )}
 
@@ -362,6 +420,7 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
                     <>
                       <Icon name="play" />
                       开始对局
+                      <kbd className="btn-kbd">Enter</kbd>
                     </>
                   )}
                 </button>

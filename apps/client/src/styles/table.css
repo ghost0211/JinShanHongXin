@@ -1584,11 +1584,29 @@
   overflow: visible;
   pointer-events: none;
 }
-.hand-row > .pcard {
+.hand-row > .pcard,
+.hand-row > .hand-card-slot {
+  position: relative;
+  flex-shrink: 0;
   pointer-events: auto;
 }
-.hand-row > .pcard:not(:first-child) {
+.hand-row > .pcard:not(:first-child),
+.hand-row > .hand-card-slot:not(:first-child) {
   margin-left: var(--hand-overlap, -30px);
+}
+
+.hand-card-slot.is-in-drag-span > .pcard {
+  box-shadow:
+    0 0 0 2px var(--gold-hi),
+    0 8px 16px rgba(0, 0, 0, 0.48);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .hand-row > .hand-card-slot:hover > .pcard:not(.is-selected),
+  .hand-row > .pcard:not(.is-selected):hover {
+    transform: translateY(-6px);
+    border-color: var(--gold);
+  }
 }
 
 /* Second (non-trump) row tucks over the lower part of the trump row; the

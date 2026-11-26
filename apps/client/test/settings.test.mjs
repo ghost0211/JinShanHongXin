@@ -33,6 +33,11 @@ test('settings load defaults, migrate legacy skin/mute keys, and clamp volume cl
     assert.equal(migrated.bgmEnabled, true);
     assert.equal(migrated.bgmTrack, 'jiangnan');
     assert.equal(migrated.bgmVolume, 45);
+    assert.equal(migrated.rightClickMode, 'clear');
+    assert.equal(migrated.doubleClickPlay, true);
+    assert.equal(migrated.cardScale, 1.0);
+    assert.equal(migrated.flashTaskbarOnTurn, true);
+    assert.equal(migrated.confirmExitInGame, true);
 
     saveAppSettings({
       ...migrated,
@@ -47,6 +52,11 @@ test('settings load defaults, migrate legacy skin/mute keys, and clamp volume cl
       dealSpeed: 2,
       allyBotDifficulty: 'low',
       opponentBotDifficulty: 'medium',
+      rightClickMode: 'play',
+      doubleClickPlay: false,
+      cardScale: 1.15,
+      flashTaskbarOnTurn: false,
+      confirmExitInGame: false,
     });
     const dumped = storage.dump();
     assert.equal(dumped['jinshan.tableSkin'], 'night-blue');
@@ -64,6 +74,11 @@ test('settings load defaults, migrate legacy skin/mute keys, and clamp volume cl
     assert.equal(reloaded.dealSpeed, 2);
     assert.equal(reloaded.allyBotDifficulty, 'low');
     assert.equal(reloaded.opponentBotDifficulty, 'medium');
+    assert.equal(reloaded.rightClickMode, 'play');
+    assert.equal(reloaded.doubleClickPlay, false);
+    assert.equal(reloaded.cardScale, 1.15);
+    assert.equal(reloaded.flashTaskbarOnTurn, false);
+    assert.equal(reloaded.confirmExitInGame, false);
 
     // Corrupt / out-of-range values fall back safely
     storage.setItem(
@@ -77,6 +92,8 @@ test('settings load defaults, migrate legacy skin/mute keys, and clamp volume cl
         dealSpeed: 9,
         allyBotDifficulty: 'godmode',
         opponentBotDifficulty: 42,
+        rightClickMode: 'invalid',
+        cardScale: 9.5,
       }),
     );
     const clamped = loadAppSettings();
@@ -88,6 +105,8 @@ test('settings load defaults, migrate legacy skin/mute keys, and clamp volume cl
     assert.equal(clamped.dealSpeed, 5);
     assert.equal(clamped.allyBotDifficulty, 'high');
     assert.equal(clamped.opponentBotDifficulty, 'high');
+    assert.equal(clamped.rightClickMode, 'clear');
+    assert.equal(clamped.cardScale, 1.3);
     // Legacy 'classic' skin falls back cleanly to new default 'ink'
     storage.removeItem('jinshan.settings.v1');
     storage.setItem('jinshan.tableSkin', 'classic');

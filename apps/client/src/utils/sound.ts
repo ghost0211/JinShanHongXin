@@ -225,6 +225,11 @@ class SoundController {
     this.tone(240, 0.11, 'sawtooth', 0.06, 0);
     this.tone(185, 0.14, 'sawtooth', 0.06, 0.09);
   }
+
+  playTurnAlert(): void {
+    this.tone(660, 0.08, 'sine', 0.07, 0);
+    this.tone(880, 0.11, 'sine', 0.07, 0.08);
+  }
 }
 
 export const soundFX = new SoundController();

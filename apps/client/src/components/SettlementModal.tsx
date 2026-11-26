@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { getCardPoints, getSeatTeam, LEVEL_SEQUENCE } from '@jinshan/game-core';
 import type { PlayerView, Seat } from '@jinshan/protocol';
 import { PlayingCard } from './PlayingCard.js';
@@ -36,6 +36,30 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
   onLeaveRoom,
 }) => {
   const s = view.settlement;
+
+  useEffect(() => {
+    if (!s || s.matchWinner) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'BUTTON' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        onNextRound();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [s, onNextRound]);
+
   if (!s) return null;
 
   const isHongxin = s.mode === 'hongxin';
@@ -234,6 +258,7 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
           {!s.matchWinner && (
             <button type="button" className="btn btn-gold btn-lg settle-next" onClick={onNextRound}>
               继续下一局
+              <kbd className="btn-kbd">Enter</kbd>
               <Icon name="chevron-right" />
             </button>
           )}
