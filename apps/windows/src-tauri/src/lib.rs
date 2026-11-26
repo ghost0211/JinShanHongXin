@@ -1,4 +1,9 @@
+mod lan_discovery;
+mod lan_server;
+
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::{
@@ -8,6 +13,9 @@ use tauri::{
     WindowEvent,
 };
 use tauri_plugin_window_state::StateFlags;
+
+use crate::lan_discovery::{DiscoveredLanHost, LanDiscoveryManager};
+use crate::lan_server::{AssetLoader, LanHostServer};
 
 pub const DEFAULT_WINDOW_WIDTH: f64 = 1280.0;
 pub const DEFAULT_WINDOW_HEIGHT: f64 = 800.0;
@@ -28,6 +36,30 @@ impl Default for MatchGuardState {
     }
 }
 
+pub struct LanState {
+    pub server: LanHostServer,
+    pub discovery: Arc<LanDiscoveryManager>,
+}
+
+impl LanState {
+    fn new(asset_loader: AssetLoader) -> Self {
+        let discovery = Arc::new(LanDiscoveryManager::default());
+        let disc_for_cb = Arc::clone(&discovery);
+        let server = LanHostServer::new(
+            asset_loader,
+            Some(Arc::new(move |rooms_json| {
+                disc_for_cb.update_rooms_snapshot(rooms_json);
+            })),
+        );
+        Self { server, discovery }
+    }
+
+    pub fn shutdown(&self) {
+        self.discovery.dispose();
+        self.server.stop();
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopInfo {
@@ -35,6 +67,29 @@ pub struct DesktopInfo {
     pub arch: String,
     pub version: String,
     pub app_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanHostStartResult {
+    pub ok: bool,
+    pub port: u16,
+    pub host_token: String,
+    pub ips: Vec<String>,
+    pub primary_ip: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanHostStatus {
+    pub running: bool,
+    pub port: u16,
+    pub host_token: String,
+    pub ips: Vec<String>,
+    pub primary_ip: String,
+    pub guest_count: usize,
 }
 
 pub fn build_desktop_info(version: &str) -> DesktopInfo {
@@ -52,6 +107,18 @@ fn restore_and_focus_main_window<R: tauri::Runtime>(app: &AppHandle<R>) {
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+fn make_tauri_asset_loader(app_handle: AppHandle) -> AssetLoader {
+    let dev_dist_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../client/dist");
+    Arc::new(move |rel_path: &str| {
+        if let Some(asset) = app_handle.asset_resolver().get(rel_path.to_string()) {
+            return Some(asset.bytes.to_vec());
+        }
+        // Dev fallback when `frontendDist` is served from Vite instead of embedded assets
+        let disk_path = dev_dist_dir.join(rel_path);
+        std::fs::read(disk_path).ok()
+    })
 }
 
 #[tauri::command]
@@ -119,9 +186,85 @@ fn set_active_match_guard(state: State<'_, MatchGuardState>, active: bool) {
 }
 
 #[tauri::command]
-fn force_close_app(app: AppHandle, state: State<'_, MatchGuardState>) {
+fn force_close_app(
+    app: AppHandle,
+    state: State<'_, MatchGuardState>,
+    lan: State<'_, LanState>,
+) {
     state.in_active_match.store(false, Ordering::Relaxed);
+    lan.shutdown();
     app.exit(0);
+}
+
+#[tauri::command]
+fn lan_get_local_ips(lan: State<'_, LanState>) -> Vec<String> {
+    lan.discovery.get_local_ipv4_addresses()
+}
+
+#[tauri::command]
+fn lan_start_host(
+    lan: State<'_, LanState>,
+    preferred_port: u16,
+    host_name: String,
+) -> LanHostStartResult {
+    match lan.server.start(preferred_port) {
+        Ok(port) => {
+            lan.discovery.start_broadcast(port, &host_name);
+            let ips = lan.discovery.get_local_ipv4_addresses();
+            let primary_ip = ips.first().cloned().unwrap_or_default();
+            LanHostStartResult {
+                ok: true,
+                port,
+                host_token: lan.server.host_token(),
+                ips,
+                primary_ip,
+                error: None,
+            }
+        }
+        Err(err) => LanHostStartResult {
+            ok: false,
+            port: 0,
+            host_token: String::new(),
+            ips: Vec::new(),
+            primary_ip: String::new(),
+            error: Some(format!("启动局域网服务失败：{err}")),
+        },
+    }
+}
+
+#[tauri::command]
+fn lan_stop_host(lan: State<'_, LanState>) {
+    lan.discovery.stop_broadcast();
+    lan.server.stop();
+}
+
+#[tauri::command]
+fn lan_get_host_status(lan: State<'_, LanState>) -> LanHostStatus {
+    let ips = lan.discovery.get_local_ipv4_addresses();
+    let primary_ip = ips.first().cloned().unwrap_or_default();
+    LanHostStatus {
+        running: lan.server.is_running(),
+        port: lan.server.port(),
+        host_token: lan.server.host_token(),
+        ips,
+        primary_ip,
+        guest_count: lan.server.guest_count(),
+    }
+}
+
+#[tauri::command]
+fn lan_start_discovery(lan: State<'_, LanState>) -> bool {
+    lan.discovery.start_discovery()
+}
+
+#[tauri::command]
+fn lan_stop_discovery(lan: State<'_, LanState>) {
+    lan.discovery.stop_discovery();
+}
+
+#[tauri::command]
+fn lan_get_discovered_hosts(lan: State<'_, LanState>) -> Vec<DiscoveredLanHost> {
+    lan.discovery.get_discovered_hosts()
 }
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -164,6 +307,9 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             "quit" => {
                 if let Some(guard) = app.try_state::<MatchGuardState>() {
                     guard.in_active_match.store(false, Ordering::Relaxed);
+                }
+                if let Some(lan) = app.try_state::<LanState>() {
+                    lan.shutdown();
                 }
                 app.exit(0);
             }
@@ -215,23 +361,42 @@ pub fn run() {
             clear_user_attention,
             set_active_match_guard,
             force_close_app,
+            lan_get_local_ips,
+            lan_start_host,
+            lan_stop_host,
+            lan_get_host_status,
+            lan_start_discovery,
+            lan_stop_discovery,
+            lan_get_discovered_hosts,
         ])
         .on_window_event(|window, event| {
             if window.label() != "main" {
                 return;
             }
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                let guard = window.state::<MatchGuardState>();
-                if guard.in_active_match.load(Ordering::Relaxed) {
-                    api.prevent_close();
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                    let _ = window.emit(CLOSE_REQUESTED_EVENT, ());
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    let guard = window.state::<MatchGuardState>();
+                    if guard.in_active_match.load(Ordering::Relaxed) {
+                        api.prevent_close();
+                        let _ = window.unminimize();
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                        let _ = window.emit(CLOSE_REQUESTED_EVENT, ());
+                    } else if let Some(lan) = window.try_state::<LanState>() {
+                        lan.shutdown();
+                    }
                 }
+                WindowEvent::Destroyed => {
+                    if let Some(lan) = window.try_state::<LanState>() {
+                        lan.shutdown();
+                    }
+                }
+                _ => {}
             }
         })
         .setup(|app| {
+            let asset_loader = make_tauri_asset_loader(app.handle().clone());
+            app.manage(LanState::new(asset_loader));
             setup_tray(app)?;
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();

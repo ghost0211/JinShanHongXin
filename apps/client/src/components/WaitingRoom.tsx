@@ -518,7 +518,7 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
             )}
 
             <p className="lan-invite-tip">
-              安卓好友在「局域网」页自动发现入座；iPhone / 电脑扫码免装包进房；请保持房主在前台。
+              安卓 / Windows 好友在「局域网」页自动发现入座；iPhone / 浏览器扫码免装包进房；请保持房主运行。
             </p>
           </aside>
         )}

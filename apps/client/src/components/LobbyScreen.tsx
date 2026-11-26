@@ -9,7 +9,6 @@ import type {
 import type { DiscoveredLanHost } from '../net/androidLan.js';
 import {
   isRunningInNativeShell,
-  isRunningInTauriDesktop,
   type ConnectionStatus,
 } from '../net/wsClient.js';
 import type {
@@ -724,9 +723,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         <div>
                           <strong>浏览器端可作为客机加入</strong>
                           <span>
-                            {isRunningInTauriDesktop()
-                              ? 'Windows 客户端可直接输入房主 IP 加入局域网房（内置开房当前支持安卓 APK）。'
-                              : '仅安卓 APK 可当房主；请输入房主屏幕上显示的 IP，或直接扫码加入。'}
+                            仅安卓 APK 与 Windows 客户端可当房主；请输入房主屏幕上显示的 IP，或直接扫码加入。
                           </span>
                         </div>
                       </div>
@@ -1005,9 +1002,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                           : '扫码或输入房主 IP 即可加入'}
                       </strong>
                       <ol className="lan-guide-steps">
-                        <li>所有手机连同一 Wi-Fi，或由房主开热点</li>
-                        <li>房主点「创建局域网房间」，安卓端此处自动出现</li>
-                        <li>iPhone / 电脑扫房主二维码，无需安装</li>
+                        <li>所有设备连同一 Wi-Fi，或由房主开热点</li>
+                        <li>房主点「创建局域网房间」，安卓 / Windows 客户端此处自动出现</li>
+                        <li>iPhone / 浏览器扫房主二维码，无需安装</li>
                       </ol>
                     </div>
                   ) : (
