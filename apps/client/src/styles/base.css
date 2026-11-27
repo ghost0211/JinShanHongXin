@@ -200,6 +200,33 @@ code {
   flex-shrink: 0;
 }
 
+.btn-kbd {
+  display: none;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: inherit;
+  opacity: 0.84;
+}
+
+.btn-gold .btn-kbd {
+  background: rgba(42, 29, 10, 0.14);
+  border-color: rgba(42, 29, 10, 0.28);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn-kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
 /* --------------------------------------------------------------------------
    Tags (legacy class name: pill)
    -------------------------------------------------------------------------- */

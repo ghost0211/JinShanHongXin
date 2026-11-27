@@ -27,7 +27,9 @@ export type IconName =
   | 'plus'
   | 'check'
   | 'layers'
-  | 'scroll';
+  | 'scroll'
+  | 'maximize'
+  | 'minimize';
 
 const PATHS: Record<IconName, React.ReactNode> = {
   history: (
@@ -151,6 +153,8 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <path d="M11 9h5M11 12.5h5" />
     </>
   ),
+  maximize: <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />,
+  minimize: <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" />,
 };
 
 interface IconProps {

@@ -10,6 +10,13 @@ import {
 import {
   buildLanHostBridgeWsUrl,
   buildLanJoinUrl,
+  getNativeLanHostStatusAsync,
+  isNativeLanHostSupported,
+  pollDiscoveredLanHostsAsync,
+  startNativeLanDiscoveryAsync,
+  startNativeLanHostAsync,
+  stopNativeLanDiscoveryAsync,
+  stopNativeLanHostAsync,
 } from '../src/net/androidLan.ts';
 
 function makeStorage(seed = {}) {
@@ -152,4 +159,99 @@ test('LAN bridge URL helper encodes host token properly', () => {
     'ws://127.0.0.1:3001/host?token=abc123',
   );
   assert.equal(buildLanJoinUrl('192.168.1.8', 3002), 'http://192.168.1.8:3002/?lan=1');
+});
+
+test('Tauri desktop LAN bridge exposes native host and UDP discovery parity', async () => {
+  const prevWindow = globalThis.window;
+  const calls = [];
+  try {
+    globalThis.window = {
+      __TAURI__: {
+        core: {
+          invoke: async (cmd, args) => {
+            calls.push([cmd, args]);
+            switch (cmd) {
+              case 'lan_start_host':
+                return {
+                  ok: true,
+                  port: 3001,
+                  hostToken: 'deadbeef01234567',
+                  ips: ['192.168.1.99'],
+                  primaryIp: '192.168.1.99',
+                };
+              case 'lan_get_host_status':
+                return {
+                  running: true,
+                  port: 3001,
+                  hostToken: 'deadbeef01234567',
+                  ips: ['192.168.1.99'],
+                  primaryIp: '192.168.1.99',
+                  guestCount: 2,
+                };
+              case 'lan_start_discovery':
+                return true;
+              case 'lan_get_discovered_hosts':
+                return [
+                  {
+                    ip: '192.168.1.42',
+                    port: 3001,
+                    url: 'http://192.168.1.42:3001',
+                    hostName: '安卓房主',
+                    roomId: '123456',
+                    mode: 'hongxin',
+                    status: 'WAITING',
+                    occupied: 2,
+                    humanCount: 2,
+                    maxSeats: 4,
+                    isSelf: false,
+                    lastSeenMs: Date.now(),
+                  },
+                ];
+              default:
+                return undefined;
+            }
+          },
+        },
+      },
+    };
+
+    assert.equal(isNativeLanHostSupported(), true);
+
+    const started = await startNativeLanHostAsync(3001, 'PC房主');
+    assert.equal(started.ok, true);
+    assert.equal(started.port, 3001);
+    assert.equal(started.primaryIp, '192.168.1.99');
+    assert.equal(started.hostToken, 'deadbeef01234567');
+
+    const status = await getNativeLanHostStatusAsync();
+    assert.equal(status?.running, true);
+    assert.equal(status?.guestCount, 2);
+
+    assert.equal(await startNativeLanDiscoveryAsync(), true);
+    const hosts = await pollDiscoveredLanHostsAsync();
+    assert.equal(hosts.length, 1);
+    assert.equal(hosts[0].hostName, '安卓房主');
+    assert.equal(hosts[0].roomId, '123456');
+
+    await stopNativeLanDiscoveryAsync();
+    await stopNativeLanHostAsync();
+
+    assert.deepEqual(
+      calls.map(([c]) => c),
+      [
+        'lan_start_host',
+        'lan_get_host_status',
+        'lan_start_discovery',
+        'lan_get_discovered_hosts',
+        'lan_stop_discovery',
+        'lan_stop_host',
+      ],
+    );
+  } finally {
+    if (prevWindow === undefined) {
+      delete globalThis.window;
+    } else {
+      globalThis.window = prevWindow;
+    }
+  }
 });

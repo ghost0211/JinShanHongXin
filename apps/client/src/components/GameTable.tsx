@@ -37,6 +37,14 @@ import { DebugDrawer } from './DebugDrawer.js';
 import { Icon } from './Icons.js';
 import type { AppSettings } from '../utils/settings.js';
 import type { PlayMode } from '../hooks/useGameClient.js';
+import {
+  clearDesktopAttention,
+  getDesktopFullscreen,
+  isRunningInTauriDesktop,
+  requestDesktopAttention,
+  toggleDesktopFullscreen,
+} from '../utils/desktopBridge.js';
+import { soundFX } from '../utils/sound.js';
 
 function avatarChar(name: string): string {
   return (name || '').trim().slice(0, 1) || '牌';
@@ -47,7 +55,10 @@ interface GameTableProps {
   view: PlayerView;
   settings: AppSettings;
   playMode?: PlayMode;
+  hasExternalModal?: boolean;
   onOpenSettings: () => void;
+  onUpdateSettings: (patch: Partial<AppSettings>) => void;
+  onPushToast: (text: string, isError?: boolean) => void;
   onSendAction: (action: GameAction) => void;
   onSetAutoBot: (enabled: boolean) => void;
   onToggleDebugOpenHands: (enabled: boolean) => void;
@@ -59,7 +70,10 @@ export const GameTable: React.FC<GameTableProps> = ({
   view,
   settings,
   playMode = 'online',
+  hasExternalModal = false,
   onOpenSettings,
+  onUpdateSettings,
+  onPushToast,
   onSendAction,
   onSetAutoBot,
   onToggleDebugOpenHands,
@@ -69,14 +83,29 @@ export const GameTable: React.FC<GameTableProps> = ({
   const [hintedIds, setHintedIds] = useState<number[]>([]);
   const [hintIdx, setHintIdx] = useState(0);
   const [showLastTrick, setShowLastTrick] = useState(false);
+  const [tabPeekingLastTrick, setTabPeekingLastTrick] = useState(false);
   const [showScoreDetail, setShowScoreDetail] = useState(false);
   const [showBottomModal, setShowBottomModal] = useState(false);
   const [showDebugDrawer, setShowDebugDrawer] = useState(false);
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [inspectTrickSeat, setInspectTrickSeat] = useState<Seat | null>(null);
   const [autoSelectNote, setAutoSelectNote] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [isTrickPaused, setIsTrickPaused] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const lastAutoSelectKeyRef = useRef<string | null>(null);
+  const lastAttentionKeyRef = useRef<string | null>(null);
+  const isDesktopApp = isRunningInTauriDesktop();
+
+  useEffect(() => {
+    if (!isDesktopApp) return;
+    const syncFullscreen = () => {
+      void getDesktopFullscreen().then(setIsFullscreen);
+    };
+    syncFullscreen();
+    window.addEventListener('resize', syncFullscreen);
+    return () => window.removeEventListener('resize', syncFullscreen);
+  }, [isDesktopApp]);
 
   const meSeat = view.viewerSeat;
   const rightSeat = ((meSeat + 1) % 4) as Seat;
@@ -156,16 +185,47 @@ export const GameTable: React.FC<GameTableProps> = ({
     }
   }, [turnAutoKey, view, settings.autoSelectMandatory]);
 
-  const handleApplySelection = (ids: number[], mode: 'select' | 'deselect') => {
+  const handleReplaceSelection = (ids: number[]) => {
     setAutoSelectNote(null);
-    setSelectedIds((prev) => {
-      const set = new Set(prev);
-      for (const id of ids) {
-        if (mode === 'select') set.add(id);
-        else set.delete(id);
+    setSelectedIds(ids);
+  };
+
+  const handleDoubleClickCard = (
+    cardId: number,
+    candidateSelection: readonly number[],
+  ): boolean => {
+    if (!settings.doubleClickPlay) return false;
+    if (view.phase !== 'PLAYING' || !isMyTurn || isTrickPaused) return false;
+
+    if (candidateSelection.length > 0 && candidateSelection.includes(cardId)) {
+      const candidatePreview = previewSelection(view, candidateSelection);
+      if (candidatePreview.valid) {
+        onSendAction({
+          type: 'PLAY_CARDS',
+          seat: meSeat,
+          cardIds: [...candidateSelection],
+        });
+        setSelectedIds([]);
+        setHintedIds([]);
+        setAutoSelectNote(null);
+        return true;
       }
-      return Array.from(set);
-    });
+    }
+
+    const singlePreview = previewSelection(view, [cardId]);
+    if (singlePreview.valid) {
+      onSendAction({
+        type: 'PLAY_CARDS',
+        seat: meSeat,
+        cardIds: [cardId],
+      });
+      setSelectedIds([]);
+      setHintedIds([]);
+      setAutoSelectNote(null);
+      return true;
+    }
+
+    return false;
   };
 
   const preview = useMemo(
@@ -225,6 +285,445 @@ export const GameTable: React.FC<GameTableProps> = ({
     setSelectedIds([]);
     setHintedIds([]);
     setAutoSelectNote(null);
+  };
+
+  const clearSelection = () => {
+    setSelectedIds([]);
+    setHintedIds([]);
+    setAutoSelectNote(null);
+  };
+
+  const handleToggleHandLayout = () => {
+    const next = settings.handLayout === 'single' ? 'double' : 'single';
+    onUpdateSettings({ handLayout: next });
+    onPushToast(next === 'single' ? '手牌已切为单排（已记住）' : '手牌已切为双排主/副（已记住）');
+  };
+
+  const handleRequestLeaveRoom = () => {
+    const isRoundActive =
+      view.phase !== 'ROUND_OVER' && view.phase !== 'MATCH_OVER';
+    if (isRoundActive && settings.confirmExitInGame) {
+      setShowLeaveConfirm(true);
+      return;
+    }
+    onLeaveRoom();
+  };
+
+  const handleToggleFullscreenClick = async () => {
+    const next = await toggleDesktopFullscreen();
+    if (next !== null) {
+      setIsFullscreen(next);
+    }
+  };
+
+  const bidQuickScores = useMemo(
+    () =>
+      view.phase === 'BIDDING' && view.bidState && isMyTurn
+        ? [100, 120, 150, 180, 200, 250, 300]
+            .filter((s) => s > view.bidState!.highestBid)
+            .slice(0, 4)
+        : [],
+    [view.phase, view.bidState, isMyTurn],
+  );
+
+  const bidPlus5Score =
+    view.phase === 'BIDDING' &&
+    view.bidState &&
+    isMyTurn &&
+    view.bidState.highestBid >= 100 &&
+    view.bidState.highestBid + 5 <= 300
+      ? view.bidState.highestBid + 5
+      : null;
+
+  const canPeekBottom =
+    view.phase === 'PLAYING' &&
+    view.dealer === meSeat &&
+    Boolean(view.revealedBottom && view.revealedBottom.length > 0);
+
+  // Taskbar flash + chime when window is unfocused and player action is needed
+  const needsMyAttention =
+    (isMyTurn &&
+      (view.phase === 'PLAYING' ||
+        view.phase === 'BURYING' ||
+        view.phase === 'BIDDING' ||
+        view.phase === 'CHOOSE_TRUMP')) ||
+    isMyCounterResponse ||
+    (canCallNow && callOptions.length > 0) ||
+    (canCounterNow && counterOptions.length > 0);
+
+  const attentionKey = needsMyAttention
+    ? `${view.roundNumber}:${view.phase}:${view.trickNumber}:${view.currentTrick.length}:${view.currentTurn}:${view.callState.counterAttempts}:${view.bidState?.highestBid ?? 0}`
+    : null;
+
+  useEffect(() => {
+    if (!attentionKey) {
+      lastAttentionKeyRef.current = null;
+      return;
+    }
+    if (lastAttentionKeyRef.current === attentionKey) return;
+    lastAttentionKeyRef.current = attentionKey;
+
+    if (
+      settings.flashTaskbarOnTurn &&
+      (document.hidden || !document.hasFocus())
+    ) {
+      soundFX.playTurnAlert();
+      if (isDesktopApp) {
+        void requestDesktopAttention(true);
+      }
+    }
+  }, [attentionKey, settings.flashTaskbarOnTurn, isDesktopApp]);
+
+  useEffect(() => {
+    if (!isDesktopApp) return;
+    const onFocus = () => {
+      void clearDesktopAttention();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [isDesktopApp]);
+
+  const shortcutRef = useRef({
+    hasOpenModal: false,
+    tabPeekingLastTrick: false,
+    hasExternalModal: false,
+    isMyTurn: false,
+    phase: view.phase,
+    previewValid: false,
+    isTrickPaused: false,
+    selectedCount: 0,
+    hasLastTrick: false,
+    canPeekBottom: false,
+    canCallNow: false,
+    callOptions,
+    canCounterNow: false,
+    counterOptions,
+    isMyCounterResponse: false,
+    bidQuickScores,
+    bidPlus5Score: null as number | null,
+    closeModals: () => {},
+    clearSelection: () => {},
+    onHint: () => {},
+    onConfirmPlay: () => {},
+    onConfirmBury: () => {},
+    onToggleMute: () => {},
+    onToggleHandLayout: () => {},
+    onToggleAutoBot: () => {},
+    onToggleScoreDetail: () => {},
+    onToggleLastTrick: () => {},
+    onToggleBottomModal: () => {},
+    onSendAction: (_action: GameAction) => {},
+    meSeat,
+  });
+
+  const hasOpenInternalModal =
+    showLastTrick ||
+    tabPeekingLastTrick ||
+    showScoreDetail ||
+    showBottomModal ||
+    showDebugDrawer ||
+    showLeaveConfirm ||
+    inspectTrickSeat !== null;
+
+  shortcutRef.current = {
+    hasOpenModal: hasOpenInternalModal,
+    tabPeekingLastTrick,
+    hasExternalModal,
+    isMyTurn,
+    phase: view.phase,
+    previewValid: preview.valid,
+    isTrickPaused,
+    selectedCount: selectedIds.length,
+    hasLastTrick: view.lastTrick !== null,
+    canPeekBottom,
+    canCallNow,
+    callOptions,
+    canCounterNow,
+    counterOptions,
+    isMyCounterResponse,
+    bidQuickScores,
+    bidPlus5Score,
+    closeModals: () => {
+      setShowLastTrick(false);
+      setTabPeekingLastTrick(false);
+      setShowScoreDetail(false);
+      setShowBottomModal(false);
+      setShowDebugDrawer(false);
+      setShowLeaveConfirm(false);
+      setInspectTrickSeat(null);
+    },
+    clearSelection,
+    onHint: handleHintClick,
+    onConfirmPlay: handleConfirmPlay,
+    onConfirmBury: handleConfirmBury,
+    onToggleMute: () => {
+      const next = !settings.soundEnabled;
+      onUpdateSettings({ soundEnabled: next });
+      onPushToast(next ? '游戏音效已开启' : '游戏音效已静音');
+    },
+    onToggleHandLayout: handleToggleHandLayout,
+    onToggleAutoBot: () => onSetAutoBot(!meRoomSeat.autoBot),
+    onToggleScoreDetail: () => setShowScoreDetail((v) => !v),
+    onToggleLastTrick: () => {
+      if (view.lastTrick) {
+        setTabPeekingLastTrick(false);
+        setShowLastTrick((v) => !v);
+      }
+    },
+    onToggleBottomModal: () => {
+      if (canPeekBottom) {
+        setShowBottomModal((v) => !v);
+      }
+    },
+    onSendAction,
+    meSeat,
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const cur = shortcutRef.current;
+      if (cur.hasExternalModal) return;
+
+      if (e.key === 'Tab') {
+        if ((!cur.hasOpenModal || cur.tabPeekingLastTrick) && cur.hasLastTrick) {
+          e.preventDefault();
+          if (!e.repeat) {
+            setTabPeekingLastTrick(true);
+          }
+        }
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        if (cur.hasOpenModal) {
+          e.preventDefault();
+          cur.closeModals();
+        } else if (cur.selectedCount > 0) {
+          e.preventDefault();
+          cur.clearSelection();
+          soundFX.playTap();
+        }
+        return;
+      }
+
+      if (cur.hasOpenModal) return;
+
+      if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        cur.onToggleMute();
+        return;
+      }
+
+      if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        cur.onToggleHandLayout();
+        return;
+      }
+
+      if (e.key === 't' || e.key === 'T') {
+        e.preventDefault();
+        cur.onToggleAutoBot();
+        return;
+      }
+
+      if (e.key === 's' || e.key === 'S') {
+        e.preventDefault();
+        cur.onToggleScoreDetail();
+        return;
+      }
+
+      if (e.key === 'l' || e.key === 'L') {
+        e.preventDefault();
+        cur.onToggleLastTrick();
+        return;
+      }
+
+      if ((e.key === 'b' || e.key === 'B') && cur.canPeekBottom) {
+        e.preventDefault();
+        cur.onToggleBottomModal();
+        return;
+      }
+
+      if (e.key >= '1' && e.key <= '5') {
+        const idx = Number(e.key) - 1;
+        if ((cur.phase === 'DEALING' || cur.phase === 'CALLING') && cur.canCallNow) {
+          const opt = cur.callOptions[idx];
+          if (opt) {
+            e.preventDefault();
+            cur.onSendAction({
+              type: 'CALL_TRUMP',
+              seat: cur.meSeat,
+              suit: opt.suit,
+              cardIds: opt.cardIds,
+            });
+            return;
+          }
+        } else if (cur.phase === 'COUNTER_BIDDING' && cur.canCounterNow) {
+          const opt = cur.counterOptions[idx];
+          if (opt) {
+            e.preventDefault();
+            cur.onSendAction({
+              type: 'COUNTER_BID',
+              seat: cur.meSeat,
+              suit: opt.suit,
+              cardIds: opt.cardIds,
+            });
+            return;
+          }
+        } else if (cur.phase === 'COUNTER_RESPONSE' && cur.isMyCounterResponse) {
+          if (idx === 0) {
+            e.preventDefault();
+            cur.onSendAction({ type: 'ACCEPT_COUNTER', seat: cur.meSeat });
+            return;
+          }
+          if (idx === 1) {
+            e.preventDefault();
+            cur.onSendAction({ type: 'DEFEND_COUNTER', seat: cur.meSeat });
+            return;
+          }
+        } else if (cur.phase === 'BIDDING' && cur.isMyTurn) {
+          if (idx < cur.bidQuickScores.length) {
+            e.preventDefault();
+            cur.onSendAction({
+              type: 'BID_SCORE',
+              seat: cur.meSeat,
+              score: cur.bidQuickScores[idx],
+            });
+            return;
+          }
+          if (idx === 4 && cur.bidPlus5Score !== null) {
+            e.preventDefault();
+            cur.onSendAction({
+              type: 'BID_SCORE',
+              seat: cur.meSeat,
+              score: cur.bidPlus5Score,
+            });
+            return;
+          }
+        } else if (cur.phase === 'CHOOSE_TRUMP' && cur.isMyTurn) {
+          const suit = STANDARD_SUITS[idx];
+          if (suit) {
+            e.preventDefault();
+            cur.onSendAction({ type: 'CHOOSE_TRUMP', seat: cur.meSeat, suit });
+            return;
+          }
+        }
+      }
+
+      if (e.key === 'n' || e.key === 'N' || e.key === 'Backspace') {
+        if (cur.phase === 'CALLING' && cur.canCallNow) {
+          e.preventDefault();
+          cur.onSendAction({ type: 'PASS_CALL', seat: cur.meSeat });
+          return;
+        }
+        if (cur.phase === 'COUNTER_BIDDING' && cur.canCounterNow) {
+          e.preventDefault();
+          cur.onSendAction({ type: 'PASS_COUNTER', seat: cur.meSeat });
+          return;
+        }
+        if (cur.phase === 'BIDDING' && cur.isMyTurn) {
+          e.preventDefault();
+          cur.onSendAction({ type: 'PASS_BID', seat: cur.meSeat });
+          return;
+        }
+      }
+
+      if (
+        (e.key === 'h' || e.key === 'H') &&
+        cur.isMyTurn &&
+        (cur.phase === 'PLAYING' || cur.phase === 'BURYING')
+      ) {
+        e.preventDefault();
+        cur.onHint();
+        return;
+      }
+
+      if (e.key === 'Enter' || e.key === ' ') {
+        if (target && (target.tagName === 'BUTTON' || target.tagName === 'A')) {
+          return;
+        }
+        if (cur.isMyTurn && cur.previewValid) {
+          if (cur.phase === 'PLAYING' && !cur.isTrickPaused) {
+            e.preventDefault();
+            cur.onConfirmPlay();
+          } else if (cur.phase === 'BURYING') {
+            e.preventDefault();
+            cur.onConfirmBury();
+          }
+        }
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Tab') {
+        setTabPeekingLastTrick(false);
+      }
+    };
+
+    const handleWindowBlur = () => {
+      setTabPeekingLastTrick(false);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleWindowBlur);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
+  }, []);
+
+  const handleTableContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (view.phase !== 'PLAYING' && view.phase !== 'BURYING') return;
+
+    if (settings.rightClickMode === 'play' && isMyTurn && preview.valid) {
+      if (view.phase === 'PLAYING' && !isTrickPaused) {
+        e.preventDefault();
+        handleConfirmPlay();
+        return;
+      }
+      if (view.phase === 'BURYING') {
+        e.preventDefault();
+        handleConfirmBury();
+        return;
+      }
+    }
+
+    if (selectedIds.length > 0) {
+      e.preventDefault();
+      clearSelection();
+      soundFX.playTap();
+    }
+  };
+
+  const handleArenaClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (selectedIds.length === 0) return;
+    if (view.phase !== 'PLAYING' && view.phase !== 'BURYING') return;
+    const target = e.target as HTMLElement;
+    if (
+      target.closest('button') ||
+      target.closest('[data-card-id]') ||
+      target.closest('.trick-slot-wrap.is-inspectable') ||
+      target.closest('.modal-card') ||
+      target.closest('.debug-panel')
+    ) {
+      return;
+    }
+    clearSelection();
+    soundFX.playTap();
   };
 
   const getCallDisplayMeta = (display: SeatCallDisplay) => {
@@ -563,6 +1062,7 @@ export const GameTable: React.FC<GameTableProps> = ({
     <div
       className={`table-root mode-${view.mode} ${isMyActionNow ? 'is-my-action' : ''}`}
       data-table-skin={settings.tableSkin}
+      onContextMenu={handleTableContextMenu}
     >
       {/* Top HUD */}
       <header className="table-hud">
@@ -661,17 +1161,21 @@ export const GameTable: React.FC<GameTableProps> = ({
             className="hud-btn"
             onClick={() => setShowLastTrick(true)}
             disabled={!view.lastTrick}
+            title="上一轮回顾 (按住 Tab 速览 / L 固定)"
           >
             <Icon name="history" />
             <span>上一轮</span>
+            <kbd className="btn-kbd">Tab</kbd>
           </button>
           <button
             type="button"
             className={`hud-btn ${meRoomSeat.autoBot ? 'is-on' : ''}`}
             onClick={() => onSetAutoBot(!meRoomSeat.autoBot)}
+            title="切换托管 (T)"
           >
             <Icon name="robot" />
             <span>{meRoomSeat.autoBot ? '取消托管' : '托管'}</span>
+            <kbd className="btn-kbd">T</kbd>
           </button>
           {room.debugMode && (
             <button
@@ -687,11 +1191,34 @@ export const GameTable: React.FC<GameTableProps> = ({
               <span>上帝视角</span>
             </button>
           )}
-          <button type="button" className="hud-btn is-icon-only" onClick={onOpenSettings} aria-label="设置">
+          {isDesktopApp && (
+            <button
+              type="button"
+              className="hud-btn is-icon-only"
+              onClick={() => void handleToggleFullscreenClick()}
+              title="切换全屏 (F11)"
+              aria-label={isFullscreen ? '退出全屏' : '全屏'}
+            >
+              <Icon name={isFullscreen ? 'minimize' : 'maximize'} />
+              <span>{isFullscreen ? '窗口' : '全屏'}</span>
+            </button>
+          )}
+          <button
+            type="button"
+            className="hud-btn is-icon-only"
+            onClick={onOpenSettings}
+            title="游戏设置与 PC 快捷键 (F1)"
+            aria-label="设置"
+          >
             <Icon name="gear" />
             <span>设置</span>
           </button>
-          <button type="button" className="hud-btn is-icon-only is-danger" onClick={onLeaveRoom} aria-label="退出">
+          <button
+            type="button"
+            className="hud-btn is-icon-only is-danger"
+            onClick={handleRequestLeaveRoom}
+            aria-label="退出"
+          >
             <Icon name="exit" />
             <span>退出</span>
           </button>
@@ -699,7 +1226,7 @@ export const GameTable: React.FC<GameTableProps> = ({
       </header>
 
       {/* Arena: 3 opponents + centre trick mat */}
-      <div className="table-arena">
+      <div className="table-arena" onClick={handleArenaClick}>
         <div className="table-mat" aria-hidden="true">
           <span className="table-mat-emblem" />
         </div>
@@ -881,23 +1408,22 @@ export const GameTable: React.FC<GameTableProps> = ({
         )}
 
         <div className="action-bar-group action-buttons">
-          {view.phase === 'PLAYING' &&
-            view.dealer === meSeat &&
-            view.revealedBottom &&
-            view.revealedBottom.length > 0 && (
+          {canPeekBottom && (
               <button
                 type="button"
                 className="btn btn-xs btn-ghost"
                 onClick={() => setShowBottomModal(true)}
+                title="查看庄家底牌 (B)"
               >
                 <Icon name="layers" />
                 看底牌
+                <kbd className="btn-kbd">B</kbd>
               </button>
             )}
 
           {view.phase === 'COUNTER_BIDDING' && canCounterNow && (
             <>
-              {counterOptions.map((opt) => (
+              {counterOptions.map((opt, idx) => (
                 <button
                   key={opt.suit}
                   type="button"
@@ -912,6 +1438,7 @@ export const GameTable: React.FC<GameTableProps> = ({
                   }
                 >
                   {opt.label}
+                  {idx < 5 && <kbd className="btn-kbd">{idx + 1}</kbd>}
                 </button>
               ))}
               <button
@@ -920,6 +1447,7 @@ export const GameTable: React.FC<GameTableProps> = ({
                 onClick={() => onSendAction({ type: 'PASS_COUNTER', seat: meSeat })}
               >
                 放弃反主
+                <kbd className="btn-kbd">N</kbd>
               </button>
             </>
           )}
@@ -933,6 +1461,7 @@ export const GameTable: React.FC<GameTableProps> = ({
               >
                 接受被反（改打{getSuitSymbol(view.callState.pendingCounter.suit)}
                 {getSuitName(view.callState.pendingCounter.suit)}）
+                <kbd className="btn-kbd">1</kbd>
               </button>
               <button
                 type="button"
@@ -940,26 +1469,25 @@ export const GameTable: React.FC<GameTableProps> = ({
                 onClick={() => onSendAction({ type: 'DEFEND_COUNTER', seat: meSeat })}
               >
                 拒绝并比牌
+                <kbd className="btn-kbd">2</kbd>
               </button>
             </>
           )}
 
           {view.phase === 'BIDDING' && view.bidState && isMyTurn && (
             <>
-              {[100, 120, 150, 180, 200, 250, 300]
-                .filter((s) => s > view.bidState!.highestBid)
-                .slice(0, 4)
-                .map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    className="btn btn-gold"
-                    onClick={() => onSendAction({ type: 'BID_SCORE', seat: meSeat, score: s })}
-                  >
-                    叫 {s}
-                  </button>
-                ))}
-              {view.bidState.highestBid >= 100 && view.bidState.highestBid + 5 <= 300 && (
+              {bidQuickScores.map((s, idx) => (
+                <button
+                  key={s}
+                  type="button"
+                  className="btn btn-gold"
+                  onClick={() => onSendAction({ type: 'BID_SCORE', seat: meSeat, score: s })}
+                >
+                  叫 {s}
+                  <kbd className="btn-kbd">{idx + 1}</kbd>
+                </button>
+              ))}
+              {bidPlus5Score !== null && (
                 <button
                   type="button"
                   className="btn btn-emerald"
@@ -967,11 +1495,12 @@ export const GameTable: React.FC<GameTableProps> = ({
                     onSendAction({
                       type: 'BID_SCORE',
                       seat: meSeat,
-                      score: view.bidState!.highestBid + 5,
+                      score: bidPlus5Score,
                     })
                   }
                 >
-                  +5（{view.bidState.highestBid + 5}）
+                  +5（{bidPlus5Score}）
+                  <kbd className="btn-kbd">5</kbd>
                 </button>
               )}
               <button
@@ -980,13 +1509,14 @@ export const GameTable: React.FC<GameTableProps> = ({
                 onClick={() => onSendAction({ type: 'PASS_BID', seat: meSeat })}
               >
                 不叫
+                <kbd className="btn-kbd">N</kbd>
               </button>
             </>
           )}
 
           {view.phase === 'CHOOSE_TRUMP' && isMyTurn && (
             <>
-              {STANDARD_SUITS.map((suit) => {
+              {STANDARD_SUITS.map((suit, idx) => {
                 const cnt = view.myHand.filter((c) => c.suit === suit).length;
                 return (
                   <button
@@ -998,6 +1528,7 @@ export const GameTable: React.FC<GameTableProps> = ({
                     <span className="btn-suit-glyph">{getSuitSymbol(suit)}</span>
                     {getSuitName(suit)}
                     <small>{cnt}张</small>
+                    <kbd className="btn-kbd">{idx + 1}</kbd>
                   </button>
                 );
               })}
@@ -1009,14 +1540,16 @@ export const GameTable: React.FC<GameTableProps> = ({
               <button type="button" className="btn" onClick={handleHintClick}>
                 <Icon name="bulb" />
                 智能选底
+                <kbd className="btn-kbd">H</kbd>
               </button>
               <button
                 type="button"
                 className="btn"
-                onClick={() => setSelectedIds([])}
+                onClick={clearSelection}
                 disabled={selectedIds.length === 0}
               >
                 清空
+                <kbd className="btn-kbd">Esc</kbd>
               </button>
               <button
                 type="button"
@@ -1025,6 +1558,7 @@ export const GameTable: React.FC<GameTableProps> = ({
                 onClick={handleConfirmBury}
               >
                 确认埋底
+                <kbd className="btn-kbd">Enter</kbd>
               </button>
             </>
           )}
@@ -1034,19 +1568,17 @@ export const GameTable: React.FC<GameTableProps> = ({
               <button
                 type="button"
                 className="btn"
-                onClick={() => {
-                  setSelectedIds([]);
-                  setHintedIds([]);
-                  setAutoSelectNote(null);
-                }}
+                onClick={clearSelection}
                 disabled={selectedIds.length === 0}
               >
                 <Icon name="undo" />
                 重选
+                <kbd className="btn-kbd">Esc</kbd>
               </button>
               <button type="button" className="btn btn-emerald" onClick={handleHintClick}>
                 <Icon name="bulb" />
                 提示
+                <kbd className="btn-kbd">H</kbd>
               </button>
               <button
                 type="button"
@@ -1055,6 +1587,7 @@ export const GameTable: React.FC<GameTableProps> = ({
                 onClick={handleConfirmPlay}
               >
                 {isTrickPaused ? '稍候…' : selectedIds.length > 0 ? `出牌 · ${selectedIds.length}` : '出牌'}
+                {!isTrickPaused && <kbd className="btn-kbd">Enter</kbd>}
               </button>
             </>
           )}
@@ -1073,13 +1606,20 @@ export const GameTable: React.FC<GameTableProps> = ({
         defaultLayout={settings.handLayout}
         showCardBadges={settings.showCardBadges}
         showPointPips={settings.showPointPips}
-        onApplySelection={handleApplySelection}
+        cardScale={settings.cardScale}
+        rightClickMode={settings.rightClickMode}
+        doubleClickPlay={settings.doubleClickPlay}
+        onToggleLayout={handleToggleHandLayout}
+        onReplaceSelection={handleReplaceSelection}
+        onDoubleClickCard={handleDoubleClickCard}
+        onClearSelection={clearSelection}
       />
       </div>
 
       {(view.phase === 'ROUND_OVER' || view.phase === 'MATCH_OVER') && (
         <SettlementModal
           view={view}
+          shortcutBlocked={hasExternalModal || hasOpenInternalModal}
           onNextRound={() => onSendAction({ type: 'NEXT_ROUND' })}
           onLeaveRoom={onLeaveRoom}
         />
@@ -1088,12 +1628,62 @@ export const GameTable: React.FC<GameTableProps> = ({
       {showScoreDetail && (
         <ScoreDetailModal view={view} onClose={() => setShowScoreDetail(false)} />
       )}
-      {showLastTrick && (
+      {(showLastTrick || tabPeekingLastTrick) && (
         <LastTrickModal
           room={room}
           view={view}
-          onClose={() => setShowLastTrick(false)}
+          isPeeking={tabPeekingLastTrick && !showLastTrick}
+          onClose={() => {
+            setShowLastTrick(false);
+            setTabPeekingLastTrick(false);
+          }}
         />
+      )}
+      {showLeaveConfirm && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setShowLeaveConfirm(false)}
+        >
+          <div
+            className="modal-card confirm-exit-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3>确认退出当前对局？</h3>
+              <button
+                type="button"
+                className="btn btn-xs btn-ghost modal-close"
+                onClick={() => setShowLeaveConfirm(false)}
+              >
+                <Icon name="close" />
+                关闭
+              </button>
+            </div>
+            <p className="confirm-exit-desc">
+              本局尚未结束，退出房间后将离开当前牌桌。确认返回大厅吗？
+            </p>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-emerald"
+                onClick={() => setShowLeaveConfirm(false)}
+              >
+                继续对局 (Esc)
+              </button>
+              <span className="modal-footer-spacer" />
+              <button
+                type="button"
+                className="btn btn-crimson"
+                onClick={() => {
+                  setShowLeaveConfirm(false);
+                  onLeaveRoom();
+                }}
+              >
+                确认退出
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {inspectTrickSeat !== null && trickBySeat.has(inspectTrickSeat) && (
         <div

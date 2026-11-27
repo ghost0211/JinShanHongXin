@@ -8,7 +8,7 @@ import type {
 } from '@jinshan/protocol';
 import type { DiscoveredLanHost } from '../net/androidLan.js';
 import {
-  isRunningInAndroidApk,
+  isRunningInNativeShell,
   type ConnectionStatus,
 } from '../net/wsClient.js';
 import type {
@@ -50,6 +50,7 @@ interface LobbyScreenProps {
   historyList: MatchHistoryRow[];
   leaderboard: UserProfile[];
   tableSkin: TableSkin;
+  hasExternalModal?: boolean;
   defaultMatchSetup: {
     dealSpeed: DealSpeed;
     allyBotDifficulty: BotDifficulty;
@@ -187,6 +188,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   historyList,
   leaderboard,
   tableSkin,
+  hasExternalModal = false,
   defaultMatchSetup,
   onSaveMatchSetupDefaults,
   onSetPlayMode,
@@ -225,6 +227,26 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
     confirmLabel: string;
     defaultDebug: boolean;
   } | null>(null);
+
+  useEffect(() => {
+    const anyModal =
+      showAuthModal ||
+      showHistoryModal ||
+      showLeaderboardModal ||
+      pendingSetup !== null;
+    if (!anyModal || hasExternalModal) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowAuthModal(false);
+        setShowHistoryModal(false);
+        setShowLeaderboardModal(false);
+        setPendingSetup(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [hasExternalModal, showAuthModal, showHistoryModal, showLeaderboardModal, pendingSetup]);
 
   const openSetupModal = (
     kind: 'offline-quick' | 'offline-waiting' | 'lan-host' | 'online-quick' | 'online-room',
@@ -486,9 +508,15 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
               <Icon name="book" />
               <span>规则</span>
             </button>
-            <button type="button" className="lobby-nav-btn is-gold" onClick={onOpenSettings}>
+            <button
+              type="button"
+              className="lobby-nav-btn is-gold"
+              onClick={onOpenSettings}
+              title="游戏设置与 PC 快捷键 (F1)"
+            >
               <Icon name="gear" />
               <span>设置</span>
+              <kbd className="btn-kbd">F1</kbd>
             </button>
           </nav>
         </div>
@@ -548,7 +576,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                 )}
 
                 {playMode === 'online' &&
-                  isRunningInAndroidApk() &&
+                  isRunningInNativeShell() &&
                   connStatus !== 'connected' && (
                     <div className="lobby-alert is-danger">
                       <span>
@@ -574,7 +602,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                   </div>
                 )}
 
-                {playMode === 'online' && connStatus !== 'connected' && !isRunningInAndroidApk() && !savedSession && (
+                {playMode === 'online' && connStatus !== 'connected' && !isRunningInNativeShell() && !savedSession && (
                   <div className="lobby-mode-banner is-online is-pending">
                     <div className="lobby-mode-banner-text">
                       <strong>在线联机大厅</strong>
@@ -697,7 +725,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         <div>
                           <strong>浏览器端可作为客机加入</strong>
                           <span>
-                            仅安卓 APK 可当房主；请输入房主屏幕上显示的 IP，或直接扫码加入。
+                            仅安卓 APK 与 Windows 客户端可当房主；请输入房主屏幕上显示的 IP，或直接扫码加入。
                           </span>
                         </div>
                       </div>
@@ -708,6 +736,11 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         className="input-box lobby-join-input"
                         value={lanIpInput}
                         onChange={(e) => setLanIpInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && lanRole !== 'guest' && lanIpInput.trim()) {
+                            onConnectLanManual(lanIpInput);
+                          }
+                        }}
                         placeholder="房主 IP，如 192.168.43.1:3001"
                       />
                       {lanRole === 'guest' ? (
@@ -738,6 +771,11 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                           maxLength={6}
                           inputMode="numeric"
                           onChange={(e) => setJoinCode(e.target.value.replace(/\D/g, ''))}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && joinCode.length === 6) {
+                              onJoinRoom(joinCode);
+                            }
+                          }}
                           placeholder="或输入 6 位房号直接入座"
                         />
                         <button
@@ -790,6 +828,11 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         maxLength={6}
                         inputMode="numeric"
                         onChange={(e) => setJoinCode(e.target.value.replace(/\D/g, ''))}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && connStatus === 'connected' && joinCode.length === 6) {
+                            onJoinRoom(joinCode);
+                          }
+                        }}
                         placeholder="输入 6 位房间号"
                       />
                       <button
@@ -961,9 +1004,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                           : '扫码或输入房主 IP 即可加入'}
                       </strong>
                       <ol className="lan-guide-steps">
-                        <li>所有手机连同一 Wi-Fi，或由房主开热点</li>
-                        <li>房主点「创建局域网房间」，安卓端此处自动出现</li>
-                        <li>iPhone / 电脑扫房主二维码，无需安装</li>
+                        <li>所有设备连同一 Wi-Fi，或由房主开热点</li>
+                        <li>房主点「创建局域网房间」，安卓 / Windows 客户端此处自动出现</li>
+                        <li>iPhone / 浏览器扫房主二维码，无需安装</li>
                       </ol>
                     </div>
                   ) : (
