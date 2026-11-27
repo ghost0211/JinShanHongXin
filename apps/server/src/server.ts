@@ -7,6 +7,7 @@ import type { ClientMessage, ServerMessage } from '@jinshan/protocol';
 import { AuthError, DEFAULT_DB_PATH, HistoryStore } from './db.js';
 import { RoomAdmissionError, type RoomTimingOptions } from './room.js';
 import { RoomManager } from './roomManager.js';
+import { UpdateRelay, type UpdateRelayOptions } from './updateRelay.js';
 
 export interface GameServerOptions extends RoomTimingOptions {
   port?: number;
@@ -14,6 +15,7 @@ export interface GameServerOptions extends RoomTimingOptions {
   dbPath?: string;
   botDelayMs?: number;
   staticDir?: string;
+  updateRelay?: UpdateRelayOptions;
 }
 
 interface ConnContext {
@@ -150,6 +152,7 @@ export function createGameServer(
     disconnectGraceMs: options.disconnectGraceMs,
   });
   const staticRoot = options.staticDir ? resolve(options.staticDir) : null;
+  const updateRelay = new UpdateRelay(options.updateRelay);
 
   const contexts = new Map<WebSocket, ConnContext>();
   const credentialAttempts = new Map<string, number>();
@@ -200,6 +203,48 @@ export function createGameServer(
       }
       if (url.pathname === '/api/leaderboard' && req.method === 'GET') {
         sendJson(res, 200, { users: store.getLeaderboard(20) });
+        return;
+      }
+      if (url.pathname === '/api/update/manifest' && req.method === 'GET') {
+        try {
+          const force = url.searchParams.get('refresh') === '1';
+          const manifest = await updateRelay.getLatestManifest(force);
+          sendJson(res, 200, { ok: true, manifest });
+        } catch (err) {
+          sendJson(res, 502, {
+            ok: false,
+            code: 'UPDATE_UNAVAILABLE',
+            error: err instanceof Error ? err.message : '无法拉取最新版本清单',
+          });
+        }
+        return;
+      }
+      if (url.pathname === '/api/update/asset' && req.method === 'GET') {
+        const name = (url.searchParams.get('name') ?? '').trim();
+        if (!name || name.includes('/') || name.includes('\\') || name.includes('..')) {
+          sendJson(res, 400, { ok: false, code: 'INVALID_ASSET', error: '更新文件名无效' });
+          return;
+        }
+        try {
+          const asset = await updateRelay.fetchAssetBuffer(name);
+          if (!asset) {
+            sendJson(res, 404, { ok: false, code: 'ASSET_NOT_FOUND', error: '未找到对应的更新文件' });
+            return;
+          }
+          res.writeHead(200, {
+            'Content-Type': asset.contentType,
+            'Content-Length': String(asset.data.length),
+            'Content-Disposition': `attachment; filename="${asset.fileName}"`,
+            ...CORS_HEADERS,
+          });
+          res.end(asset.data);
+        } catch (err) {
+          sendJson(res, 502, {
+            ok: false,
+            code: 'UPDATE_DOWNLOAD_FAILED',
+            error: err instanceof Error ? err.message : '中转下载更新文件失败',
+          });
+        }
         return;
       }
 

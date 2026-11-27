@@ -44,6 +44,7 @@ public class MainActivity extends Activity {
     private WebView webView;
     private long lastBackPressMs = 0L;
     private OnBackInvokedCallback backCallback;
+    private OtaUpdateManager otaManager;
     private LanDiscoveryManager lanDiscovery;
     private LanHostServer lanHostServer;
 
@@ -60,8 +61,9 @@ public class MainActivity extends Activity {
             getWindow().setAttributes(lp);
         }
 
+        otaManager = new OtaUpdateManager(this);
         lanDiscovery = new LanDiscoveryManager(this);
-        lanHostServer = new LanHostServer(this, roomsJson -> lanDiscovery.updateRoomsSnapshot(roomsJson));
+        lanHostServer = new LanHostServer(this, otaManager, roomsJson -> lanDiscovery.updateRoomsSnapshot(roomsJson));
 
         webView = new WebView(this);
         webView.setBackgroundColor(0xFF061D16);
@@ -79,7 +81,10 @@ public class MainActivity extends Activity {
         settings.setTextZoom(100);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
 
-        webView.addJavascriptInterface(new AndroidBridge(this, lanHostServer, lanDiscovery), "JinshanAndroid");
+        webView.addJavascriptInterface(
+            new AndroidBridge(this, webView, otaManager, lanHostServer, lanDiscovery),
+            "JinshanAndroid"
+        );
         webView.setWebChromeClient(new WebChromeClient());
         webView.setWebViewClient(new LocalAssetWebViewClient());
 
@@ -232,7 +237,9 @@ public class MainActivity extends Activity {
             }
 
             try {
-                InputStream stream = getAssets().open(ASSET_PREFIX + path);
+                InputStream stream = otaManager != null
+                    ? otaManager.openAsset(path)
+                    : getAssets().open(ASSET_PREFIX + path);
                 return new WebResourceResponse(
                     guessMimeType(path),
                     "UTF-8",
@@ -269,12 +276,24 @@ public class MainActivity extends Activity {
     }
 
     private static final class AndroidBridge {
+        private final Activity activity;
         private final Context context;
+        private final WebView webView;
+        private final OtaUpdateManager otaManager;
         private final LanHostServer hostServer;
         private final LanDiscoveryManager discovery;
 
-        AndroidBridge(Context context, LanHostServer hostServer, LanDiscoveryManager discovery) {
-            this.context = context.getApplicationContext();
+        AndroidBridge(
+            Activity activity,
+            WebView webView,
+            OtaUpdateManager otaManager,
+            LanHostServer hostServer,
+            LanDiscoveryManager discovery
+        ) {
+            this.activity = activity;
+            this.context = activity.getApplicationContext();
+            this.webView = webView;
+            this.otaManager = otaManager;
             this.hostServer = hostServer;
             this.discovery = discovery;
         }
@@ -368,6 +387,51 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String getDiscoveredLanHostsJson() {
             return discovery.getDiscoveredHostsJson();
+        }
+
+        @JavascriptInterface
+        public String getAppVersionInfoJson() {
+            return otaManager.getVersionInfoJson();
+        }
+
+        @JavascriptInterface
+        public String fetchTextUrl(String url) {
+            return otaManager.fetchTextUrl(url);
+        }
+
+        @JavascriptInterface
+        public String startOtaInstall(String version, String downloadUrl, String expectedSha256) {
+            return otaManager.startInstall(version, downloadUrl, expectedSha256);
+        }
+
+        @JavascriptInterface
+        public String getOtaTaskStatusJson() {
+            return otaManager.getTaskStatusJson();
+        }
+
+        @JavascriptInterface
+        public void confirmOtaBootReady() {
+            otaManager.confirmBootReady();
+        }
+
+        @JavascriptInterface
+        public boolean clearOtaBundle() {
+            return otaManager.clearOta();
+        }
+
+        @JavascriptInterface
+        public void reloadApp() {
+            activity.runOnUiThread(() -> {
+                if (webView != null) {
+                    webView.clearCache(true);
+                    webView.loadUrl(START_URL);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public boolean openExternalUrl(String url) {
+            return otaManager.openExternalUrl(url);
         }
 
         @JavascriptInterface

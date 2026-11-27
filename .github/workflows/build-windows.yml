@@ -3,8 +3,6 @@ name: Build Windows Client (Tauri 2)
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 'v*'
     branches:
       - feat/windows-client
     paths:

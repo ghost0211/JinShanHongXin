@@ -47,6 +47,7 @@ public final class LanHostServer {
     private static final int MAX_WS_PAYLOAD_BYTES = 256 * 1024;
 
     private final Context appContext;
+    private final OtaUpdateManager otaManager;
     private final Consumer<String> onRoomsSnapshot;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicInteger nextPeerSeq = new AtomicInteger(0);
@@ -60,8 +61,9 @@ public final class LanHostServer {
     private volatile String roomsJson = "[]";
     private volatile int roomsCount = 0;
 
-    public LanHostServer(Context appContext, Consumer<String> onRoomsSnapshot) {
+    public LanHostServer(Context appContext, OtaUpdateManager otaManager, Consumer<String> onRoomsSnapshot) {
         this.appContext = appContext.getApplicationContext();
+        this.otaManager = otaManager;
         this.onRoomsSnapshot = onRoomsSnapshot;
     }
 
@@ -389,11 +391,14 @@ public final class LanHostServer {
             return;
         }
 
-        AssetManager assets = appContext.getAssets();
-        byte[] data = readAssetBytes(assets, ASSET_PREFIX + relPath);
+        byte[] data = otaManager != null
+            ? otaManager.readAssetBytes(relPath)
+            : readAssetBytes(appContext.getAssets(), ASSET_PREFIX + relPath);
         String resolvedPath = relPath;
         if (data == null && !relPath.contains(".")) {
-            data = readAssetBytes(assets, ASSET_PREFIX + "index.html");
+            data = otaManager != null
+                ? otaManager.readAssetBytes("index.html")
+                : readAssetBytes(appContext.getAssets(), ASSET_PREFIX + "index.html");
             resolvedPath = "index.html";
         }
         if (data == null) {
