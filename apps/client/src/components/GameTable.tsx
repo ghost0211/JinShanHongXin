@@ -416,15 +416,17 @@ export const GameTable: React.FC<GameTableProps> = ({
     meSeat,
   });
 
+  const hasOpenInternalModal =
+    showLastTrick ||
+    tabPeekingLastTrick ||
+    showScoreDetail ||
+    showBottomModal ||
+    showDebugDrawer ||
+    showLeaveConfirm ||
+    inspectTrickSeat !== null;
+
   shortcutRef.current = {
-    hasOpenModal:
-      showLastTrick ||
-      tabPeekingLastTrick ||
-      showScoreDetail ||
-      showBottomModal ||
-      showDebugDrawer ||
-      showLeaveConfirm ||
-      inspectTrickSeat !== null,
+    hasOpenModal: hasOpenInternalModal,
     tabPeekingLastTrick,
     hasExternalModal,
     isMyTurn,
@@ -1617,6 +1619,7 @@ export const GameTable: React.FC<GameTableProps> = ({
       {(view.phase === 'ROUND_OVER' || view.phase === 'MATCH_OVER') && (
         <SettlementModal
           view={view}
+          shortcutBlocked={hasExternalModal || hasOpenInternalModal}
           onNextRound={() => onSendAction({ type: 'NEXT_ROUND' })}
           onLeaveRoom={onLeaveRoom}
         />

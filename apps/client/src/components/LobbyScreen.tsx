@@ -50,6 +50,7 @@ interface LobbyScreenProps {
   historyList: MatchHistoryRow[];
   leaderboard: UserProfile[];
   tableSkin: TableSkin;
+  hasExternalModal?: boolean;
   defaultMatchSetup: {
     dealSpeed: DealSpeed;
     allyBotDifficulty: BotDifficulty;
@@ -187,6 +188,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   historyList,
   leaderboard,
   tableSkin,
+  hasExternalModal = false,
   defaultMatchSetup,
   onSaveMatchSetupDefaults,
   onSetPlayMode,
@@ -232,7 +234,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
       showHistoryModal ||
       showLeaderboardModal ||
       pendingSetup !== null;
-    if (!anyModal) return;
+    if (!anyModal || hasExternalModal) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -244,7 +246,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [showAuthModal, showHistoryModal, showLeaderboardModal, pendingSetup]);
+  }, [hasExternalModal, showAuthModal, showHistoryModal, showLeaderboardModal, pendingSetup]);
 
   const openSetupModal = (
     kind: 'offline-quick' | 'offline-waiting' | 'lan-host' | 'online-quick' | 'online-room',

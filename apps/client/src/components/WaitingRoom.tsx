@@ -21,6 +21,7 @@ interface WaitingRoomProps {
   room: RoomSummary;
   mySeat: Seat;
   playMode?: PlayMode;
+  hasExternalModal?: boolean;
   lanHostInfo?: LanHostStartResult | null;
   lanGuestCount?: number;
   onRefreshLanHost?: () => void;
@@ -47,6 +48,7 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
   room,
   mySeat,
   playMode = 'online',
+  hasExternalModal = false,
   lanHostInfo = null,
   lanGuestCount = 0,
   onRefreshLanHost,
@@ -82,8 +84,9 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
   const [showSetupModal, setShowSetupModal] = useState(false);
 
   useEffect(() => {
+    if (hasExternalModal) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.ctrlKey || e.altKey || e.metaKey || e.repeat) return;
       if (showSetupModal) {
         if (e.key === 'Escape') {
           e.preventDefault();
@@ -124,6 +127,7 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
+    hasExternalModal,
     showSetupModal,
     isHost,
     allOccupied,
