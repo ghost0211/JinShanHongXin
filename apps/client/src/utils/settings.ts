@@ -110,6 +110,8 @@ export interface AppSettings {
   cardScale: number; // 0.85..1.30
   flashTaskbarOnTurn: boolean;
   confirmExitInGame: boolean;
+  autoCheckUpdate: boolean;
+  updateMirrorUrl: string;
 }
 
 const SETTINGS_KEY = 'jinshan.settings.v1';
@@ -138,6 +140,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   cardScale: 1.0,
   flashTaskbarOnTurn: true,
   confirmExitInGame: true,
+  autoCheckUpdate: true,
+  updateMirrorUrl: '',
 };
 
 export function isTableSkin(value: unknown): value is TableSkin {
@@ -213,6 +217,12 @@ export function loadAppSettings(): AppSettings {
       }
       if (typeof parsed.confirmExitInGame === 'boolean') {
         base.confirmExitInGame = parsed.confirmExitInGame;
+      }
+      if (typeof parsed.autoCheckUpdate === 'boolean') {
+        base.autoCheckUpdate = parsed.autoCheckUpdate;
+      }
+      if (typeof parsed.updateMirrorUrl === 'string') {
+        base.updateMirrorUrl = parsed.updateMirrorUrl.trim().slice(0, 200);
       }
     }
   } catch {

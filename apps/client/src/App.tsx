@@ -6,6 +6,7 @@ import { GameTable } from './components/GameTable.js';
 import { SplashIntro } from './components/SplashIntro.js';
 import { SettingsModal } from './components/SettingsModal.js';
 import { RulesModal } from './components/RulesModal.js';
+import { UpdateModal } from './components/UpdateModal.js';
 import { Icon } from './components/Icons.js';
 import {
   CARD_SCALE_STEP,
@@ -23,6 +24,17 @@ import {
 } from './utils/desktopBridge.js';
 import { bgmPlayer } from './utils/bgm.js';
 import { soundFX } from './utils/sound.js';
+import {
+  checkForUpdates,
+  clearOtaUpdate,
+  confirmOtaBootReady,
+  getCurrentVersionInfo,
+  getIgnoredUpdateVersion,
+  reloadUpdatedApp,
+  setIgnoredUpdateVersion,
+  type CurrentVersionInfo,
+  type UpdateCheckResult,
+} from './utils/updater.js';
 
 export const App: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -49,6 +61,10 @@ export const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [showAppCloseConfirm, setShowAppCloseConfirm] = useState(false);
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
+  const [versionInfo, setVersionInfo] = useState<CurrentVersionInfo | null>(null);
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const isDesktopApp = isRunningInTauriDesktop();
 
   const isInActiveMatch = Boolean(
@@ -57,6 +73,10 @@ export const App: React.FC = () => {
       client.view.phase !== 'ROUND_OVER' &&
       client.view.phase !== 'MATCH_OVER',
   );
+  const isInActiveMatchRef = useRef(isInActiveMatch);
+  isInActiveMatchRef.current = isInActiveMatch;
+  const serverUrlRef = useRef(client.serverUrl);
+  serverUrlRef.current = client.serverUrl;
 
   const updateSettings = useCallback((patch: Partial<AppSettings>) => {
     const next: AppSettings = { ...settingsRef.current, ...patch };
@@ -90,6 +110,73 @@ export const App: React.FC = () => {
     if (!isDesktopApp) return;
     void setActiveMatchGuard(isInActiveMatch && settings.confirmExitInGame);
   }, [isDesktopApp, isInActiveMatch, settings.confirmExitInGame]);
+
+  // Confirm OTA boot health & auto-check for updates silently after launch
+  useEffect(() => {
+    void confirmOtaBootReady();
+    void getCurrentVersionInfo().then((info) => {
+      setVersionInfo(info);
+    });
+
+    if (!settingsRef.current.autoCheckUpdate) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void checkForUpdates({
+        mirrorUrl: settingsRef.current.updateMirrorUrl,
+        serverUrl: serverUrlRef.current,
+      }).then((res) => {
+        if (cancelled) return;
+        setVersionInfo(res.current);
+        if (res.ok && res.plan?.hasUpdate && res.manifest) {
+          setUpdateCheck(res);
+          const ignored = getIgnoredUpdateVersion();
+          if (ignored !== res.manifest.version && !isInActiveMatchRef.current) {
+            setShowUpdateModal(true);
+          }
+        }
+      });
+    }, 2400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  const handleManualCheckUpdate = useCallback(() => {
+    if (checkingUpdate) return;
+    setCheckingUpdate(true);
+    void checkForUpdates({
+      mirrorUrl: settingsRef.current.updateMirrorUrl,
+      serverUrl: serverUrlRef.current,
+      forceRefresh: true,
+    })
+      .then((res) => {
+        setVersionInfo(res.current);
+        setUpdateCheck(res);
+        if (!res.ok) {
+          client.pushToast(`检查更新失败：${res.error || '网络不可达'}`, true);
+          return;
+        }
+        if (res.plan?.hasUpdate && res.manifest) {
+          setShowSettings(false);
+          setShowUpdateModal(true);
+        } else {
+          client.pushToast(`当前已是最新版本 v${res.current.effectiveVersion}`);
+        }
+      })
+      .finally(() => {
+        setCheckingUpdate(false);
+      });
+  }, [checkingUpdate, client.pushToast]);
+
+  const handleClearOta = useCallback(() => {
+    void clearOtaUpdate().then((ok) => {
+      if (ok) {
+        client.pushToast('已清除热更新包，正在恢复内置版本…');
+        window.setTimeout(() => reloadUpdatedApp(), 350);
+      }
+    });
+  }, [client.pushToast]);
 
   // Listen for intercepted native window close events
   useEffect(() => {
@@ -141,6 +228,11 @@ export const App: React.FC = () => {
         if (showAppCloseConfirm) {
           e.preventDefault();
           setShowAppCloseConfirm(false);
+          return;
+        }
+        if (showUpdateModal) {
+          e.preventDefault();
+          setShowUpdateModal(false);
           return;
         }
         if (showRules) {
@@ -200,6 +292,7 @@ export const App: React.FC = () => {
     client.pushToast,
     showSettings,
     showRules,
+    showUpdateModal,
     showAppCloseConfirm,
   ]);
 
@@ -217,7 +310,11 @@ export const App: React.FC = () => {
   };
 
   const hasExternalModal =
-    showSettings || showRules || showAppCloseConfirm || showSplash;
+    showSettings || showRules || showUpdateModal || showAppCloseConfirm || showSplash;
+  const availableUpdateVersion =
+    updateCheck?.ok && updateCheck.plan?.hasUpdate && updateCheck.manifest
+      ? updateCheck.manifest.version
+      : null;
 
   return (
     <div className="app-shell" data-table-skin={settings.tableSkin}>
@@ -271,6 +368,8 @@ export const App: React.FC = () => {
           leaderboard={client.leaderboard}
           tableSkin={settings.tableSkin}
           hasExternalModal={hasExternalModal}
+          availableUpdateVersion={availableUpdateVersion}
+          onOpenUpdateModal={() => setShowUpdateModal(true)}
           defaultMatchSetup={{
             dealSpeed: settings.dealSpeed,
             allyBotDifficulty: settings.allyBotDifficulty,
@@ -346,11 +445,29 @@ export const App: React.FC = () => {
           serverUrl={client.serverUrl}
           connStatus={client.connStatus}
           inGame={Boolean(client.room)}
+          versionInfo={versionInfo}
+          updateCheck={updateCheck}
+          checkingUpdate={checkingUpdate}
+          onCheckUpdate={handleManualCheckUpdate}
+          onOpenUpdateModal={() => setShowUpdateModal(true)}
+          onClearOta={handleClearOta}
           onUpdateSettings={updateSettings}
           onUpdateServerUrl={client.updateServerUrl}
           onReplaySplash={() => setShowSplash(true)}
           onOpenRules={() => setShowRules(true)}
           onClose={() => setShowSettings(false)}
+        />
+      )}
+
+      {showUpdateModal && updateCheck?.manifest && updateCheck.plan && (
+        <UpdateModal
+          checkResult={updateCheck}
+          mirrorUrl={settings.updateMirrorUrl}
+          onClose={() => setShowUpdateModal(false)}
+          onIgnoreVersion={(ver) => {
+            setIgnoredUpdateVersion(ver);
+            client.pushToast(`已忽略 v${ver} 更新提示，可在设置中随时手动检查`);
+          }}
         />
       )}
 

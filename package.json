@@ -11,6 +11,7 @@
     "build:client": "npm --workspace=@jinshan/client run build",
     "build": "tsc -b && npm --workspace=@jinshan/client run build",
     "build:apk": "npm run build && node apps/android/scripts/build-apk.mjs",
+    "build:ota": "npm run build && node scripts/build-web-bundle.mjs",
     "dev:win": "npm --workspace=@jinshan/windows run dev",
     "build:win": "npm run build && npm --workspace=@jinshan/windows run build",
     "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo apps/*/dist apps/*/*.tsbuildinfo apps/android/build apps/android/dist",

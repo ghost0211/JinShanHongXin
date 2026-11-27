@@ -1,5 +1,6 @@
 mod lan_discovery;
 mod lan_server;
+mod ota;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,6 +17,9 @@ use tauri_plugin_window_state::StateFlags;
 
 use crate::lan_discovery::{DiscoveredLanHost, LanDiscoveryManager};
 use crate::lan_server::{AssetLoader, LanHostServer};
+use crate::ota::{
+    FetchTextResult, OtaActionResult, OtaAssets, OtaManager, OtaTaskStatus, OtaVersionInfo,
+};
 
 pub const DEFAULT_WINDOW_WIDTH: f64 = 1280.0;
 pub const DEFAULT_WINDOW_HEIGHT: f64 = 800.0;
@@ -267,6 +271,46 @@ fn lan_get_discovered_hosts(lan: State<'_, LanState>) -> Vec<DiscoveredLanHost> 
     lan.discovery.get_discovered_hosts()
 }
 
+#[tauri::command]
+fn ota_get_version_info(ota: State<'_, OtaManager>) -> OtaVersionInfo {
+    ota.version_info()
+}
+
+#[tauri::command]
+fn ota_fetch_text_url(ota: State<'_, OtaManager>, url: String) -> FetchTextResult {
+    ota.fetch_text_url(&url)
+}
+
+#[tauri::command]
+fn ota_start_install(
+    ota: State<'_, OtaManager>,
+    version: String,
+    download_url: String,
+    expected_sha256: String,
+) -> OtaActionResult {
+    ota.start_install(&version, &download_url, &expected_sha256)
+}
+
+#[tauri::command]
+fn ota_get_task_status(ota: State<'_, OtaManager>) -> OtaTaskStatus {
+    ota.task_status()
+}
+
+#[tauri::command]
+fn ota_confirm_boot_ready(ota: State<'_, OtaManager>) {
+    ota.confirm_boot_ready();
+}
+
+#[tauri::command]
+fn ota_clear_bundle(ota: State<'_, OtaManager>) -> bool {
+    ota.clear_ota()
+}
+
+#[tauri::command]
+fn ota_open_external_url(url: String) -> bool {
+    ota::open_external_url(&url)
+}
+
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
     let fullscreen_item =
@@ -342,8 +386,16 @@ pub fn run() {
     let window_state_flags =
         StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::DECORATIONS;
 
+    let mut context = tauri::generate_context!();
+    let native_version = context.package_info().version.to_string();
+    let ota_manager = OtaManager::new(&native_version);
+    let (ota_assets, fallback_slot) = OtaAssets::new(ota_manager.active_dir_handle());
+    let prev_assets = context.set_assets(Box::new(ota_assets));
+    let _ = fallback_slot.set(prev_assets);
+
     tauri::Builder::default()
         .manage(MatchGuardState::default())
+        .manage(ota_manager)
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             restore_and_focus_main_window(app);
         }))
@@ -368,6 +420,13 @@ pub fn run() {
             lan_start_discovery,
             lan_stop_discovery,
             lan_get_discovered_hosts,
+            ota_get_version_info,
+            ota_fetch_text_url,
+            ota_start_install,
+            ota_get_task_status,
+            ota_confirm_boot_ready,
+            ota_clear_bundle,
+            ota_open_external_url,
         ])
         .on_window_event(|window, event| {
             if window.label() != "main" {
@@ -403,7 +462,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running 金山打红心 desktop application");
 }
 

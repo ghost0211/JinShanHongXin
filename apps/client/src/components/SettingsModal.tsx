@@ -18,6 +18,11 @@ import {
 } from '../utils/desktopBridge.js';
 import { bgmPlayer } from '../utils/bgm.js';
 import { soundFX } from '../utils/sound.js';
+import {
+  BUNDLED_APP_VERSION,
+  type CurrentVersionInfo,
+  type UpdateCheckResult,
+} from '../utils/updater.js';
 import { SuitGlyph } from './CardArt.js';
 import { Icon } from './Icons.js';
 
@@ -29,6 +34,12 @@ interface SettingsModalProps {
   serverUrl: string;
   connStatus: ConnectionStatus;
   inGame?: boolean;
+  versionInfo?: CurrentVersionInfo | null;
+  updateCheck?: UpdateCheckResult | null;
+  checkingUpdate?: boolean;
+  onCheckUpdate?: () => void;
+  onOpenUpdateModal?: () => void;
+  onClearOta?: () => void;
   onUpdateSettings: (patch: Partial<AppSettings>) => void;
   onUpdateServerUrl: (url: string) => void;
   onReplaySplash?: () => void;
@@ -42,6 +53,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   serverUrl,
   connStatus,
   inGame = false,
+  versionInfo = null,
+  updateCheck = null,
+  checkingUpdate = false,
+  onCheckUpdate,
+  onOpenUpdateModal,
+  onClearOta,
   onUpdateSettings,
   onUpdateServerUrl,
   onReplaySplash,
@@ -50,12 +67,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   const [serverInput, setServerInput] = useState(serverUrl);
   const [savedNotice, setSavedNotice] = useState(false);
+  const [mirrorInput, setMirrorInput] = useState(settings.updateMirrorUrl);
+  const [mirrorSavedNotice, setMirrorSavedNotice] = useState(false);
   const isDesktopApp = isRunningInTauriDesktop();
   const scalePct = Math.round(settings.cardScale * 100);
+  const displayVersion = versionInfo?.effectiveVersion ?? BUNDLED_APP_VERSION;
+  const hasNewVersion = Boolean(updateCheck?.ok && updateCheck.plan?.hasUpdate && updateCheck.manifest);
 
   useEffect(() => {
     setServerInput(serverUrl);
   }, [serverUrl]);
+
+  useEffect(() => {
+    setMirrorInput(settings.updateMirrorUrl);
+  }, [settings.updateMirrorUrl]);
 
   const statusMeta =
     connStatus === 'connected'
@@ -82,6 +107,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     onUpdateServerUrl(serverInput);
     setSavedNotice(true);
     window.setTimeout(() => setSavedNotice(false), 1800);
+  };
+
+  const handleSaveMirror = () => {
+    soundFX.playTap();
+    onUpdateSettings({ updateMirrorUrl: mirrorInput.trim() });
+    setMirrorSavedNotice(true);
+    window.setTimeout(() => setMirrorSavedNotice(false), 1800);
   };
 
   const renderToggle = (checked: boolean, onChange: (next: boolean) => void) => (
@@ -119,7 +151,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         <div className="modal-header">
           <div className="modal-title-group">
             <h3>游戏设置</h3>
-            <span className="pill">v0.1.0</span>
+            <span className="pill">v{displayVersion}</span>
+            {versionInfo?.otaActive && <span className="pill pill-gold">热更新</span>}
           </div>
           <button type="button" className="btn btn-xs btn-ghost modal-close" onClick={onClose}>
             <Icon name="close" />
@@ -529,6 +562,112 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <span><kbd className="kbd-chip">T</kbd> · <kbd className="kbd-chip">M</kbd> · <kbd className="kbd-chip">F11</kbd></span>
                 <span>托管 / 静音 / 全屏</span>
               </div>
+            </div>
+          </section>
+
+          {/* 版本与热更新 */}
+          <section className="set-group is-wide">
+            <div className="set-group-head">
+              <h4 className="section-title">版本与热更新</h4>
+              <span
+                className={`pill ${
+                  hasNewVersion
+                    ? 'pill-gold'
+                    : updateCheck?.ok
+                      ? 'pill-green'
+                      : ''
+                }`}
+              >
+                {checkingUpdate
+                  ? '检查中…'
+                  : hasNewVersion && updateCheck?.manifest
+                    ? `发现新版本 v${updateCheck.manifest.version}`
+                    : updateCheck?.ok
+                      ? `已是最新 v${displayVersion}`
+                      : `当前 v${displayVersion}`}
+              </span>
+            </div>
+            <div className="set-rows">
+              <div className="set-row">
+                <span className="set-row-info">
+                  <span className="set-row-title">
+                    客户端版本 v{displayVersion}
+                    {versionInfo?.otaActive ? '（热更新已生效）' : ''}
+                  </span>
+                  <span className="set-row-desc">
+                    {versionInfo?.supportsOta
+                      ? `原生壳 v${versionInfo.nativeVersion} · 规则/AI/界面支持免安装热更新，原生大改自动提示下载安装包`
+                      : '支持从 GitHub Releases 检查最新版本并获取安装包'}
+                  </span>
+                </span>
+                <span className="set-row-controls">
+                  {versionInfo?.otaActive && onClearOta && !inGame && (
+                    <button
+                      type="button"
+                      className="btn btn-xs btn-ghost"
+                      onClick={() => {
+                        soundFX.playTap();
+                        onClearOta();
+                      }}
+                    >
+                      回退内置版
+                    </button>
+                  )}
+                  {hasNewVersion && onOpenUpdateModal ? (
+                    <button
+                      type="button"
+                      className="btn btn-xs btn-gold"
+                      onClick={() => {
+                        soundFX.playTap();
+                        onClose();
+                        onOpenUpdateModal();
+                      }}
+                    >
+                      立即更新
+                    </button>
+                  ) : (
+                    onCheckUpdate && (
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-gold"
+                        disabled={checkingUpdate}
+                        onClick={() => {
+                          soundFX.playTap();
+                          onCheckUpdate();
+                        }}
+                      >
+                        {checkingUpdate ? '检查中…' : '检查更新'}
+                      </button>
+                    )
+                  )}
+                </span>
+              </div>
+
+              {renderToggleRow(
+                '启动时自动检查更新',
+                '打开游戏后在后台静默检查 GitHub Release 新版本，断网时不打扰',
+                settings.autoCheckUpdate,
+                (v) => onUpdateSettings({ autoCheckUpdate: v }),
+              )}
+            </div>
+
+            <p className="set-note">
+              加速镜像（选填）：默认直连 GitHub，直连较慢时可填写加速前缀（如{' '}
+              <code>https://ghfast.top</code>），若已连接自建联机服务器也会自动作为备用中转。
+            </p>
+            <div className="set-server-row">
+              <input
+                className="input-box"
+                value={mirrorInput}
+                onChange={(e) => setMirrorInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSaveMirror();
+                }}
+                placeholder="留空直连 GitHub，或填加速前缀如 https://ghfast.top"
+              />
+              <button type="button" className="btn btn-ghost" onClick={handleSaveMirror}>
+                {mirrorSavedNotice ? '已保存' : '保存'}
+              </button>
             </div>
           </section>
 
