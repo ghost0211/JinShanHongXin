@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -109,6 +110,38 @@ function ensureDebugKeystore() {
   return ksPath;
 }
 
+function resolveSigningConfig() {
+  const base64Ks = process.env.ANDROID_KEYSTORE_BASE64?.trim();
+  const explicitPath = process.env.ANDROID_KEYSTORE_PATH?.trim();
+  if (base64Ks || (explicitPath && existsSync(explicitPath))) {
+    let ksPath = explicitPath;
+    if (base64Ks) {
+      mkdirSync(sdkCacheDir, { recursive: true });
+      ksPath = join(sdkCacheDir, 'ci-release.keystore');
+      writeFileSync(ksPath, Buffer.from(base64Ks, 'base64'));
+    }
+    const alias = process.env.ANDROID_KEY_ALIAS?.trim() || 'release';
+    const storePass = process.env.ANDROID_KEYSTORE_PASS || '';
+    const keyPass = process.env.ANDROID_KEY_PASS || storePass;
+    console.log(`[APK] 使用配置签名证书 (${alias})...`);
+    return { ksPath, alias, storePass, keyPass };
+  }
+
+  const ksPath = ensureDebugKeystore();
+  return {
+    ksPath,
+    alias: 'androiddebugkey',
+    storePass: 'android',
+    keyPass: 'android',
+  };
+}
+
+function semverToVersionCode(versionName) {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(versionName || '').replace(/^v/i, ''));
+  if (!m) return 1;
+  return Math.max(1, Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3]));
+}
+
 function main() {
   if (!existsSync(join(clientDistDir, 'index.html'))) {
     throw new Error('未找到 apps/client/dist/index.html，请先执行 npm run build');
@@ -120,7 +153,16 @@ function main() {
   cpSync(clientDistDir, assetsWwwDir, { recursive: true });
 
   const androidJar = ensureAndroidJar();
-  const keystore = ensureDebugKeystore();
+  const signing = resolveSigningConfig();
+
+  const clientPkg = JSON.parse(readFileSync(join(repoRoot, 'apps/client/package.json'), 'utf8'));
+  const versionName = (process.env.JINSHAN_APP_VERSION || clientPkg.version || '0.3.0').replace(
+    /^v/i,
+    '',
+  );
+  const versionCode = process.env.JINSHAN_VERSION_CODE
+    ? Number(process.env.JINSHAN_VERSION_CODE)
+    : semverToVersionCode(versionName);
 
   rmSync(buildDir, { recursive: true, force: true });
   mkdirSync(join(buildDir, 'gen'), { recursive: true });
@@ -131,9 +173,12 @@ function main() {
   const resZip = join(buildDir, 'res.zip');
   const unsignedRawApk = join(buildDir, 'unsigned-raw.apk');
   const unsignedAlignedApk = join(buildDir, 'unsigned-aligned.apk');
-  const finalApk = join(distDir, 'jinshan-hongxin-debug.apk');
+  const finalApk = process.env.ANDROID_APK_OUT
+    ? resolve(repoRoot, process.env.ANDROID_APK_OUT)
+    : join(distDir, 'jinshan-hongxin-debug.apk');
+  mkdirSync(dirname(finalApk), { recursive: true });
 
-  console.log('[APK] 2/7 编译与链接 Android 资源 (aapt2)...');
+  console.log(`[APK] 2/7 编译与链接 Android 资源 (aapt2, v${versionName} / code ${versionCode})...`);
   run('aapt2', ['compile', '--dir', join(appMainDir, 'res'), '-o', resZip]);
   run('aapt2', [
     'link',
@@ -141,6 +186,10 @@ function main() {
     androidJar,
     '--manifest',
     join(appMainDir, 'AndroidManifest.xml'),
+    '--version-name',
+    versionName,
+    '--version-code',
+    String(versionCode),
     '-A',
     join(appMainDir, 'assets'),
     '-R',
@@ -194,13 +243,13 @@ function main() {
   run('apksigner', [
     'sign',
     '--ks',
-    keystore,
+    signing.ksPath,
     '--ks-key-alias',
-    'androiddebugkey',
+    signing.alias,
     '--ks-pass',
-    'pass:android',
+    `pass:${signing.storePass}`,
     '--key-pass',
-    'pass:android',
+    `pass:${signing.keyPass}`,
     '--v1-signing-enabled',
     'true',
     '--v2-signing-enabled',

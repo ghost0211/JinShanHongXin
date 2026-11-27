@@ -18,6 +18,7 @@ apps/windows/src-tauri/target/
 apps/windows/src-tauri/gen/
 apps/windows/dist-portable/
 apps/windows/*.zip
+release-dist/
 packages/game-core/bench/baseline/
 packages/game-core/bench/results/
 packages/game-core/bench/snap/

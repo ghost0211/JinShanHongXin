@@ -3,10 +3,9 @@ name: Build Windows Client (Tauri 2)
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 'v*'
     branches:
       - feat/windows-client
+      - feat/release-and-hot-update
     paths:
       - 'apps/windows/**'
       - 'apps/client/**'

@@ -51,6 +51,8 @@ interface LobbyScreenProps {
   leaderboard: UserProfile[];
   tableSkin: TableSkin;
   hasExternalModal?: boolean;
+  availableUpdateVersion?: string | null;
+  onOpenUpdateModal?: () => void;
   defaultMatchSetup: {
     dealSpeed: DealSpeed;
     allyBotDifficulty: BotDifficulty;
@@ -189,6 +191,8 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   leaderboard,
   tableSkin,
   hasExternalModal = false,
+  availableUpdateVersion = null,
+  onOpenUpdateModal,
   defaultMatchSetup,
   onSaveMatchSetupDefaults,
   onSetPlayMode,
@@ -508,6 +512,20 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
               <Icon name="book" />
               <span>规则</span>
             </button>
+            {availableUpdateVersion && onOpenUpdateModal && (
+              <button
+                type="button"
+                className="lobby-nav-btn is-update"
+                onClick={() => {
+                  soundFX.playTap();
+                  onOpenUpdateModal();
+                }}
+                title={`发现新版本 v${availableUpdateVersion}，点击查看更新`}
+              >
+                <span className="update-badge-dot" aria-hidden="true" />
+                <span>新版 v{availableUpdateVersion}</span>
+              </button>
+            )}
             <button
               type="button"
               className="lobby-nav-btn is-gold"
