@@ -143,14 +143,14 @@ export const App: React.FC = () => {
           setShowAppCloseConfirm(false);
           return;
         }
-        if (showSettings) {
-          e.preventDefault();
-          setShowSettings(false);
-          return;
-        }
         if (showRules) {
           e.preventDefault();
           setShowRules(false);
+          return;
+        }
+        if (showSettings) {
+          e.preventDefault();
+          setShowSettings(false);
           return;
         }
       }
@@ -216,6 +216,9 @@ export const App: React.FC = () => {
     void handleCopyText(roomId, `房号 ${roomId}`);
   };
 
+  const hasExternalModal =
+    showSettings || showRules || showAppCloseConfirm || showSplash;
+
   return (
     <div className="app-shell" data-table-skin={settings.tableSkin}>
       {showSplash && (
@@ -267,6 +270,7 @@ export const App: React.FC = () => {
           historyList={client.historyList}
           leaderboard={client.leaderboard}
           tableSkin={settings.tableSkin}
+          hasExternalModal={hasExternalModal}
           defaultMatchSetup={{
             dealSpeed: settings.dealSpeed,
             allyBotDifficulty: settings.allyBotDifficulty,
@@ -300,6 +304,7 @@ export const App: React.FC = () => {
           room={client.room}
           mySeat={client.session.seat}
           playMode={client.playMode}
+          hasExternalModal={hasExternalModal}
           lanHostInfo={client.lanRole === 'host' ? client.lanHostInfo : null}
           lanGuestCount={client.lanBridgeStatus.peerCount}
           onRefreshLanHost={client.refreshLanHostInfo}
@@ -323,7 +328,7 @@ export const App: React.FC = () => {
           view={client.view}
           settings={settings}
           playMode={client.playMode}
-          hasExternalModal={showSettings || showRules || showAppCloseConfirm}
+          hasExternalModal={hasExternalModal}
           onOpenSettings={() => setShowSettings(true)}
           onUpdateSettings={updateSettings}
           onPushToast={client.pushToast}

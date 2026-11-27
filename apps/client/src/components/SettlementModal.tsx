@@ -3,9 +3,11 @@ import { getCardPoints, getSeatTeam, LEVEL_SEQUENCE } from '@jinshan/game-core';
 import type { PlayerView, Seat } from '@jinshan/protocol';
 import { PlayingCard } from './PlayingCard.js';
 import { Icon } from './Icons.js';
+import { shouldTriggerSettlementNextRound } from '../utils/shortcuts.js';
 
 interface SettlementModalProps {
   view: PlayerView;
+  shortcutBlocked?: boolean;
   onNextRound: () => void;
   onLeaveRoom: () => void;
 }
@@ -32,33 +34,29 @@ const fmtDelta = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 
 export const SettlementModal: React.FC<SettlementModalProps> = ({
   view,
+  shortcutBlocked = false,
   onNextRound,
   onLeaveRoom,
 }) => {
   const s = view.settlement;
 
   useEffect(() => {
-    if (!s || s.matchWinner) return;
+    if (!s || s.matchWinner || shortcutBlocked) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.altKey || e.metaKey) return;
-      const target = e.target as HTMLElement | null;
       if (
-        target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.tagName === 'BUTTON' ||
-          target.isContentEditable)
+        shouldTriggerSettlementNextRound(e, {
+          hasSettlement: Boolean(s),
+          hasMatchWinner: Boolean(s.matchWinner),
+          shortcutBlocked,
+        })
       ) {
-        return;
-      }
-      if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         onNextRound();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [s, onNextRound]);
+  }, [s, shortcutBlocked, onNextRound]);
 
   if (!s) return null;
 
